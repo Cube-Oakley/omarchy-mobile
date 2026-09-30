@@ -76,9 +76,16 @@ fi
 # firmware's CPU_INFORM hints every C2 entry is rejected and idle CPUs spin on
 # SMCs (0.65 W). The hints include cluster power-down for the mid and big
 # clusters.
-insmod /proc/1/root/lib/modules/pixel/pixel-mct.ko ||
+# A root copy in /usr/local/lib/omarchy-mobile replaces the image's module
+# without a new boot image; the image's copy remains the fallback.
+pixel_module() {
+    local name=$1 root=/usr/local/lib/omarchy-mobile/$1.ko image=/proc/1/root/lib/modules/pixel/$1.ko
+    shift
+    { [[ -f $root ]] && insmod "$root" "$@"; } || insmod "$image" "$@"
+}
+pixel_module pixel-mct ||
     echo 'MCT broadcast unavailable; one CPU keeps the hrtimer broadcast.' >&2
-insmod /proc/1/root/lib/modules/pixel/pixel-cpupm.ko ||
+pixel_module pixel-cpupm ||
     echo 'C2 idle hints unavailable; CPUs keep spinning on rejected C2.' >&2
 # The bootloader powers on the camera pipeline, TPU, codecs, G2D, EH and AUR;
 # nothing here uses them (kernel/pd).

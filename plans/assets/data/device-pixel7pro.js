@@ -87,11 +87,12 @@ HW.pixel7pro = {
               + "0.81–0.85 W across sleeps against 0.94 W awake), it never sleeps on the charger, and unplugged "
               + "battery life is unmeasured.",
           ref: "devices/pixel7pro/docs/suspend-20260929.md" },
-        { n: "Deepest idle power states (SICD, memory sleep)", s: "no", cap: "deepsleep",
-          note: "Guarded opt-in trials reached the firmware's SICD SoC-down once, with no measurable saving; "
-              + "clearing the memory always-on flag reset the phone and was removed. All of it stays off by "
-              + "default, and memory power-down is still unsolved.",
-          ref: "devices/pixel7pro/docs/suspend-20260930.md" },
+        { n: "Deepest idle power states (SYS_SLEEP)", s: "no", cap: "deepsleep",
+          note: "The stock SYS_SLEEP sequence now runs up to the firmware call: CPU hotplug (1,000 stress "
+              + "rounds), the MCT restart and the 545-register save/restore passed pm_test. An audit found 34 PMIC "
+              + "rails left always on that stock switches off in sleep. The first real firmware entry, and the "
+              + "~25 mA standby target, are next.",
+          ref: "devices/pixel7pro/docs/deep-sleep-plan-20260930.md" },
         { n: "RTC and alarms", s: "ok",
           note: "The S2MPG12 RTC sets the clock about 2 s into boot, and its alarm wakes the phone from s2idle "
               + "(rtcwake, repeated cycles). Read-only: Linux cannot correct its drift (about 30 s ahead).",
@@ -228,7 +229,11 @@ HW.pixel7pro = {
               + "including a call that woke the phone from s2idle. Speakerphone, call waiting and emergency "
               + "calling are not implemented.",
           ref: "devices/pixel7pro/modem/README.md" },
-        { n: "GPS / GNSS", s: "no", cap: "gps", note: "Not started." },
+        { n: "GPS / GNSS (Broadcom BCM4776)", s: "partial", cap: "gps",
+          note: "Its rails and SPI bridge are up and Broadcom's stock daemons run without Android through a HAL "
+              + "client we wrote: indoors it tracks GPS satellites and takes UTC time from them. No position fix "
+              + "yet (needs a sky view); not started at boot.",
+          ref: "devices/pixel7pro/gnss/README.md" },
         { n: "NFC", s: "no", cap: "nfc",
           note: "Not started. The ST54J NFC controller also holds the eSIM, so it is guarded and left untouched.",
           ref: "devices/pixel7pro/kernel/i2c/README.md" },
@@ -274,7 +279,10 @@ HW.pixel7pro = {
       title: "Cameras",
       items: [
         { n: "Rear main camera", s: "no", cap: "camera-rear", note: "Not started." },
-        { n: "Rear ultra-wide camera", s: "no", cap: "camera-rear", note: "Not started." },
+        { n: "Rear ultra-wide camera (Sony IMX386)", s: "partial", cap: "camera-rear",
+          note: "Powered through the stock sequence (camera PMIC, clocks, reset) on a camera I2C bus brought up "
+              + "from scratch, and it answers its chip ID. No frames yet: the CSI receiver and capture DMA are next.",
+          ref: "devices/pixel7pro/kernel/camera/README.md" },
         { n: "Rear telephoto camera", s: "no", cap: "camera-rear", note: "Not started." },
         { n: "Front camera", s: "no", cap: "camera-front", note: "Not started." },
         { n: "LED flash / torch (LM3644)", s: "partial", cap: "flash",

@@ -32,7 +32,28 @@ make -C devices/pixel7pro/mainline/linux ARCH=arm64 \
   M="$PWD/devices/pixel7pro/kernel/watchdog" modules
 ```
 
-For short, supervised bring-up trials only, `keep_running=1` reloads the
+**Deep sleep.** Deep sleep (`mem_sleep` = `deep`, PSCI SYSTEM_SUSPEND) powers
+off MISC, and both watchdogs with it. A running watchdog therefore cannot act
+as a deadman, and `keep_running` is ignored: the watchdogs are stopped and
+restored as usual. `suspend_noirq` tells deep sleep apart by
+`pm_suspend_target_state`. `suspend_devices_and_enter()` sets it before any
+device callback: `PM_SUSPEND_MEM` for deep (PSCI offers no standby) and
+`PM_SUSPEND_TO_IDLE` for s2idle. It is also `PM_SUSPEND_MEM` under `pm_test`,
+which only makes those tests stop the watchdog too. `deep_suspends` counts
+these suspends.
+
+After a deep resume, a watchdog that was disabled gets its saved WTCON back
+if it reads differently. Only a power loss can cause that: s3c2410-family
+WTCON resets to an enabled value (0x8021). s2idle resumes are unchanged.
+
+To test, set `keep_running=1` and `/sys/module/suspend/parameters/pm_test_delay`
+to 60, which is longer than the feeder's timeout. Then run
+`echo deep > /sys/power/mem_sleep; echo processors > /sys/power/pm_test;
+echo mem > /sys/power/state`. The phone must come back after 60 s, with
+`deep_suspends` +1 and `resumes` +1. Restore `keep_running=0`,
+`pm_test_delay` to 5, `pm_test` to `none` and `mem_sleep` to `s2idle`.
+
+For short, supervised s2idle trials only, `keep_running=1` reloads the
 already enabled watchdogs in the noirq callback without stopping them. It
 never arms a stopped watchdog or changes its timeout. This can provide a
 reset fallback if a new sleep mode hangs, but only if its watchdog clock

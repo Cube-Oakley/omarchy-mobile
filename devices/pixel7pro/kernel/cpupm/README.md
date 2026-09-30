@@ -169,6 +169,128 @@ With `cpd=6` the PMU reports the mid and big clusters' non-CPU domains off
 (`CLUSTER1/2_NONCPU_STATUS` = 0); with `cpd=0` they stay on. Screen off, each
 cluster takes about 15 CPD hints a second.
 
+## CPU hotplug
+
+Deep sleep offlines CPUs 1–7 before the firmware call, so hotplug needs the
+same PMU bookkeeping as C2. This follows mainline GS101 (`exynos-pmu.c`
+`gs101_cpuhp_pmu_offline/online`) and stock `exynos-cpupm.c:1105-1152`
+(`cpuhp_cpupm_offline/online`, `cal_cpu_disable`, `cal_cluster_disable`):
+
+- **Going offline:** a `CPUHP_AP_ONLINE_DYN` teardown, the state both mainline
+  and stock use, runs on the dying CPU in its hotplug thread. The CPU is still
+  in `cpu_online_mask` then; `CPUHP_TEARDOWN_CPU` removes it, and the idle
+  loop then calls PSCI CPU_OFF. The teardown writes `CPU_INFORM` = C2, enables
+  the CPU's GRP2 wake-up interrupt and clears its GRP1 pending bits. The last
+  online CPU of cluster 1 or 2 writes CPD (2) instead, if `cpd` allows that
+  cluster. A module can only register the dynamic states, and AP_ONLINE_DYN
+  is the only one that runs on the dying CPU. The later DYING states, which
+  run with interrupts off just before CPU_OFF, are static and reserved for
+  core code.
+- **Between the hint and CPU_OFF**, the CPU's idle entries are refused
+  (`in_cpuhp`, as mainline). Otherwise a C2 exit would clear the hint and the
+  wake-up interrupt again.
+- **Coming online:** a `CPUHP_BP_PREPARE_DYN` startup on the control CPU,
+  before PSCI CPU_ON, disables the GRP2 interrupt, clears its pending bit and
+  lets the CPU use C2 again. Once the CPU runs, the `AP_ONLINE_DYN` startup
+  clears its own `CPU_INFORM`, as a C2 exit does, and rejoins the tick
+  broadcast. The same startup undoes an offline that failed later on. Stock
+  and mainline clear the *control* CPU's hint in the BP step instead: that
+  write is a no-op and is skipped, so CPU0's hint is never written during deep
+  sleep.
+- Hotplug hints check the SMC result and read `CPU_INFORM` back (as
+  `pixel-reboot` does). Failures count in `hotplug_errors`.
+- The idle path's CPD rules are unchanged. They already consider online
+  siblings only, like stock `cpus_busy()`, and a dying sibling (online, idle
+  refused) blocks CPD until it is gone.
+
+**Loading and unloading.** Loading fails unless every CPU is online, since
+each CPU wraps its own idle states. Each offline CPU holds a module reference,
+so `rmmod` reports the module in use. Once removal has begun, offlining is
+refused (`-EBUSY`). Unloading still needs C2 disabled in sysfs first.
+
+Parameters: `hotplug_offlines` (per CPU), `hotplug_cpd` (per cluster),
+`hotplug_errors`, and `pmu_status`. `pmu_status` is a read-only snapshot of
+the ALIVE registers used here: the online mask, `CPUx_STATUS` (`cpu_on`),
+`CLUSTERx_NONCPU_STATUS` (`cluster_on`, 0x1204/0x1404/0x1604), `in_cpuhp`, the
+GRP2 enable and the eight `CPU_INFORM` values. An offline CPU always reads
+`cpu_on` 0, GRP2 set and `inform` 1 or 2. An online CPU shows the same values
+while it is in C2.
+
+## System sleep handover
+
+`pixel_cpupm_system_sleep(bool on)` (exported GPL; callers declare it) is for
+`pixel-sleep`. Call it with `true` in syscore suspend, just before writing
+CPU0's `CPU_INFORM` = 4. Call it with `false` in syscore resume, after
+clearing CPU0's hint. In between, the CPU_PM notifier writes nothing and
+changes no idle state, like stock `system_suspended`
+(`exynos-cpupm.c:974-976`). Otherwise `cpu_pm_suspend()`'s CPU_PM_ENTER (the
+last syscore suspend step) would overwrite CPU0's 4 with C2, and its
+CPU_PM_EXIT would clear it before `pixel-sleep` reads the wake state.
+`sleep_ignored` counts these events: 2 per cycle. The hotplug callbacks do not
+check the flag, because CPU hotplug is disabled for that whole window. A call
+with `true` while secondaries are online warns once.
+
+## The MCT across power loss
+
+MISC, which holds the MCT, loses power in SYS_SLEEP, so the counter restarts
+stopped and the broadcast comparator would never match. `pixel-mct` now has a
+clockevent `resume` callback. `clockevents_resume()` is the first step of
+`timekeeping_resume()`. It runs before the clocksources are read, and before
+`tick_resume()` puts the broadcast device back to work. The callback does:
+
+- If G_TCON START is clear, it restarts the counter as mainline
+  `exynos4_frc_resume()` does: stale write-status bits are cleared and the
+  interrupt is disabled first. It counts `frc_restarts`.
+- It then runs a polled one-shot self-test (interrupts are off on the only
+  CPU): one match 100 µs ahead, exactly once, then shut down with the status
+  cleared. It counts `resume_checks` or `resume_errors`.
+
+Stock's MCT clocksource resume ran at the same point, before exynos-pm
+restored CMU_MISC (stock `drivers/clocksource/exynos_mct.c:167-174, 217-229`).
+On every s2idle wake the counter is still running, so the callback only reads
+G_TCON. The polls are bounded by MCT read counts, not `udelay()`: on Exynos
+the arch timer shares this counter (mainline commit 6282edb72bed, and the
+two counts match here). `resume_selftest=1` also runs the self-test on deep
+(`mem`) resumes where the counter kept running, to exercise it under
+`pm_test=core`.
+
+## Testing hotplug and deep sleep
+
+Results on 2026-09-30 (module swapped in live, `cpd=6`):
+- 1,000 rounds of the randomized offline/online stress passed: 10,266 CPU
+  kills, `hotplug_errors` 0, CPD hints exactly one per emptied mid and big
+  cluster, the emptied cluster's NONCPU status off, no kernel warnings. The
+  firmware adds bit 16 to an offline CPU's CPU_INFORM (0x10001, 0x10002).
+- `pm_test=processors` with `mem_sleep=deep`: three of five runs took all
+  secondaries through the new hotplug path and back (+1 offline each, CPD +1
+  for clusters 1 and 2); the other two were refused by cpif (the modem was
+  waking, -EBUSY), as designed.
+
+Do not load or test on a phone without the watchdog feeder running. `P` is
+`/sys/module/pixel_cpupm/parameters`.
+
+1. **Hotplug, per CPU:** do 1000 cycles for each of CPUs 1–7. Offline, wait
+   20–50 ms, check, online, and wait 20–50 ms of idle. Mix single CPUs with
+   emptying a cluster (4+5 and 6+7). While a CPU is offline, its `cpu_on` bit
+   must be 0 in `$P/pmu_status`. With `cpd=6`, `cluster_on` for an empty
+   cluster 1 or 2 must be 0; with `cpd=0` it stays 1. `hotplug_errors` must
+   stay 0, and `in_cpuhp` must be 0 when all CPUs are online. The kernel log
+   must show no "may not have shut down cleanly", "failed to come online",
+   BUG or RCU stall. Afterwards, `cpd_entries` and every CPU's
+   `cpuidle/state1/usage` must still increase, and a pinned
+   `sleep 0.5` must return on time on each CPU.
+2. **`pm_test=processors`:** `cat /sys/power/mem_sleep` must list `deep`.
+   Then run `echo deep > /sys/power/mem_sleep; echo processors >
+   /sys/power/pm_test; echo mem > /sys/power/state`. Pass: it returns 0 after
+   about 5 s, `hotplug_offlines` rises by 1 for each of CPUs 1–7, and
+   `hotplug_cpd` rises by 1 for clusters 1 and 2 (CPUs 5 and 7 go last).
+   Restore with `echo none > /sys/power/pm_test; echo s2idle >
+   /sys/power/mem_sleep`.
+3. **`pm_test=core`:** set `pixel_mct` `resume_selftest=1` and run the same
+   sequence with `core`. Pass: `resume_checks` +1, `resume_errors` 0,
+   `frc_restarts` 0 (power is kept), all `inform` 0 afterwards, and pinned
+   sleeps on every CPU. With `pixel-sleep` loaded, also `sleep_ignored` +2.
+
 ## The local timer and the MCT
 
 A CPU in C2 loses its arch timer comparator. The stock DT's idle states do not
@@ -220,7 +342,10 @@ The tick core keeps a reference to the module, so it has no unload path.
   module reloads and CPD changes.
 - **Restarts:** a warm restart to fastboot and a cold boot both work.
 - **Unloading `pixel-cpupm`:** disable the C2 states in sysfs first. Without
-  the hints, C2 entries are rejected again.
+  the hints, C2 entries are rejected again. Every CPU must be online.
+- **Not yet checked on the phone:** the hotplug callbacks, the system-sleep
+  handover and the MCT resume path. These are built with W=1 and have no
+  warnings.
 
 ## Power
 

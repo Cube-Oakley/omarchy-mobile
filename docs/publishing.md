@@ -183,3 +183,15 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   555-01xx numbers and public carrier codes. The author address in the AoC and
   cpif patch headers was replaced with a no-reply one. No firmware, NV or
   partition backups, boot images, logs or handset identifiers are included.
+
+- September 30, later: synced the Pixel's light and proximity fix (the USF
+  DisplayInfo protocol, documented without the panel's serial) and the charge
+  to 100 %, after the same checks, which found nothing to remove.
+
+- September 30, evening: synced the Pixel GPS bring-up (the BCM4776 bridge
+  driver, the Bionic runtime shim and the HAL-pipe client), the camera power
+  and I2C modules with the first sensor ID, the deep-sleep stages 0-3 (CPU
+  hotplug, MCT restart, the audit, the SYS_SLEEP sequence generated from
+  Google's GPL flexpmu tables) and the PMIC opmode module, after the same
+  checks. No vendor binaries, firmware, camera tables, logs or position data
+  are included; the only address added is 127.0.0.1.
