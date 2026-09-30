@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Display blanking. The CRT starts in the shell as soon as this asks; DPMS follows.
-# System suspend and screen locking stay in the power-button adapter.
+# System suspend is the sleep policy's (omarchy-mobile-sleep), once the screen is dark.
 # ambient shows the always-on display instead, after the CRT close (the shell
 # draws it, the panel stays lit and dim); on leaves it, and the CRT opens.
 # ambient-sleep and ambient-wake switch the panel off and on under it (face
-# down, a pocket: omarchy-mobile-ambient).
+# down, a pocket: omarchy-mobile-ambient). idle is the screen timeout: off, or
+# ambient when the always-on display is chosen, only from a lit screen.
 set -euo pipefail
 action=${1:-toggle}
 case $action in
-    on|off|toggle|preview|ambient|ambient-sleep|ambient-wake) ;;
-    *) echo 'Usage: omarchy-mobile-display on|off|toggle|ambient|ambient-sleep|ambient-wake' >&2; exit 2 ;;
+    on|off|toggle|preview|ambient|ambient-sleep|ambient-wake|wake|idle) ;;
+    *) echo 'Usage: omarchy-mobile-display on|off|toggle|ambient|ambient-sleep|ambient-wake|wake|idle [ambient]' >&2; exit 2 ;;
 esac
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 if [[ -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
@@ -20,6 +21,17 @@ if [[ -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
         break
     done
     [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] || exit 1
+fi
+# quickshell ipc only finds a shell on the same Wayland display. Without it
+# the CRT request fails, and the fallback lights the panel under the parked
+# black cover: a dark screen that swallows touch.
+if [[ -z ${WAYLAND_DISPLAY:-} ]]; then
+    WAYLAND_DISPLAY=$(hyprctl instances -j | python3 -c 'import json, sys
+for instance in json.load(sys.stdin):
+    if instance.get("instance") == sys.argv[1]:
+        print(instance.get("wl_socket", ""))' "$HYPRLAND_INSTANCE_SIGNATURE")
+    [[ -n $WAYLAND_DISPLAY ]] || exit 1
+    export WAYLAND_DISPLAY
 fi
 shell=${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/omarchy-mobile/shell.qml
 state=$XDG_RUNTIME_DIR/omarchy-mobile-crt.state
@@ -34,7 +46,7 @@ dpms_on() {
 }
 wait_state() {
     local want=$1 i line
-    for i in $(seq 1 60); do
+    for i in $(seq 1 110); do
         line=$(cat "$state" 2>/dev/null || true)
         [[ $line == "$want" ]] && return 0
         sleep 0.03
@@ -56,6 +68,11 @@ ambient() {
 
 case $action in
     toggle) dpms_on && action=off || action=on ;;
+    # An incoming call: light a dark or always-on screen, leave a lit one alone.
+    wake) [[ -f $ambient_flag ]] || ! dpms_on && action=on || exit 0 ;;
+    idle)
+        [[ ! -f $ambient_flag ]] && dpms_on || exit 0
+        [[ ${2:-} == ambient ]] && action=ambient || action=off ;;
 esac
 # Leaving the always-on display: the clock fades out onto the CRT's parked
 # black, and the CRT opens the screen as on any wake.

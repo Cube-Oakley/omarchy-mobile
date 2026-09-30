@@ -1,0 +1,465 @@
+{
+ "comment": "Upstream files of the AoC driver stack, by path in the assembled tree: [repository, upstream path, sha256].",
+ "repos": {
+  "lineage-gs201": {
+   "about": "LineageOS android_kernel_google_gs201, branch lineage-21 (Google's gs201 kernel): Trusty and GSA drivers",
+   "commit": "40ff93424549ffebfbba32e9435dfc58c40decb2",
+   "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_gs201/{commit}/{path}",
+   "encoding": "raw"
+  },
+  "aoc": {
+   "about": "Google kernel/google-modules/aoc, branch android-gs-pantah-5.10-android14",
+   "commit": "222ba49",
+   "url": "https://android.googlesource.com/kernel/google-modules/aoc/+/{commit}/{path}?format=TEXT",
+   "encoding": "base64"
+  },
+  "aoc-ipc": {
+   "about": "Google kernel/google-modules/aoc-ipc, branch android-gs-pantah-5.10-android14",
+   "commit": "61ee513",
+   "url": "https://android.googlesource.com/kernel/google-modules/aoc-ipc/+/{commit}/{path}?format=TEXT",
+   "encoding": "base64"
+  }
+ },
+ "files": {
+  "aoc-ipc/.clang-format": [
+   "aoc-ipc",
+   ".clang-format",
+   "50a06d373e86348842d61b70cefb83ef34e0b56a4f7370eb3b241ae9eab71758"
+  ],
+  "aoc-ipc/.gitignore": [
+   "aoc-ipc",
+   ".gitignore",
+   "f8a70166e4b4b7b0f57706402fefd1c8941c4ef0bcc067c5aa354372cc49a388"
+  ],
+  "aoc-ipc/BUILD.bazel": [
+   "aoc-ipc",
+   "BUILD.bazel",
+   "bb3efc2218cc27302f67b96aa2d59ecc8f2063f0c967708f4ba27d218ece7f2f"
+  ],
+  "aoc-ipc/aoc_ipc_core.c": [
+   "aoc-ipc",
+   "aoc_ipc_core.c",
+   "740659363a99812a1661522a6c59064701d8c1308b7e09359cf12e447ed8f0fa"
+  ],
+  "aoc-ipc/aoc_ipc_core.h": [
+   "aoc-ipc",
+   "aoc_ipc_core.h",
+   "23bb9f2f9bcc641fab0826574a416c8c50c325939081bb4a25e5b4b10529296c"
+  ],
+  "aoc-ipc/aoc_ipc_core_internal.h": [
+   "aoc-ipc",
+   "aoc_ipc_core_internal.h",
+   "1b90a4e9482f1fb9ea7a43b447fc4f3ac6584709d450e20e77c974f74e77f58e"
+  ],
+  "aoc/.clang-format": [
+   "aoc",
+   ".clang-format",
+   "abb9fe43594ab103fc171bf174be6813acb3f28d22c98dcb185cf3971d0f48e4"
+  ],
+  "aoc/BUILD.bazel": [
+   "aoc",
+   "BUILD.bazel",
+   "af3e8f510c0a4ab7ea23d08a8d78b760ad06db5a9fa2115c7cf94bb9e50f272d"
+  ],
+  "aoc/Kconfig": [
+   "aoc",
+   "Kconfig",
+   "2cd6e34ab8de57201fb637c0cb641347efad469e035058eac8426f3b1405f39c"
+  ],
+  "aoc/Makefile": [
+   "aoc",
+   "Makefile",
+   "23cf00762f442400a4260a46301303c0fe0a7681cdc8671f4b16c8a63bb05a42"
+  ],
+  "aoc/alsa/BUILD.bazel": [
+   "aoc",
+   "alsa/BUILD.bazel",
+   "9f9848c969b6fea5be3526f2e6e9d8f042a00e5f97bf83741735745faecf3ee8"
+  ],
+  "aoc/alsa/Makefile": [
+   "aoc",
+   "alsa/Makefile",
+   "9b757e667d350125cdd4655191bd1dfaf341fa665b6ebecd8525e82cc46a19ce"
+  ],
+  "aoc/alsa/aoc_alsa.h": [
+   "aoc",
+   "alsa/aoc_alsa.h",
+   "140c00d65917f13a5f13ec28f9d8aef250b2996c9ecb542f42459ecfa543a60b"
+  ],
+  "aoc/alsa/aoc_alsa_card.c": [
+   "aoc",
+   "alsa/aoc_alsa_card.c",
+   "3877ef02d707d9e9283f0044bfeceb4a457dc0750739a157c9a8365cab44e2d0"
+  ],
+  "aoc/alsa/aoc_alsa_compr.c": [
+   "aoc",
+   "alsa/aoc_alsa_compr.c",
+   "2b6fc8755ec20499ea6219ff732a6e3969b1b6214536b5cae90d7cd429c1b8d7"
+  ],
+  "aoc/alsa/aoc_alsa_ctl.c": [
+   "aoc",
+   "alsa/aoc_alsa_ctl.c",
+   "1e5349528ff950351d1cf7a78cd518bac49b41a36e56e64ad553af068c3b787b"
+  ],
+  "aoc/alsa/aoc_alsa_drv.c": [
+   "aoc",
+   "alsa/aoc_alsa_drv.c",
+   "111fce793d4b44a591e900c96fe7fc748b9cfb97cba5df49c00aba4cbe28fcc7"
+  ],
+  "aoc/alsa/aoc_alsa_drv.h": [
+   "aoc",
+   "alsa/aoc_alsa_drv.h",
+   "c5a822782ddfeee24a8cbe9a6341b78defecf3718825cf9ebf9d05f6c661cdbf"
+  ],
+  "aoc/alsa/aoc_alsa_hw.c": [
+   "aoc",
+   "alsa/aoc_alsa_hw.c",
+   "a6a5bc3c7deb03e459b766141aefb23ceb68af65a3781ca454091912c121e35e"
+  ],
+  "aoc/alsa/aoc_alsa_incall.c": [
+   "aoc",
+   "alsa/aoc_alsa_incall.c",
+   "90192c6bcd9af0ef55f9e84a9df8ed0beaf75fe42d5030ff4f3d93bd9e252905"
+  ],
+  "aoc/alsa/aoc_alsa_nohost.c": [
+   "aoc",
+   "alsa/aoc_alsa_nohost.c",
+   "d19444c46a199287ca237e10a3ee6da1309b0aa9bd540d2683cc319c9d01c831"
+  ],
+  "aoc/alsa/aoc_alsa_path.c": [
+   "aoc",
+   "alsa/aoc_alsa_path.c",
+   "c355eda85ed87bcb293009a60bc59cea4791b591a97cae5efe0a471b960d431d"
+  ],
+  "aoc/alsa/aoc_alsa_path.h": [
+   "aoc",
+   "alsa/aoc_alsa_path.h",
+   "ce66e03143412bcb53775f6e64052c46e4663f8dd9dbca7bb5564cc9975fa71a"
+  ],
+  "aoc/alsa/aoc_alsa_pcm.c": [
+   "aoc",
+   "alsa/aoc_alsa_pcm.c",
+   "48a5e7bcef8153cd6cfc262bedf20b6ae5d9befccb1ed25a96e2817b91b49c2e"
+  ],
+  "aoc/alsa/aoc_alsa_voice.c": [
+   "aoc",
+   "alsa/aoc_alsa_voice.c",
+   "048e1d4e68dee58951f47d28f3d32eaf95c4add83a064da522a7f5ec095443a2"
+  ],
+  "aoc/alsa/aoc_alsa_voip.c": [
+   "aoc",
+   "alsa/aoc_alsa_voip.c",
+   "2f1bbff2f0d8c22d94954aa3096365222666967e9b69aa369eedf3f8d1aee572"
+  ],
+  "aoc/alsa/google-aoc-enum.h": [
+   "aoc",
+   "alsa/google-aoc-enum.h",
+   "ce12085274752152f810a538bf295456568d0bf0b6682ac6862a95046af1fdcc"
+  ],
+  "aoc/aoc-interface-gs101.h": [
+   "aoc",
+   "aoc-interface-gs101.h",
+   "68c97490aff9d33f95d9b76796a88a67277e2fb00dcd20b3d156ca7b547dbb0c"
+  ],
+  "aoc/aoc-interface-gs201.h": [
+   "aoc",
+   "aoc-interface-gs201.h",
+   "c2e273fccfdb3b53f1b84240199c4b416152e9d5cb763301799732f02710cf62"
+  ],
+  "aoc/aoc-interface.h": [
+   "aoc",
+   "aoc-interface.h",
+   "9b30463fe5f47adb07947ef1fd85e0e0991d0852e58f3951cea452e589f760b7"
+  ],
+  "aoc/aoc.c": [
+   "aoc",
+   "aoc.c",
+   "b3cf9868b601a2fa030ac7225864bba63f407c02f97c40a37edc3179cf0db7a8"
+  ],
+  "aoc/aoc.h": [
+   "aoc",
+   "aoc.h",
+   "d2af93be6a3b09553e68544597cb4e5724fe0339d1d9ced69d2920d4a15c7bdc"
+  ],
+  "aoc/aoc_channel_dev.c": [
+   "aoc",
+   "aoc_channel_dev.c",
+   "e83add09535a48a7ed3f6f3ff07a4a6f2ceb27189a3e0598f8b0f2c37b657586"
+  ],
+  "aoc/aoc_char_dev.c": [
+   "aoc",
+   "aoc_char_dev.c",
+   "bc35db683815fe68ef0872e09254e0fe52d29ce088678f742fa7b632f48e50f6"
+  ],
+  "aoc/aoc_control_dev.c": [
+   "aoc",
+   "aoc_control_dev.c",
+   "8d4128c0aba6ab1da3013390d4c7d6d404e0aa0efed29bcf31235a07d890ff6e"
+  ],
+  "aoc/aoc_dummy_drv.c": [
+   "aoc",
+   "aoc_dummy_drv.c",
+   "d1a82a202da5eb16486b6479d5fd2d3a7449f852122965e0bf12f92bdfb82126"
+  ],
+  "aoc/aoc_firmware.c": [
+   "aoc",
+   "aoc_firmware.c",
+   "59bfe3bb6bda772f071956b271ada30b3c0af823af033fa6ec337e8e31fe1bff"
+  ],
+  "aoc/aoc_firmware.h": [
+   "aoc",
+   "aoc_firmware.h",
+   "35715bf6ffb55346f953dbf1fe67150a19047416c80798c2507a1c3d4267cb50"
+  ],
+  "aoc/aoc_ramdump_regions.h": [
+   "aoc",
+   "aoc_ramdump_regions.h",
+   "1da5ec43f0c7d35eef47dcafb731ca56d1bbd28db2826c46ae662d078cb30b0b"
+  ],
+  "aoc/aoc_uwb_platform_drv.c": [
+   "aoc",
+   "aoc_uwb_platform_drv.c",
+   "be43a865b7d9951dff1419610356d0f14740206af6f5f3759d747f823eb0f014"
+  ],
+  "aoc/aoc_uwb_service_dev.c": [
+   "aoc",
+   "aoc_uwb_service_dev.c",
+   "0da8b766999a9da9ea8116df3dcae5928b5c5a54896c4de4028d007c365a5ed0"
+  ],
+  "aoc/aoc_uwb_service_dev.h": [
+   "aoc",
+   "aoc_uwb_service_dev.h",
+   "cc620600fb27f7e1cb698769ff88b8e73580cf052ab4e8dae6b17e173ee8be74"
+  ],
+  "aoc/ion_physical_heap.c": [
+   "aoc",
+   "ion_physical_heap.c",
+   "540befd65aedafaa958fedef7e3a1221f0d07ecf0b33f755708287f4f6a3dd6d"
+  ],
+  "aoc/ion_physical_heap.h": [
+   "aoc",
+   "ion_physical_heap.h",
+   "6a1c676c0435dfb9390a2ff0252a97e2c613bf1f776732bb20a2d245e45ef529"
+  ],
+  "aoc/mailbox-wc.c": [
+   "aoc",
+   "mailbox-wc.c",
+   "af1e42126d12283846d63130f62b248f68a18826dc6047ef35adca9dfbe465f1"
+  ],
+  "aoc/uapi/aoc.h": [
+   "aoc",
+   "uapi/aoc.h",
+   "ed2828e7e317b718327b02ed33a7a5fcbad03d65c2b371ef93231eebeb990386"
+  ],
+  "aoc/uapi/aoc_channel_dev.h": [
+   "aoc",
+   "uapi/aoc_channel_dev.h",
+   "2403de5af8f671d75fb11259335c641022343ffa04907397a57295fd4b24a13f"
+  ],
+  "aoc/usb/BUILD.bazel": [
+   "aoc",
+   "usb/BUILD.bazel",
+   "48a5a775988c3a4dd85905e22869e036f18586a1f6dccf4d7f47f5995467242f"
+  ],
+  "aoc/usb/Makefile": [
+   "aoc",
+   "usb/Makefile",
+   "fff61e460695d7d86bd2aca11ca599ed21569e837edd2365179cc4519af73dfb"
+  ],
+  "aoc/usb/aoc_usb.h": [
+   "aoc",
+   "usb/aoc_usb.h",
+   "5c503cc45eba5474e3b8e2c86e7d73b8af4d46ed19bf11d2e4a11b797bb56d0a"
+  ],
+  "aoc/usb/aoc_usb_dev.c": [
+   "aoc",
+   "usb/aoc_usb_dev.c",
+   "63c440c8726c5312cc31a7b497f4cfb4ada84d6b9358c6a8c710777e1aceb823"
+  ],
+  "aoc/usb/snd_usb_audio_hook_impl_whi.c": [
+   "aoc",
+   "usb/snd_usb_audio_hook_impl_whi.c",
+   "2edf85f50fa7e5b21964ee9ab4df3203d687144690881d8d41b180f7e8661aeb"
+  ],
+  "aoc/usb/usb_hooks_impl_whi.c": [
+   "aoc",
+   "usb/usb_hooks_impl_whi.c",
+   "325b7c0e5cb7b155a977f89d5c66e1a625e0800db847e2c2fc9c5dd589f8aef9"
+  ],
+  "aoc/usb/xhci_hooks_impl_whi.c": [
+   "aoc",
+   "usb/xhci_hooks_impl_whi.c",
+   "9fff06e048bb5a3d920669015f04ed232be280f17d80293f0c73fdf23e3441cd"
+  ],
+  "gsa/gsa_core.c": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/gsa_core.c",
+   "3ff6fa3f447e0a47bdf77ae708d1f8404b0a03d817d138b84c77e3c663c35d70"
+  ],
+  "gsa/gsa_mbox.c": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/gsa_mbox.c",
+   "26ecad4921fbfa4b375fb8b56965ea11c7b1fcdf620fed24b861944f411d61b3"
+  ],
+  "gsa/gsa_mbox.h": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/gsa_mbox.h",
+   "da3a8c6f1e528d8c2134c79b2d089e3d34ba35e8ba862112c287a8c91a4b1d79"
+  ],
+  "gsa/gsa_priv.h": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/gsa_priv.h",
+   "3cd944a5cf19bad61887de33fa815aa44521f5e02a4b0f6aab35355e6ad18e4b"
+  ],
+  "gsa/gsa_tz.c": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/gsa_tz.c",
+   "4626f4316ebe21f96606e3081f7b33b497d409bc8db87659a66316aea4950a8c"
+  ],
+  "gsa/gsa_tz.h": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/gsa_tz.h",
+   "ec2a2fff14cb6dab3eccdb106bf97e0e70ac1dd6f344a59d53d1f375425e01b9"
+  ],
+  "gsa/hwmgr-ipc.h": [
+   "lineage-gs201",
+   "drivers/soc/google/gsa/hwmgr-ipc.h",
+   "29ca72a5c61e7b55122d7d3a623f954a35a304700154027c4cca4d6874c105d3"
+  ],
+  "gsa/include/linux/gsa/gsa_aoc.h": [
+   "lineage-gs201",
+   "include/linux/gsa/gsa_aoc.h",
+   "151742720183b89a21ee0a0f9bb0b9f7bc4771ca2a4847784e16fa8d975b67a4"
+  ],
+  "gsa/include/linux/gsa/gsa_image_auth.h": [
+   "lineage-gs201",
+   "include/linux/gsa/gsa_image_auth.h",
+   "efcca67bca487c84395bdc01ff7e0ea42804f6c28416c45e38a2cd4103bdacfc"
+  ],
+  "gsa/include/linux/gsa/gsa_kdn.h": [
+   "lineage-gs201",
+   "include/linux/gsa/gsa_kdn.h",
+   "ef1abb09be4776171ef450f210f148b0dddd91f83668ec69d366017b864a76d6"
+  ],
+  "gsa/include/linux/gsa/gsa_sjtag.h": [
+   "lineage-gs201",
+   "include/linux/gsa/gsa_sjtag.h",
+   "b31fec54be26a05447da17d67eb80ba551f194e23504c2457e0636ace982abb1"
+  ],
+  "gsa/include/linux/gsa/gsa_tpu.h": [
+   "lineage-gs201",
+   "include/linux/gsa/gsa_tpu.h",
+   "a9c6fe6e86e6f56f8295f4b758521cca40b8d7a01c3fb4e2f080e611a05ddd5b"
+  ],
+  "trusty/include/linux/trusty/arm_ffa.h": [
+   "lineage-gs201",
+   "include/linux/trusty/arm_ffa.h",
+   "c990d12854040f8e75ccadaebe5bb230749e35b3bec2ea649422c2fb00d52f9f"
+  ],
+  "trusty/include/linux/trusty/sm_err.h": [
+   "lineage-gs201",
+   "include/linux/trusty/sm_err.h",
+   "fff1d7aef34dfacea819adda5ea55023a3f3e3debfee580e425e170bf057ced6"
+  ],
+  "trusty/include/linux/trusty/smcall.h": [
+   "lineage-gs201",
+   "include/linux/trusty/smcall.h",
+   "467d701f1952cb963a30b05ea29367cff4fcbb5393f3f36387f6bbc947e17e84"
+  ],
+  "trusty/include/linux/trusty/trusty.h": [
+   "lineage-gs201",
+   "include/linux/trusty/trusty.h",
+   "e5573d3865208b22bf137952f827342c220e072d61e900167d4c52db9cdd1917"
+  ],
+  "trusty/include/linux/trusty/trusty_ipc.h": [
+   "lineage-gs201",
+   "include/linux/trusty/trusty_ipc.h",
+   "c21791a86620f0cf58ae23d3a02a95e045b880a0a0029e5c523159f91476a54f"
+  ],
+  "trusty/include/uapi/linux/trusty/ipc.h": [
+   "lineage-gs201",
+   "include/uapi/linux/trusty/ipc.h",
+   "235c52a830cbaa4e273800a380c88ff05bb5d70bbe4fac57d0539b2033b422c0"
+  ],
+  "trusty/trusty-ipc-trace.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-ipc-trace.h",
+   "3a5021815451459331cd03996974255fc4e5635336f33d4857cf299b9efd6adf"
+  ],
+  "trusty/trusty-ipc.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-ipc.c",
+   "21c5f8de1f62145f1ada6870d9c77fbdc8514169910a7d4a90d23560d2832d61"
+  ],
+  "trusty/trusty-irq-trace.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-irq-trace.h",
+   "56df733920071f666fbe25b6183f542d1236565fcb1bc1670e2d2bac54e2da90"
+  ],
+  "trusty/trusty-irq.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-irq.c",
+   "923e01dec6ed634e0cf428f982367154481e3bffc2ba9e081e9feb44cddf6b25"
+  ],
+  "trusty/trusty-irq.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-irq.h",
+   "4e5376db8a0438bf5e68c1425a0356515615a29cf4766cbbf0b4e94821b59278"
+  ],
+  "trusty/trusty-log.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-log.c",
+   "ecbf0ba80ac4b46ec36e84fc343f049e7ef12033e3795cd41f28934101b355e7"
+  ],
+  "trusty/trusty-log.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-log.h",
+   "e3539d9dfae9f89e5f99c3a8fe666ba498eda977c613c4a84a63ca1df918e190"
+  ],
+  "trusty/trusty-mem.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-mem.c",
+   "b1dfee67b50256cffc69fa92f5547233d8055ce4d6a883a0a09e663b616831f6"
+  ],
+  "trusty/trusty-sched-share-api.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-sched-share-api.h",
+   "b85e475fce79a3918bce692e8518e6face1fe9ea409ee951385788549ecef3d4"
+  ],
+  "trusty/trusty-sched-share.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-sched-share.c",
+   "066738c6aa8a9c98259074d13e5d731749ae40ec4f1f66482d1670b9a16f403f"
+  ],
+  "trusty/trusty-sched-share.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-sched-share.h",
+   "02833b39bdf23b927623fce87a0a69bf89e22dd829b1f667325660903380b331"
+  ],
+  "trusty/trusty-smc-arm64.S": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-smc-arm64.S",
+   "53a51bf0887292f7742063dbdbf6c946d3475a81c077dc3dd30ac532baecfe54"
+  ],
+  "trusty/trusty-smc.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-smc.h",
+   "fcb98edf16afbc26bbbade4e7d0dd73ef7e5ced6aafa66fca9c8f6c7eb06a241"
+  ],
+  "trusty/trusty-trace.h": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-trace.h",
+   "1f979ad160b232e6e41dfda405ba62cb6ee43b52ac1e7f44ffc0e3ba5e9bfefe"
+  ],
+  "trusty/trusty-virtio.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty-virtio.c",
+   "494e5b4c49837956b6d2e9f862ff3114554c847adda7b8585ab1b37806111524"
+  ],
+  "trusty/trusty.c": [
+   "lineage-gs201",
+   "drivers/trusty/trusty.c",
+   "47e649a1d7915f9fac44f2704fa1fe5cbe612def8fd5e9f638f16b671af3c22f"
+  ]
+ }
+}

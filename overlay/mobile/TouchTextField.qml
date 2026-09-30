@@ -13,6 +13,22 @@ TextField {
     signal editingRequested()
     signal copyRequested(string text)
     readOnly: !editing && !selecting
+    // Themed by default (Qt's own field is white); a caller can still override.
+    color: MobileTheme.foreground
+    placeholderTextColor: MobileTheme.secondary
+    selectionColor: MobileTheme.selection
+    selectedTextColor: MobileTheme.foreground
+    font.family: MobileTheme.fontFamily
+    font.pixelSize: 16
+    leftPadding: 14
+    rightPadding: 14
+    implicitHeight: 50
+    background: Rectangle {
+        radius: MobileTheme.radius(12)
+        color: MobileTheme.surface
+        border.width: 1
+        border.color: field.editing ? MobileTheme.accent : MobileTheme.muted
+    }
     persistentSelection: true
     selectByMouse: true
     focusPolicy: Qt.NoFocus
@@ -81,8 +97,8 @@ TextField {
         radius: MobileTheme.radius(12)
         x: field.selecting ? Math.max(0, Math.min(field.width - width, field.caretRect(field.selectionStart).x - 8)) : 0
         y: field.selecting ? Math.max(-44, field.caretRect(field.selectionStart).y - 44) : 0
-        color: "#24283b"
-        border.color: "#414868"
+        color: MobileTheme.surface
+        border.color: MobileTheme.muted
         Row {
             id: tools
             anchors.centerIn: parent
@@ -96,7 +112,7 @@ TextField {
                 Text {
                     required property var modelData
                     text: modelData.label
-                    color: modelData.enabled ? "#c0caf5" : "#565f89"
+                    color: modelData.enabled ? MobileTheme.foreground : MobileTheme.secondary
                     font.pixelSize: 14
                     font.bold: true
                     TapHandler {
@@ -122,7 +138,7 @@ TextField {
             width: 22
             height: 22
             radius: MobileTheme.radius(11)
-            color: "#7aa2f7"
+            color: MobileTheme.accent
             x: drag.active ? grabX + drag.translation.x : field.caretRect(modelData).x - width / 2
             y: field.caretRect(modelData).y + field.caretRect(modelData).height - 6
             DragHandler {

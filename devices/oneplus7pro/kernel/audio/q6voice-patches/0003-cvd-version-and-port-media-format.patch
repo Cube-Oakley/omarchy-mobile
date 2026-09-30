@@ -1,0 +1,251 @@
+diff -ruN a/q6cvp.c b/q6cvp.c
+--- a/q6cvp.c	2026-09-27 01:23:46.041018289 -0700
++++ b/q6cvp.c	2026-09-27 11:13:05.196903520 -0700
+@@ -46,6 +46,18 @@
+ 
+ #define VSS_NUM_CHANNELS_MAX 8
+ 
++/*
++ * The AFE ports as the machine driver runs them: every back end is fixed at
++ * 48 kHz, two channels, 24 bits. CVD 2.3+ must be told, or it assumes
++ * another format for the port.
++ */
++static int port_rate = 48000;
++module_param(port_rate, int, 0644);
++static int port_channels = 2;
++module_param(port_channels, int, 0644);
++static int port_bits = 24;
++module_param(port_bits, int, 0644);
++
+ struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
+ 	struct apr_hdr hdr;
+ 
+@@ -276,27 +288,15 @@
+ 	cmd.param_data.reserved = 0;
+ 
+ 	cmd.param_data.media_format_info.port_id = port_id;
+-
+-	if (is_tx)
+-		cmd.param_data.media_format_info.num_channels = 1;
+-	else
+-		cmd.param_data.media_format_info.num_channels = 2;
+-
+-	cmd.param_data.media_format_info.bits_per_sample = 16;
+-	cmd.param_data.media_format_info.sample_rate = 48000;
+-	cmd.param_data.media_format_info.channel_mapping[0] = 1;
+-
+-	if (is_tx)
+-		cmd.param_data.media_format_info.channel_mapping[1] = 0;
+-	else
+-		cmd.param_data.media_format_info.channel_mapping[1] = 1;
+-
+-	cmd.param_data.media_format_info.channel_mapping[2] = 0;
+-	cmd.param_data.media_format_info.channel_mapping[3] = 0;
+-	cmd.param_data.media_format_info.channel_mapping[4] = 0;
+-	cmd.param_data.media_format_info.channel_mapping[5] = 0;
+-	cmd.param_data.media_format_info.channel_mapping[6] = 0;
+-	cmd.param_data.media_format_info.channel_mapping[7] = 0;
++	cmd.param_data.media_format_info.num_channels = clamp(port_channels, 1, VSS_NUM_CHANNELS_MAX);
++	cmd.param_data.media_format_info.bits_per_sample = port_bits;
++	cmd.param_data.media_format_info.sample_rate = port_rate;
++	memset(cmd.param_data.media_format_info.channel_mapping, 0,
++	       sizeof(cmd.param_data.media_format_info.channel_mapping));
++	/* PCM_CHANNEL_FL = 1, FR = 2, ... in order. */
++	for (int i = 0; i < cmd.param_data.media_format_info.num_channels; i++)
++		cmd.param_data.media_format_info.channel_mapping[i] = i + 1;
++	(void)is_tx;
+ 
+ 	return q6voice_common_send(cvp, &cmd.hdr);
+ }
+diff -ruN a/q6voice.c b/q6voice.c
+--- a/q6voice.c	2026-09-27 11:13:05.181487621 -0700
++++ b/q6voice.c	2026-09-27 11:13:05.196934468 -0700
+@@ -43,6 +43,8 @@
+ struct q6voice {
+ 	struct device *dev;
+ 	bool cvd_v2_3;
++	/* From the ADSP: 0 unknown, 1 older than 2.3, 2 at least 2.3 */
++	int cvd_detected;
+ 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
+ };
+ 
+@@ -60,16 +62,15 @@
+ 	struct q6voice_session *cvp;
+ 
+ 	cvp = q6cvp_session_create_v3(type, tx_port, rx_port, tx_topo, rx_topo);
+-	if (cvp == NULL)
+-		return NULL;
++	if (IS_ERR(cvp))
++		return cvp;
+ 
+-	q6cvp_send_channel_info(cvp, false);
+-	q6cvp_send_channel_info(cvp, true);
+-
+-	q6cvp_send_media_format(cvp, rx_port, false);
+-	q6cvp_send_media_format(cvp, tx_port, true);
+-
+-	q6cvp_topology_commit(cvp);
++	if (q6cvp_send_channel_info(cvp, false) ||
++	    q6cvp_send_channel_info(cvp, true) ||
++	    q6cvp_send_media_format(cvp, rx_port, false) ||
++	    q6cvp_send_media_format(cvp, tx_port, true) ||
++	    q6cvp_topology_commit(cvp))
++		dev_warn(cvp->dev, "vocproc v3 setup incomplete\n");
+ 
+ 	return cvp;
+ }
+@@ -80,11 +81,7 @@
+ 	struct q6voice_session *mvm, *cvp;
+ 	int ret;
+ 
+-	bool v3 = cvd_version < 0 ? p->v->cvd_v2_3 : cvd_version > 0;
+-
+-	dev_info(dev, "start path %d: tx port %#x rx port %#x, vocproc %s\n",
+-		 p->type, q6afe_get_port_id(p->tx_port),
+-		 q6afe_get_port_id(p->rx_port), v3 ? "v3" : "v2");
++	bool v3;
+ 
+ 	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
+ 	if (!mvm) {
+@@ -94,14 +91,37 @@
+ 		p->runtime->sessions[Q6VOICE_SERVICE_MVM] = mvm;
+ 	}
+ 
++	/* As downstream: CVD 2.3 and later get the v3 vocproc with port formats. */
++	if (!p->v->cvd_detected) {
++		char version[32] = "";
++		int major = 0, minor = 0;
++
++		if (!q6voice_common_get_version(mvm, version, sizeof(version)) &&
++		    sscanf(version, "%d.%d", &major, &minor) == 2) {
++			p->v->cvd_detected = (major > 2 || (major == 2 && minor >= 3)) ? 2 : 1;
++			dev_info(dev, "CVD version %s\n", version);
++		} else {
++			dev_info(dev, "CVD version unknown\n");
++			p->v->cvd_detected = 1;
++		}
++	}
++	v3 = cvd_version >= 0 ? cvd_version > 0 : (p->v->cvd_v2_3 || p->v->cvd_detected == 2);
++
++	dev_info(dev, "start path %d: tx port %#x rx port %#x, vocproc %s\n",
++		 p->type, q6afe_get_port_id(p->tx_port),
++		 q6afe_get_port_id(p->rx_port), v3 ? "v3" : "v2");
++
+ 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
+ 	if (!cvp) {
+-		if (v3)
++		if (v3) {
+ 			cvp = session_create_v3(p->type,
+ 						q6afe_get_port_id(p->tx_port),
+ 						q6afe_get_port_id(p->rx_port),
+ 						p->tx_topo, p->rx_topo);
+-		else
++			if (IS_ERR(cvp))
++				dev_warn(dev, "vocproc v3 refused (%ld), trying v2\n", PTR_ERR(cvp));
++		}
++		if (!v3 || IS_ERR(cvp))
+ 			cvp = session_create(p->type,
+ 					     q6afe_get_port_id(p->tx_port),
+ 					     q6afe_get_port_id(p->rx_port),
+diff -ruN a/q6voice-common.c b/q6voice-common.c
+--- a/q6voice-common.c	2026-09-27 11:13:05.179929320 -0700
++++ b/q6voice-common.c	2026-09-27 11:13:05.196867793 -0700
+@@ -8,6 +8,8 @@
+ #include "q6voice-common.h"
+ 
+ #define APRV2_IBASIC_CMD_DESTROY_SESSION	0x0001003C
++#define VSS_IVERSION_CMD_GET			0x00011378
++#define VSS_IVERSION_RSP_GET			0x00011379
+ 
+ #define TIMEOUT_MS	300
+ 
+@@ -167,6 +169,19 @@
+ 	struct aprv2_ibasic_rsp_result_t *result = data->payload;
+ 	unsigned long flags;
+ 
++	if (data->hdr.opcode == VSS_IVERSION_RSP_GET) {
++		spin_lock_irqsave(&s->lock, flags);
++		if (s->expected_opcode == VSS_IVERSION_CMD_GET) {
++			memcpy(s->version, data->payload,
++			       min_t(size_t, max(data->payload_size, 0), sizeof(s->version) - 1));
++			s->result = 0;
++			s->expected_opcode = 0;
++		}
++		spin_unlock_irqrestore(&s->lock, flags);
++		wake_up(&s->wait);
++		return;
++	}
++
+ 	if (data->hdr.opcode != APR_BASIC_RSP_RESULT)
+ 		return; /* Not handled here */
+ 
+@@ -230,7 +245,7 @@
+ }
+ EXPORT_SYMBOL_GPL(q6voice_common_callback);
+ 
+-int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr)
++static int q6voice_send(struct q6voice_session *s, struct apr_hdr *hdr, u16 dest)
+ {
+ 	unsigned long flags;
+ 	int ret;
+@@ -238,7 +253,7 @@
+ 	hdr->hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+ 				       APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+ 	hdr->src_port = s->port;
+-	hdr->dest_port = s->handle;
++	hdr->dest_port = dest;
+ 	hdr->token = 0;
+ 
+ 	spin_lock_irqsave(&s->lock, flags);
+@@ -265,8 +280,30 @@
+ 
+ 	return 0;
+ }
++
++int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr)
++{
++	return q6voice_send(s, hdr, s->handle);
++}
+ EXPORT_SYMBOL_GPL(q6voice_common_send);
+ 
++/* The service's CVD version ("2.3"), as downstream asks it: not a session command. */
++int q6voice_common_get_version(struct q6voice_session *s, char *buf, size_t len)
++{
++	struct apr_pkt cmd = {};
++	int ret;
++
++	cmd.hdr.pkt_size = APR_HDR_SIZE;
++	cmd.hdr.opcode = VSS_IVERSION_CMD_GET;
++	memset(s->version, 0, sizeof(s->version));
++
++	ret = q6voice_send(s, &cmd.hdr, 0);
++	if (!ret)
++		strscpy(buf, s->version, len);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(q6voice_common_get_version);
++
+ MODULE_AUTHOR("Stephan Gerhold <stephan@gerhold.net>");
+ MODULE_DESCRIPTION("Q6Voice common session management");
+ MODULE_LICENSE("GPL");
+diff -ruN a/q6voice-common.h b/q6voice-common.h
+--- a/q6voice-common.h	2026-09-27 11:13:05.179978482 -0700
++++ b/q6voice-common.h	2026-09-27 11:13:05.196817869 -0700
+@@ -28,6 +28,9 @@
+ 	spinlock_t lock;
+ 	u32 expected_opcode;
+ 	u32 result;
++
++	/* The CVD version string, filled by q6voice_common_get_version() */
++	char version[32];
+ };
+ 
+ int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type);
+@@ -35,6 +38,7 @@
+ 
+ int q6voice_common_callback(struct apr_device *adev, struct apr_resp_pkt *data);
+ int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr);
++int q6voice_common_get_version(struct q6voice_session *s, char *buf, size_t len);
+ 
+ struct q6voice_session *q6voice_session_create(enum q6voice_service_type type,
+ 					       enum q6voice_path_type path,

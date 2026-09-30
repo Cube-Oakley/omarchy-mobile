@@ -27,13 +27,21 @@ Recovery uses the bootloader and saved host images. See the
 | Display | Native 1440×3120 DMA scanout, real page flips, validated 60/120 Hz modes and memory-bandwidth floor. |
 | Wayland | Hyprland on Mali-G710 MC7, shared mobile shell and clean fullscreen animation at 119.6–120.2 fps; older software-rendered fallback preserved. |
 | CPU/thermal | Three bounded cpufreq policies, schedutil, seven thermal zones and cooling tests. |
-| Power key/display sleep | S2MPG12 press/release, panel off/on and clean shared CRT transitions confirmed; CPU stays awake. |
+| Keys/display sleep | Power and volume keys on wake-up interrupts ([keys](kernel/keys/README.md)); panel off/on with clean CRT transitions, and the panel sleeps in while the screen is off. |
+| System sleep | Guarded s2idle while unplugged; calls and SMS wake the AP, and power-key/RTC wake work. Repeated Wi-Fi resume is fixed. Power savings remain modest; deep SoC sleep is unfinished. See [suspend results](docs/suspend-20260929.md). |
+| Brightness | Panel DBV as a backlight device; the shell's slider works and its level is restored. |
+| Flashlight | LM3644 on hsi2c_15 ([torch](kernel/torch/README.md)). |
+| Vibration | CS40L26A ROM effects on hsi2c_8 ([haptics](kernel/haptics/README.md)). |
 | Internal storage | All UFS logical units discovered; boot hashes match and ext4 write/remount/readback passes. The installed Arch desktop runs from userdata; proof files survive reset and recovery RAM boot. |
-| Physical touch | S3908 GPIO SPI input reached Hyprland; user confirmed response, but it is slow. |
-| USB | DWC3 peripheral using inherited PHY state; concurrent USB2 CDC-ACM and CDC-ECM Ethernet. |
+| Physical touch | S3908 on the SPI0 controller with its attention interrupt: about 240 Hz, user-confirmed smooth. |
+| USB | DWC3 peripheral; the kernel brings up the USB 2 PHY on a normal boot (fastboot's is inherited); concurrent USB2 CDC-ACM and CDC-ECM Ethernet. |
 | Shell | Native root BusyBox shell, job control, RAM files, shell restart after exit, command exit-status reporting. |
 | Arch userspace | Same cached Arch Linux ARM base as OnePlus; native Bash, glibc, pacman and OpenSSH. |
 | Network transfer | Private USB link, key-only SSH, 8 MiB SFTP roundtrip with matching hashes. |
+| Wi-Fi | BCM4389 on PCIe channel 1 with mainline brcmfmac and the stock firmware; starts at boot under NetworkManager. 5 GHz, about 90 Mbit/s both ways (the home network's limit). Firmware deep sleep and L1.2 cut its idle cost to about 0.1 W. See [v24](kernel/wifi-v24/README.md) and [v25](kernel/sleep-v25/README.md). |
+| Audio | Built-in microphones and both speakers through the AoC audio DSP, with Google's AoC drivers ported ([aoc](kernel/aoc/README.md)). Both CS35L41 amplifiers run their protection firmware with the factory calibration and the stock gain ([audio](kernel/audio/README.md)). PipeWire uses a UCM profile. Starts at boot. |
+| Sensors | Accelerometer, gyroscope, magnetometers, barometer, proximity and light through the AoC's sensor framework, with a USF client written from the stock library; iio-sensor-proxy's D-Bus API for the shell, whose rotation works ([sensors](sensors/README.md)). Starts at boot. The display-synced light and proximity sensor stopped converting on 2026-09-29, so automatic brightness waits on it (see the [status](docs/status.md)). |
+| Bluetooth | BCM4389 on UART18 with Google's patch firmware at 3 Mbaud; BlueZ and PipeWire ([bluetooth](kernel/bluetooth/README.md)). Pairing is still to be tested by hand. |
 | Boot watchdogs | Both inherited AP watchdogs stopped; two-minute runtime verified before the longer shell test. |
 | Recovery | Power + Volume Down reaches the bootloader; verified host images are retained. Android userdata has been replaced. |
 

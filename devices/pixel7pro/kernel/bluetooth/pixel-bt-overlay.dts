@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * UART18 (the BCM4389's Bluetooth UART) for mainline samsung_tty and hci_bcm,
+ * applied by pixel-bt.ko once it has set up the USI, the pins and the power.
+ * A new node: the stock serial@181B0000 lists pin states on a pin controller
+ * without a mainline driver, so a device bound to it would wait forever.
+ *
+ * The UART clock is CMU_APM DIV_CLK_APM_USI1_UART (ratio 2) of APM_FUNC,
+ * which the bootloader leaves on PLL_ALV/2: 197 MHz. GIC SPI 69 and the
+ * 256-byte FIFO are the stock node's.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	pixel_bt_clk: pixel-bt-uart-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <197000000>;
+		clock-output-names = "pixel_bt_uart";
+	};
+
+	pixel-bt-uart@181b0000 {
+		compatible = "google,gs101-uart";
+		reg = <0x0 0x181b0000 0x100>;
+		reg-io-width = <4>;
+		interrupts = <0 69 4>;
+		clocks = <&pixel_bt_clk>, <&pixel_bt_clk>;
+		clock-names = "uart", "clk_uart_baud0";
+		samsung,uart-fifosize = <256>;
+
+		bluetooth {
+			/* btbcm streams the BCM4389's Write RAM records without
+			 * waiting for replies (its minidriver sends none) and
+			 * loads brcm/BCM.hcd, the name Google's vendor image
+			 * uses for the BCM4389C1 firmware. The streamed records
+			 * queue ahead of Launch RAM, whose reply must arrive
+			 * within 10 s, so the download runs at 3 Mbaud.
+			 */
+			compatible = "brcm,bcm4389-bt";
+			max-speed = <3000000>;
+		};
+	};
+};

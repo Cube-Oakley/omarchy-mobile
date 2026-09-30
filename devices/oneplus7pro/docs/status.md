@@ -1,5 +1,49 @@
 # Checkpoint — 2026-09-17
 
+**September 27 sleep:** [sleep, charging and battery](sleep-20260927.md).
+The phone charges to full on the stock profile (4.39 V; 2 A from a wall
+charger) and can hold at 80 %. It sleeps (s2idle) 10 s after the screen goes
+dark, with a screen timeout and a 15-minute background wake; incoming calls
+and texts wake it through a QRTR wake filter. Suspend had been crashing the
+modem, because genpd re-voted MSS at the top corner on resume (`mss_vote.ko`
+now follows the domain), and the sensor DSP, because the freezer restarted a
+FastRPC invoke (freezable wait). Text and missed-call notifications had never
+posted (a gdbus argument bug); now fixed.
+
+**September 27 calling:** [texts, calls and the phone apps](calling-20260927.md).
+VoLTE calls work with audio both ways (earpiece, microphone, speaker, mute),
+with the proximity sensor blanking the screen at the ear; SMS works both ways.
+Omarchy-themed Phone, Messages and Contacts apps and a shell incoming-call
+screen are installed. Call audio is sdm845's q6voice (VoiceMMode1) with four
+patches; the uplink needed TX topology NONE (the default ECNS topology is
+silent without calibration, and the network then drops the call on an RTCP
+timeout at ~21 s). A SLIMbus enumeration race is fixed. USB does not come up
+after a forced reset (cause still open), so SSH now also works over Wi-Fi
+(static address, DHCP/Static in Settings) and the port-23 shell is USB-only.
+Never dial or text a number the user has not approved.
+
+**September 27 cellular:** [data and IMS](cellular-sim-20260926.md#third-round-data-and-ims-working).
+The QLink assertion was the AP holding the modem rail (`mss.lvl`) at its top
+corner (rpmhpd before `sync_state`); `mss_vote.ko` releases it. The
+registration drop was the missing IPA data path; IPA now loads before the
+modem. Data needed DPM Open Port, WDA QMAPv4 and an `ipv6.ko` built from the
+#194 tree. ModemManager + NetworkManager now bring up mobile data at boot
+(IPv6 and IPv4 HTTPS 200), and an IMS DCM server (`phone-qmi.py ims-dcm`)
+lets the modem register IMS: SMS and voice at full service. Call audio next.
+
+**September 26 SIM:** [first SIM](cellular-sim-20260926.md). The Tello card
+reads (USIM and ISIM, no PIN, no SIM lock); opening the USIM session makes the
+modem fetch and activate `Commercial-TMO` itself. Online, it registered on LTE
+(310-260 "Tello", CS and PS attached) in three seconds, then asserted 103 s
+later: `RFLM@qsf_hl_seq.c:118 (rflm_qlnk_ls_retry_cnt < 2)`, the 7T Pro's
+QLink failure, now with the right profile active. Pins, TLMM routing, QLink
+clkref, unused-resource cleanup, LDO modes and LLCC all match stock. The slot A
+Android test is unsafe: the Arch root is `userdata`. The modem's own DIAG log
+(diag-router at boot, opt-in, decoded with the image's qdb) shows QLink's
+low-speed link start failing on the first RF wakeup after the modem has idled;
+modem recovery panics the kernel and stays off. See the doc for the tools and
+the incidents (a whole-SMEM read rebooted the phone).
+
 **September 24 ultra-wide:** [the IMX481](camera-ultrawide-20260924.md) works
 from runtime modules on the second camera control interface: full 4656x3496
 frames at 30 fps, upright merged photos. Its AK7374 focus actuator, which the

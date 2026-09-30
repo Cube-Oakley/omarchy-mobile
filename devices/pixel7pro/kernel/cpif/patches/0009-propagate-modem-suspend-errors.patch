@@ -1,0 +1,19 @@
+--- a/cpif/modem_main.c
++++ b/cpif/modem_main.c
+@@ -947,9 +947,13 @@
+ static int modem_suspend(struct device *pdev)
+ {
+ 	struct modem_ctl *mc = dev_get_drvdata(pdev);
+-
+-	if (mc->ops.suspend)
+-		mc->ops.suspend(mc);
++	int ret;
++
++	if (mc->ops.suspend) {
++		ret = mc->ops.suspend(mc);
++		if (ret)
++			return ret;
++	}
+ 
+ #if defined(CPIF_WAKEPKT_SET_MARK)
+ 	atomic_set(&mc->mark_skb_wakeup, 1);

@@ -2,7 +2,8 @@
 # Build-only: the sensor DSP's kernel pieces for the running native5 kernel
 # (docs/sensors-20260924.md):
 #   guacamole_slpi.ko   overlay that starts SLPI, only on kernel #193+
-#   fastrpc.ko          the sensors domain's messages from the reserved pool
+#   fastrpc.ko          the sensors domain's messages from the reserved pool;
+#                       a waiting invoke survives system suspend
 #   qcom_pd_mapper.ko   SM8150's table with SLPI's protection domains; it
 #                       replaces the radio set's copy, which loads at boot
 #   guacamole_smem_info.ko  read-only copies of the bootloader's project
@@ -37,6 +38,7 @@ make_modules "$WORK/overlay"
 
 cp "$KERNEL/drivers/misc/fastrpc.c" "$WORK/fastrpc/"
 patch -s -p3 -d "$WORK/fastrpc" < "$SRC/fastrpc-sensors-pool.patch"
+patch -s -p3 -d "$WORK/fastrpc" < "$SRC/fastrpc-freezable-wait.patch"
 printf 'obj-m += fastrpc.o\n' > "$WORK/fastrpc/Makefile"
 make_modules "$WORK/fastrpc"
 

@@ -26,6 +26,17 @@ Current controls:
   [Wayland backend patch](kitty-touch/README.md). New terminals launched by
   the mobile session opt in; already running terminals need reopening.
 
+Touch with several fingers needs [`touch-fingers`](touch-fingers/main.cpp),
+a Hyprland plugin. Hyprland 0.56 sends every finger's moves and lift to
+wherever the last finger landed. A finger on the shell and one on an app (a
+grip on the screen's edge while tapping) then leave the shell without a lift,
+and it ignores taps from then on. The plugin sends each finger's moves and
+lift to the surface it went down on. `install.sh` builds it against the
+installed Hyprland, which needs g++, make and Hyprland's headers, and the
+Hyprland configuration loads it. After a Hyprland update, run `install.sh`
+again: Hyprland refuses a plugin built for another version and shows a
+notification.
+
 Configuration is installed as `~/.config/quickshell/omarchy-mobile/`; the
 session starts with `~/.local/bin/omarchy-mobile-session launch`. The default
 Quickshell configuration on this phone is only the OnePlus bootstrap wrapper.
@@ -36,7 +47,7 @@ the current user's XDG paths and backs up affected configuration under
 hardware. On a standard desktop, arrange startup of this shell and avoid
 running a second desktop/navigation shell over it.
 
-Dependencies: Hyprland 0.56 Lua, Quickshell 0.3, Qt Quick/Controls, Kitty,
+Dependencies: Hyprland 0.56 Lua (with its headers for touch-fingers), Quickshell 0.3, Qt Quick/Controls, Kitty,
 Python 3.11+, util-linux, procps-ng, Fastfetch, and wvkbd. The keyboard was built
 from upstream commit `6b41504a0cb58fd1163fa44692398fbd61f8905f`, using:
 

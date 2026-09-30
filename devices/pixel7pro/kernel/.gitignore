@@ -1,0 +1,8 @@
+# Out-of-tree module builds (make M=...) leave these beside the sources.
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+Module.symvers
+modules.order

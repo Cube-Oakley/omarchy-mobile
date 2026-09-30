@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
-"""Shared power-key interaction; hardware policy lives in an optional adapter."""
+"""Tap to change display state; hold two seconds for the power menu.
+
+Sleeping is not done here. The sleep policy (omarchy-mobile-sleep) suspends
+through the device adapter once the screen has stayed dark for a few seconds,
+and a power-key wake reaches this as an ordinary press on a dark screen.
+"""
 import argparse
 import fcntl
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
+
+HOLD_SECONDS = 2.0
 
 
 class PowerButton:
     def __init__(self):
         self.runtime = Path(os.environ.get('XDG_RUNTIME_DIR', f'/run/user/{os.getuid()}'))
         config = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config')))
-        self.adapter = config / 'omarchy-mobile/suspend'
         self.display = str(Path.home() / '.local/bin/omarchy-mobile-display')
         self.prefs = config / 'omarchy-mobile/prefs.json'
+        self.shell = config / 'quickshell/omarchy-mobile/shell.qml'
         # Present while the always-on display shows (omarchy-mobile-display).
         self.ambient = self.runtime / 'omarchy-mobile-ambient'
         self.state = self.runtime / 'omarchy-mobile-power.json'
@@ -67,63 +75,74 @@ class PowerButton:
             self.set_display('ambient')
             self.record('ambient')
             return
-        # The close has to start before suspend policy. That check used to run first.
-        visual = self.start_display('off')
-        if not os.access(self.adapter, os.X_OK):
-            visual.wait(timeout=8)
-            self.record('display-off', reason='No suspend adapter installed')
-            return
-        ready = subprocess.run([str(self.adapter), '--check'], capture_output=True, text=True, timeout=10)
-        if ready.returncode:
-            visual.wait(timeout=8)
-            self.record('display-off', reason=(ready.stdout + ready.stderr).strip())
-            return
-        try:
-            visual.wait(timeout=8)
-            command = [str(self.adapter)]
-            alarm = self.runtime / 'omarchy-mobile-power-test-alarm'
-            if alarm.exists():
-                seconds = int(alarm.read_text())
-                if not 10 <= seconds <= 600:
-                    raise RuntimeError('Invalid test wake alarm')
-                command += ['--wake-after', str(seconds)]
-            self.record('suspend-start', fallback_alarm=alarm.exists())
-            result = subprocess.run(command)
-            self.record('suspend-return', exit_code=result.returncode)
-        finally:
-            if visual.poll() is None:
-                visual.wait(timeout=8)
-            self.save({'ignore_until': time.monotonic() + 2})
-            self.set_display('on')
+        self.start_display('off').wait(timeout=8)
+        self.record('display-off')
+
+    def start_hold(self, token):
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'hold', str(token)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def show_menu(self):
+        self.set_display('wake')
+        subprocess.run(['quickshell', 'ipc', '-n', '-p', str(self.shell),
+                        'call', 'mobile', 'powerMenu'], check=True, timeout=5)
+        self.record('power-menu')
+
+    def hold(self, token):
+        time.sleep(HOLD_SECONDS)
+        with (self.runtime / 'omarchy-mobile-power.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = self.load()
+            if state.get('pressed') != token or state.get('held'):
+                return
+            if not HOLD_SECONDS <= time.monotonic() - token < 60:
+                return
+            state['held'] = True
+            self.save(state)
+            self.show_menu()
 
     def event(self, event):
-        with (self.runtime / 'omarchy-mobile-power.lock').open('w') as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return  # Includes key events during suspend/resume.
-            state = self.load()
-            now = time.monotonic()
-            if now < state.get('ignore_until', 0):
-                self.record('ignored-resume-event', event=event)
-                return
-            if event == 'press':
-                self.save({'pressed': now})
-                return
-            self.save({})
-            if 'pressed' not in state or not 0 <= now - state['pressed'] < 60:
-                self.record('ignored-unpaired-release')
-                return
-            self.act()
+        # One process per key event. The press that wakes the phone and its
+        # release arrive together once it is awake, so each waits its turn
+        # for the lock, and a release that finds no press yet gives the press
+        # of its pair a moment to be recorded.
+        for attempt in range(2):
+            with (self.runtime / 'omarchy-mobile-power.lock').open('w') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                state = self.load()
+                now = time.monotonic()
+                if event == 'press':
+                    if 'pressed' in state and 0 <= now - state['pressed'] < 60:
+                        return  # Ignore repeat events while the key is held.
+                    self.save({'pressed': now})
+                    self.start_hold(now)
+                    return
+                if 'pressed' in state and 0 <= now - state['pressed'] < 60:
+                    self.save({})
+                    if not state.get('held'):
+                        if now - state['pressed'] >= HOLD_SECONDS:
+                            self.show_menu()  # Timer was delayed by scheduling.
+                        else:
+                            self.act()
+                    return
+            if attempt == 0:
+                time.sleep(0.4)
+        self.record('ignored-unpaired-release')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('event', choices=('press', 'release'))
+    parser.add_argument('event', choices=('press', 'release', 'hold'))
+    parser.add_argument('token', nargs='?', type=float)
     args = parser.parse_args()
     button = PowerButton()
     try:
-        button.event(args.event)
+        if args.event == 'hold':
+            if args.token is None: parser.error('hold requires a press token')
+            button.hold(args.token)
+        else:
+            button.event(args.event)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         button.record('error', detail=str(error))
         # Errors should leave a usable screen, never silently reattempt sleep.

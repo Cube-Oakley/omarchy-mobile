@@ -1,0 +1,308 @@
+{
+ "comment": "Upstream files of the cpif (GS201 modem interface) port, by path in the assembled tree: [repository, upstream path, sha256].",
+ "repos": {
+  "lineage-gs201": {
+   "about": "LineageOS android_kernel_google_gs201, branch lineage-21 (Google's gs201 kernel): drivers/soc/google/cpif and the vendor headers it includes",
+   "commit": "40ff93424549ffebfbba32e9435dfc58c40decb2",
+   "url": "https://raw.githubusercontent.com/LineageOS/android_kernel_google_gs201/{commit}/{path}",
+   "encoding": "raw"
+  }
+ },
+ "files": {
+  "cpif/Kconfig": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/Kconfig",
+   "5bc2248ba29e7fd177a5f8ae6dd258565c09a05c4192847954eaf8734ec17dc3"
+  ],
+  "cpif/Makefile": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/Makefile",
+   "bbfaa313f1b178971f974ca632be848e0a2a521e23a6eb6e377e6ea5e7e28f86"
+  ],
+  "cpif/boot_device_spi.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/boot_device_spi.h",
+   "765333d3475bacee9413a2540498dd2ee6d260cea513ddb3510e4b4c71cdc6ee"
+  ],
+  "cpif/bootdump_io_device.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/bootdump_io_device.c",
+   "3d262a995873cd4306ed2abde26236434ca3c084bddac93d3e1af170c06cefed"
+  ],
+  "cpif/cp_btl.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cp_btl.h",
+   "4292799fc1ba7af70e73c6b32c55566c29c39b36de7643f659b2fca5e8c037d4"
+  ],
+  "cpif/cpif_netrx_mng.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cpif_netrx_mng.h",
+   "83c7b9b8ca26c132cd7ea6da48f5dcfa042e43d4a91134124b007cc334185b0e"
+  ],
+  "cpif/cpif_page.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cpif_page.c",
+   "ebb03dc7af0a9de041f8418d891ca2c7a14b5b476db7eecaa6f22924d982d7fd"
+  ],
+  "cpif/cpif_page.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cpif_page.h",
+   "fc3c091f1dd5db19214ac6aeabc2d568c2852e218a5c89b0261523a72b05c74f"
+  ],
+  "cpif/cpif_tp_monitor.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cpif_tp_monitor.h",
+   "d10d67231f49463a797479ccec6cea8b498ecd9d246c163d85c1c86bdb57e696"
+  ],
+  "cpif/cpif_version.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cpif_version.h",
+   "0ca80e8698a3a7b67440a28ad13400212c7b11cad9c3f8c54c6e2f24cfbfc274"
+  ],
+  "cpif/cpif_vmapper.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/cpif_vmapper.h",
+   "0bda8774b714821d79c1dd5eb4578de0673c87becd4e6b895c9d261bc19fcf9c"
+  ],
+  "cpif/direct_dm.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/direct_dm.h",
+   "2399409464ff9337b48c353f9c8f4d2f9575ce7acd2c5fb198c5ce80ef5d9913"
+  ],
+  "cpif/dit.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/dit.h",
+   "a792f92b46afa484725fdc36107921c75614b8c7295278ee066b8d94ba49fe9e"
+  ],
+  "cpif/include/circ_queue.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/include/circ_queue.h",
+   "654918b7228bd8b9b9c0d1a6e53d6a73f48bd4e0e94f13fb5f9842b1bd917677"
+  ],
+  "cpif/include/dt-bindings/soc/google/exynos-cpif.h": [
+   "lineage-gs201",
+   "include/dt-bindings/soc/google/exynos-cpif.h",
+   "fca1f5a87ea23f12b29370b476eaa3e75e12b90d73be420339528a334a9a5ca8"
+  ],
+  "cpif/include/exynos_ipc.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/include/exynos_ipc.h",
+   "4e57593e1ce115eb8b691ee8b72f32ea05e31243b7d4bfa940532bb39e3cb43a"
+  ],
+  "cpif/include/legacy.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/include/legacy.h",
+   "ffa4d3c3dbdb8234946c6379a7e1f694d691425defc7290611536df9769f18c1"
+  ],
+  "cpif/include/linux/exynos-pci-ctrl.h": [
+   "lineage-gs201",
+   "include/linux/exynos-pci-ctrl.h",
+   "47a9f71c04faa158b7cf9646bc4371972ffec03fd60c00e3402937217f384465"
+  ],
+  "cpif/include/linux/exynos-pci-noti.h": [
+   "lineage-gs201",
+   "include/linux/exynos-pci-noti.h",
+   "4bfdaa03b6c8de348100c25859123a36f044d7a989e6f19c80f16ff38f59c5b7"
+  ],
+  "cpif/include/linux/modem_notifier.h": [
+   "lineage-gs201",
+   "include/linux/modem_notifier.h",
+   "97debae2e756f03761de3a1b9fd0628a77b9f2178f0479a4ae24787733758fb8"
+  ],
+  "cpif/include/sbd.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/include/sbd.h",
+   "5ffd6e91c110f3c4f61a201244df816e34a899fbd3d5f84370dd0ba1479eefac"
+  ],
+  "cpif/include/sipc5.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/include/sipc5.h",
+   "dda8bc6512478d93aedc9b0feec45f01d43062199a718b40aed82ceca751d1ef"
+  ],
+  "cpif/include/soc/google/acpm_ipc_ctrl.h": [
+   "lineage-gs201",
+   "include/soc/google/acpm_ipc_ctrl.h",
+   "5f47b0a661645a14373620e36941e90d982b11267c85d48140e7b28fa796c040"
+  ],
+  "cpif/include/soc/google/acpm_mfd.h": [
+   "lineage-gs201",
+   "include/soc/google/acpm_mfd.h",
+   "e0cd98fda963e05be72f37e1c43bdcc37eeed3743a32b7cd04b682a2b0c95efc"
+  ],
+  "cpif/include/soc/google/exynos-modem-ctrl.h": [
+   "lineage-gs201",
+   "include/soc/google/exynos-modem-ctrl.h",
+   "1cf80d927b23cee27aee7403570820e3e47dab70ad22c018aca47116a91d4c63"
+  ],
+  "cpif/include/soc/google/mcu_ipc.h": [
+   "lineage-gs201",
+   "include/soc/google/mcu_ipc.h",
+   "c6732f3e5ebc7285aa2558f4b2074a1366d6c4794f3e71b8989de681dc9e228d"
+  ],
+  "cpif/include/soc/google/shm_ipc.h": [
+   "lineage-gs201",
+   "include/soc/google/shm_ipc.h",
+   "86ff0a0104da4f68b161139df8539d3806523406d7fdb8d3a99f56e3f4624dc6"
+  ],
+  "cpif/ipc_io_device.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/ipc_io_device.c",
+   "6d7fbcf127664d24b1a5de19ce3ef8fdb802ed59d094239f8736e348240d895d"
+  ],
+  "cpif/link_device.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device.c",
+   "63d82307a70323f7991ab83d1af45667da00b25f7270ee2ee3f73bc79c7a7f06"
+  ],
+  "cpif/link_device.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device.h",
+   "f247602f00d1cdd2e4542a6c38ed98385e2341bb09af3814664109ad9436f369"
+  ],
+  "cpif/link_device_memory.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device_memory.h",
+   "e3f1091235cdceb19a55d56f94220bc03de132412e51dadeb967b6f16ee1790b"
+  ],
+  "cpif/link_device_memory_debug.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device_memory_debug.c",
+   "686e233fd3c93e2930e5a56e9a86ad7ada212f44581b8d8f03b7bb986ae6d38c"
+  ],
+  "cpif/link_device_memory_flow_control.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device_memory_flow_control.c",
+   "91549748ebb0416fa1c9b48c496d4f95c1a4c34fbd1cc2cd9037bae915871257"
+  ],
+  "cpif/link_device_memory_legacy.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device_memory_legacy.c",
+   "2b649e6d7b7404e349c30f20169fd240f359e641c9a73f1f132c217716e6eced"
+  ],
+  "cpif/link_device_memory_snapshot.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_device_memory_snapshot.c",
+   "e8c8627bb30eab13a95e5bfd70b2ddab9b09d367be93e767379e0a4daddb9f1e"
+  ],
+  "cpif/link_rx_pktproc.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_rx_pktproc.c",
+   "17f9378e12ba2130ade140a6c654e82854d37da5d53340856e1ae4418ae72e5d"
+  ],
+  "cpif/link_rx_pktproc.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_rx_pktproc.h",
+   "d4bc479d065d7d3f368bb7d232846b98824c4a8007d37ee8a5a37c74a275b612"
+  ],
+  "cpif/link_tx_pktproc.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_tx_pktproc.c",
+   "2721465e08f503fba25ecdf142fa4adfde1006ddba9f9bd52330efcdda079487"
+  ],
+  "cpif/link_tx_pktproc.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/link_tx_pktproc.h",
+   "ae01deb53e4e8fabed7bd7217e7695a4aab4667614c98e9640bef447a9e597db"
+  ],
+  "cpif/modem_ctrl.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_ctrl.c",
+   "1b3f5c7e21c36fad782e54dd46c24f196b69531a1664c776f46a54d7ff860630"
+  ],
+  "cpif/modem_ctrl.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_ctrl.h",
+   "0abb02f5b7ced9bf40c55b2a19e39c857d6a10139891afa8e1ebe0fec5c5ea42"
+  ],
+  "cpif/modem_ctrl_s5100.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_ctrl_s5100.c",
+   "b5275361a02c7fbf6e8fdca425dbae03a88a5c950bdfe5ac37375ac3ef2fb777"
+  ],
+  "cpif/modem_dump.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_dump.c",
+   "5b85d03b3f359186d60779b48e8ad32da9dce4687e566c8dddaecddf9b9ac390"
+  ],
+  "cpif/modem_dump.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_dump.h",
+   "c7d450bc06b0fa695b36be88375ec9661f37d7ca22a1d1b6458721e16dbd4e09"
+  ],
+  "cpif/modem_io_device.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_io_device.c",
+   "a946b8cb305518fb5b204b1b6b35cd82e0de25870c47573f809b1337fed39b77"
+  ],
+  "cpif/modem_main.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_main.c",
+   "6447b595f3eae7465f2e42de4e60f707ae40e0f4ceb38474eac8cf7f2252f825"
+  ],
+  "cpif/modem_notifier.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_notifier.c",
+   "104f8e271091e44171b0d5bc7545bae0df0ceb4642941b7929dd5ef4c8c849ee"
+  ],
+  "cpif/modem_prj.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_prj.h",
+   "3cb293fc12441386b0e7ef07e9612befaef6d4ca48d7f05f6b924cb82c6c4b38"
+  ],
+  "cpif/modem_toe_device.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_toe_device.c",
+   "d384ea80797d205b410ac3d57b82312756aea1b941f246d9c605d54d7dc4b001"
+  ],
+  "cpif/modem_toe_device.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_toe_device.h",
+   "f8c88a62bbc4bd4385688dd7d26f8d71331d39c37ee20de0f5b82730932eaf8e"
+  ],
+  "cpif/modem_utils.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_utils.c",
+   "569f8c7e968d550615b54d76c3692fe8f83ec21a9d23e83be84c11a0f69cbccd"
+  ],
+  "cpif/modem_utils.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_utils.h",
+   "632b00db11beb0ab72cde814810e3e84324b314461aca153207c781289613ce4"
+  ],
+  "cpif/modem_v1.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_v1.h",
+   "e5fa1e243785e2d19c35e4470dda630236da7b261439dff6dfa1bc9209f74c02"
+  ],
+  "cpif/modem_variation.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_variation.c",
+   "488046da56ebe5964ea1efcbb1b951bcbe200c09186590be7bd4327182a7321c"
+  ],
+  "cpif/modem_variation.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/modem_variation.h",
+   "55257d68105a7dbc0a90cb60eaec50d4e4120a0333d85bf5329a760102461aab"
+  ],
+  "cpif/net_io_device.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/net_io_device.c",
+   "b63a470673326bc2bb86d6c9ff634d2a45cba1cc972c1fb32cae058f3b34420e"
+  ],
+  "cpif/s51xx_pcie.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/s51xx_pcie.c",
+   "a670032aeb93e751616fd192f37bd987651c17dea3c33f0b0773f9bbaa1a3dc1"
+  ],
+  "cpif/s51xx_pcie.h": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/s51xx_pcie.h",
+   "b557c0f833128eb470d9d6442402daefdc8462ce186475372dc8e0493fd87cf0"
+  ],
+  "cpif/shm_ipc.c": [
+   "lineage-gs201",
+   "drivers/soc/google/cpif/shm_ipc.c",
+   "75cfcb8b5fbe63c6bb61df18b72e0b68cd9a4145c7497b3fab5200c29929d7f9"
+  ]
+ }
+}

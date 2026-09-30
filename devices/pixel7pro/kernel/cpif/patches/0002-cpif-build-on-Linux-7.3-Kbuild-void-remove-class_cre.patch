@@ -1,0 +1,557 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 02:39:19 -0700
+Subject: [PATCH 2/4] cpif: build on Linux 7.3 (Kbuild, void remove,
+ class_create, pde_data, strscpy, timers, hrtimer_setup, dummy netdevs, napi
+ weight, GRO_DROP, WQ_PERCPU, of_get_named_gpio)
+
+- Kbuild: cpif.ko, shm_ipc.ko and cpif_page.ko with the S5100/PCIe
+  configuration as -DCONFIG_* flags.
+- s51xx_pcie.h takes the root-complex API from the stand-in header
+  instead of extern declarations.
+- of_get_named_gpio() and <linux/of_gpio.h> are gone: a local
+  cpif_of_get_named_gpio() resolves the phandle's GPIO chip by fwnode and
+  returns the legacy number, so the rest keeps the integer GPIO API.
+- Dummy NAPI netdevs are allocated (alloc_netdev_dummy) instead of
+  embedded, and freed on the create error paths.
+- strncpy/strlcpy: strscpy(_pad); the CP boot log is read with
+  memcpy_fromio and terminated.
+- napi_gro_receive() no longer reports GRO_DROP.
+- mem_rx_work stays per-CPU (WQ_PERCPU), as the 5.10 default was.
+- <linux/stdarg.h>, <linux/panic_notifier.h>, void platform remove,
+  class_create(name), pde_data(), timer_delete(), timer_container_of(),
+  hrtimer_setup(), netif_napi_add_weight().
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ cpif/Kbuild               | 25 ++++++++++++++++++++++
+ cpif/bootdump_io_device.c |  2 +-
+ cpif/link_device.c        | 45 ++++++++++++++++++++++-----------------
+ cpif/link_device_memory.h |  2 +-
+ cpif/link_rx_pktproc.c    | 14 ++++++++++--
+ cpif/link_rx_pktproc.h    |  2 +-
+ cpif/modem_ctrl_s5100.c   |  8 +++----
+ cpif/modem_io_device.c    |  6 ++----
+ cpif/modem_main.c         |  7 +++---
+ cpif/modem_notifier.c     |  2 +-
+ cpif/modem_utils.c        | 35 +++++++++++++++++++++++++++---
+ cpif/modem_utils.h        |  1 +
+ cpif/s51xx_pcie.h         | 27 +++++------------------
+ cpif/shm_ipc.c            |  3 +--
+ 14 files changed, 115 insertions(+), 64 deletions(-)
+ create mode 100644 cpif/Kbuild
+
+diff --git a/cpif/Kbuild b/cpif/Kbuild
+new file mode 100644
+index 0000000..a56a8db
+--- /dev/null
++++ b/cpif/Kbuild
+@@ -0,0 +1,25 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Google's cpif (LineageOS gs201 lineage-21, CPIF-20220408R1) for the Pixel 7
++# Pro's Exynos Modem 5300 on PCIe channel 0, built out of tree on Linux 7.3.
++#
++# Configuration: the S5100/PCIe options of Google's cloudripper_gki.fragment
++# (and what they select), without the parts that need vendor-only
++# subsystems: PCIe IOMMU, TP monitor (PM QoS, BTS), CP thermal zone, SPI boot
++# device. See README.md.
++cpif-config := EXYNOS_MODEM_IF SEC_MODEM_S5100 LINK_DEVICE_PCIE SHM_IPC CPIF_PAGE_RECYCLING \
++	CP_PKTPROC CP_PKTPROC_UL LINK_DEVICE_PCIE_IOCC CH_EXTENSION MODEM_IF_QOS \
++	SUSPEND_DURING_VOICE_CALL
++ccflags-y += $(foreach c,$(cpif-config),-DCONFIG_$(c)=1)
++ccflags-y += -I$(src) -I$(src)/include -I$(src)/../stubs/include
++# As Google's Makefile; PROJECT_REGION is empty on the stock build ("cpif: +++ ()").
++ccflags-y += -DCPIF_WAKEPKT_SET_MARK=0x80000000 -DCONFIG_OPTION_REGION=\"\"
++
++obj-m += cpif_page.o shm_ipc.o cpif.o
++cpif-y := modem_main.o modem_variation.o
++cpif-y += modem_io_device.o net_io_device.o bootdump_io_device.o ipc_io_device.o modem_toe_device.o
++cpif-y += modem_utils.o modem_dump.o
++cpif-y += link_device.o link_device_memory_flow_control.o
++cpif-y += link_device_memory_debug.o modem_notifier.o
++cpif-y += link_device_memory_snapshot.o link_device_memory_legacy.o
++cpif-y += s51xx_pcie.o modem_ctrl_s5100.o modem_ctrl.o
++cpif-y += link_rx_pktproc.o link_tx_pktproc.o
+diff --git a/cpif/bootdump_io_device.c b/cpif/bootdump_io_device.c
+index ec6b2c0..7122ac9 100644
+--- a/cpif/bootdump_io_device.c
++++ b/cpif/bootdump_io_device.c
+@@ -369,7 +369,7 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
+ 	case IOCTL_GET_CPIF_VERSION:
+ 		mif_info("%s: IOCTL_GET_CPIF_VERSION\n", iod->name);
+ 
+-		strncpy(version.string, get_cpif_driver_version(), sizeof(version.string) - 1);
++		strscpy_pad(version.string, get_cpif_driver_version(), sizeof(version.string));
+ 		ret = copy_to_user((void __user *)arg, &version, sizeof(version));
+ 		if (ret) {
+ 			mif_err("copy_to_user() error:%d\n", ret);
+diff --git a/cpif/link_device.c b/cpif/link_device.c
+index a8ad3fe..8c9a197 100644
+--- a/cpif/link_device.c
++++ b/cpif/link_device.c
+@@ -150,7 +150,7 @@ static void shmem_handle_cp_crash(struct mem_link_device *mld,
+ 
+ static void handle_no_cp_crash_ack(struct timer_list *t)
+ {
+-	struct mem_link_device *mld = from_timer(mld, t, crash_ack_timer);
++	struct mem_link_device *mld = timer_container_of(mld, t, crash_ack_timer);
+ 	struct link_device *ld = &mld->link_dev;
+ 	struct modem_ctl *mc = ld->mc;
+ 
+@@ -227,7 +227,7 @@ static void link_trigger_cp_crash(struct mem_link_device *mld, u32 crash_type,
+ 	}
+ 
+ 	if (!reason_done && reason && reason[0] != '\0') {
+-		strlcpy(ld->crash_reason.string, reason, CP_CRASH_INFO_SIZE);
++		strscpy(ld->crash_reason.string, reason, CP_CRASH_INFO_SIZE);
+ 		reason_done = true;
+ 	}
+ 
+@@ -675,7 +675,7 @@ static void cmd_crash_exit_handler(struct mem_link_device *mld)
+ 	spin_unlock_irqrestore(&mld->state_lock, flags);
+ 
+ 	if (timer_pending(&mld->crash_ack_timer))
+-		del_timer(&mld->crash_ack_timer);
++		timer_delete(&mld->crash_ack_timer);
+ 
+ 	if (atomic_read(&mld->forced_cp_crash))
+ 		mif_err("%s<-%s: CP_CRASH_ACK\n", ld->name, mc->name);
+@@ -2450,7 +2450,7 @@ static void sync_net_dev(struct link_device *ld)
+ 	struct mem_link_device *mld = to_mem_link_device(ld);
+ 
+ 	napi_synchronize(&mld->mld_napi);
+-	mif_info("%s\n", netdev_name(&mld->dummy_net));
++	mif_info("%s\n", netdev_name(mld->dummy_net));
+ }
+ 
+ static int link_start_normal_boot(struct link_device *ld, struct io_device *iod)
+@@ -2529,7 +2529,7 @@ static void shmem_close_tx(struct link_device *ld)
+ 	spin_unlock_irqrestore(&mld->state_lock, flags);
+ 
+ 	if (timer_pending(&mld->crash_ack_timer))
+-		del_timer(&mld->crash_ack_timer);
++		timer_delete(&mld->crash_ack_timer);
+ 
+ 	stop_net_ifaces(ld, 0);
+ 	purge_txq(mld);
+@@ -2691,7 +2691,8 @@ static int shmem_ioctl(struct link_device *ld, struct io_device *iod,
+ 			return -EINVAL;
+ 		}
+ 
+-		strncpy(str, base + SHMEM_BOOTLOG_OFFSET, size);
++		memcpy_fromio(str, base + SHMEM_BOOTLOG_OFFSET, size);
++		str[size] = '\0';
+ 		mif_info("CP boot log[%d] : %s\n", size, str);
+ 		break;
+ 	}
+@@ -3056,7 +3057,7 @@ static int parse_ect(struct mem_link_device *mld, char *dvfs_domain_name)
+ static int shmem_rx_setup(struct link_device *ld)
+ {
+ 	ld->rx_wq = alloc_workqueue(
+-			"mem_rx_work", WQ_HIGHPRI | WQ_CPU_INTENSIVE, 1);
++			"mem_rx_work", WQ_HIGHPRI | WQ_CPU_INTENSIVE | WQ_PERCPU, 1);
+ 	if (!ld->rx_wq) {
+ 		mif_err("%s: ERR! fail to create rx_wq\n", ld->name);
+ 		return -ENOMEM;
+@@ -3185,7 +3186,7 @@ static ssize_t rx_napi_list_show(struct device *dev,
+ 	ssize_t count = 0;
+ 
+ 	modem = (struct modem_data *)dev->platform_data;
+-	netdev = &modem->mld->dummy_net;
++	netdev = modem->mld->dummy_net;
+ 
+ 	count += scnprintf(&buf[count], PAGE_SIZE - count, "[%s's napi_list]\n",
+ 		netdev_name(netdev));
+@@ -3242,7 +3243,7 @@ static ssize_t rx_poll_count_show(struct device *dev,
+ 	modem = (struct modem_data *)dev->platform_data;
+ 	mld = modem->mld;
+ 
+-	return scnprintf(buf, PAGE_SIZE, "%s: %d\n", netdev_name(&mld->dummy_net),
++	return scnprintf(buf, PAGE_SIZE, "%s: %d\n", netdev_name(mld->dummy_net),
+ 		mld->rx_poll_count);
+ }
+ 
+@@ -3749,13 +3750,11 @@ static int init_shmem_maps(u32 link_type, struct modem_data *modem,
+ 	create_legacy_link_device(mld);
+ 
+ 	if (ld->sbd_ipc) {
+-		hrtimer_init(&mld->sbd_tx_timer,
++		hrtimer_setup(&mld->sbd_tx_timer, sbd_tx_timer_func,
+ 				CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-		mld->sbd_tx_timer.function = sbd_tx_timer_func;
+ 
+-		hrtimer_init(&mld->sbd_print_timer,
++		hrtimer_setup(&mld->sbd_print_timer, sbd_print,
+ 				CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-		mld->sbd_print_timer.function = sbd_print;
+ 
+ 		err = create_sbd_link_device(ld,
+ 				&mld->sbd_link_dev, mld->base, mld->size);
+@@ -4046,8 +4045,12 @@ struct link_device *create_link_device(struct platform_device *pdev, u32 link_ty
+ 	if (err)
+ 		goto error;
+ 
+-	init_dummy_netdev(&mld->dummy_net);
+-	netif_napi_add(&mld->dummy_net, &mld->mld_napi, mld_rx_int_poll, NAPI_POLL_WEIGHT);
++	mld->dummy_net = alloc_netdev_dummy(0);
++	if (!mld->dummy_net) {
++		err = -ENOMEM;
++		goto error;
++	}
++	netif_napi_add_weight(mld->dummy_net, &mld->mld_napi, mld_rx_int_poll, NAPI_POLL_WEIGHT);
+ 	napi_enable(&mld->mld_napi);
+ 
+ 	INIT_LIST_HEAD(&ld->list);
+@@ -4081,8 +4084,7 @@ struct link_device *create_link_device(struct platform_device *pdev, u32 link_ty
+ 	msb_queue_head_init(&mld->msb_rxq);
+ 	msb_queue_head_init(&mld->msb_log);
+ 
+-	hrtimer_init(&mld->tx_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-	mld->tx_timer.function = tx_timer_func;
++	hrtimer_setup(&mld->tx_timer, tx_timer_func, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 
+ 	INIT_WORK(&mld->page_reclaim_work, bootdump_oom_handler_work);
+ 
+@@ -4208,8 +4210,8 @@ struct link_device *create_link_device(struct platform_device *pdev, u32 link_ty
+ 		mif_err("pktproc_create_ul() error %d\n", err);
+ 		goto error;
+ 	}
+-	hrtimer_init(&mld->pktproc_tx_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-	mld->pktproc_tx_timer.function = pktproc_tx_timer_func;
++	hrtimer_setup(&mld->pktproc_tx_timer, pktproc_tx_timer_func, CLOCK_MONOTONIC,
++		      HRTIMER_MODE_REL);
+ #endif
+ 
+ #if IS_ENABLED(CONFIG_CPIF_TP_MONITOR)
+@@ -4241,6 +4243,11 @@ struct link_device *create_link_device(struct platform_device *pdev, u32 link_ty
+ 	return ld;
+ 
+ error:
++	if (mld->dummy_net) {
++		napi_disable(&mld->mld_napi);
++		netif_napi_del(&mld->mld_napi);
++		free_netdev(mld->dummy_net);
++	}
+ 	kfree(mld);
+ 	mif_err("xxx\n");
+ 	return NULL;
+diff --git a/cpif/link_device_memory.h b/cpif/link_device_memory.h
+index 1e557b9..0fb468a 100644
+--- a/cpif/link_device_memory.h
++++ b/cpif/link_device_memory.h
+@@ -308,7 +308,7 @@ struct mem_link_device {
+ 	struct mutex vmap_lock;
+ 	enum link_state state;
+ 
+-	struct net_device dummy_net;
++	struct net_device *dummy_net;
+ 	struct napi_struct mld_napi;
+ 	unsigned int rx_int_enable;
+ 	unsigned int rx_int_count;
+diff --git a/cpif/link_rx_pktproc.c b/cpif/link_rx_pktproc.c
+index 1438841..bb9582f 100644
+--- a/cpif/link_rx_pktproc.c
++++ b/cpif/link_rx_pktproc.c
+@@ -2049,8 +2049,12 @@ int pktproc_create(struct platform_device *pdev, struct mem_link_device *mld,
+ 
+ 		/* NAPI */
+ 		if (ppa->use_exclusive_irq) {
+-			init_dummy_netdev(&q->netdev);
+-			netif_napi_add(&q->netdev, &q->napi, pktproc_poll, NAPI_POLL_WEIGHT);
++			q->netdev = alloc_netdev_dummy(0);
++			if (!q->netdev) {
++				ret = -ENOMEM;
++				goto create_error;
++			}
++			netif_napi_add_weight(q->netdev, &q->napi, pktproc_poll, NAPI_POLL_WEIGHT);
+ 			napi_enable(&q->napi);
+ 			q->napi_ptr = &q->napi;
+ 		} else {
+@@ -2122,6 +2126,12 @@ create_error:
+ 		if (ppa->q[i]->manager)
+ 			cpif_exit_netrx_mng(ppa->q[i]->manager);
+ 
++		if (ppa->q[i]->netdev) {
++			napi_disable(&ppa->q[i]->napi);
++			netif_napi_del(&ppa->q[i]->napi);
++			free_netdev(ppa->q[i]->netdev);
++		}
++
+ 		kfree(ppa->q[i]->dma_addr);
+ 		kfree(ppa->q[i]);
+ 	}
+diff --git a/cpif/link_rx_pktproc.h b/cpif/link_rx_pktproc.h
+index 2f26213..fa8129d 100644
+--- a/cpif/link_rx_pktproc.h
++++ b/cpif/link_rx_pktproc.h
+@@ -211,7 +211,7 @@ struct pktproc_queue {
+ #endif
+ 
+ 	/* NAPI */
+-	struct net_device netdev;
++	struct net_device *netdev;
+ 	struct napi_struct napi;
+ 	struct napi_struct *napi_ptr;
+ 
+diff --git a/cpif/modem_ctrl_s5100.c b/cpif/modem_ctrl_s5100.c
+index 6990204..f392110 100644
+--- a/cpif/modem_ctrl_s5100.c
++++ b/cpif/modem_ctrl_s5100.c
+@@ -14,12 +14,12 @@
+ #include <linux/fs.h>
+ #include <linux/file.h>
+ #include <linux/of.h>
+-#include <linux/of_gpio.h>
+ #include <linux/clk.h>
+ #include <linux/pci.h>
+ #include <linux/regulator/consumer.h>
+ #include <soc/google/acpm_mfd.h>
+ #include <linux/reboot.h>
++#include <linux/panic_notifier.h>
+ #include <linux/suspend.h>
+ #include <linux/time.h>
+ #include <linux/timer.h>
+@@ -324,7 +324,7 @@ static irqreturn_t cp_active_handler(int irq, void *data)
+ 				cp_state_str(mc->phone_state), cp_active);
+ 
+ 	if (timer_pending(&mld->crash_ack_timer))
+-		del_timer(&mld->crash_ack_timer);
++		timer_delete(&mld->crash_ack_timer);
+ 
+ 	mif_stop_logging();
+ 
+@@ -1130,7 +1130,7 @@ static int start_normal_boot(struct modem_ctl *mc)
+ 
+ 	/* 2cp dump WA */
+ 	if (timer_pending(&mld->crash_ack_timer))
+-		del_timer(&mld->crash_ack_timer);
++		timer_delete(&mld->crash_ack_timer);
+ 	atomic_set(&mld->forced_cp_crash, 0);
+ 
+ 	mif_info("Set link mode to LINK_MODE_BOOT.\n");
+@@ -1841,7 +1841,7 @@ static int s5100_get_pdata(struct modem_ctl *mc, struct modem_data *pdata)
+ 	/* gpio */
+ 	for (i = 0; i < CP_GPIO_MAX; i++) {
+ 		mc->cp_gpio[i].num =
+-			of_get_named_gpio(np, mc->cp_gpio[i].node_name, 0);
++			cpif_of_get_named_gpio(np, mc->cp_gpio[i].node_name, 0);
+ 
+ 		if (!gpio_is_valid(mc->cp_gpio[i].num))
+ 			continue;
+diff --git a/cpif/modem_io_device.c b/cpif/modem_io_device.c
+index 768faf2..bb65f24 100644
+--- a/cpif/modem_io_device.c
++++ b/cpif/modem_io_device.c
+@@ -450,10 +450,8 @@ static int rx_multi_pdp(struct sk_buff *skb)
+ 			mif_err_limited("%s: %s<-%s: ERR! netif_receive_skb\n",
+ 					ld->name, iod->name, iod->mc->name);
+ 	} else {
+-		ret = napi_gro_receive(napi, skb);
+-		if (ret == GRO_DROP)
+-			mif_err_limited("%s: %s<-%s: ERR! napi_gro_receive\n",
+-					ld->name, iod->name, iod->mc->name);
++		/* Linux 7.3: napi_gro_receive() no longer reports drops (no GRO_DROP) */
++		napi_gro_receive(napi, skb);
+ 	}
+ 	return len;
+ }
+diff --git a/cpif/modem_main.c b/cpif/modem_main.c
+index 9b449e1..82096ac 100644
+--- a/cpif/modem_main.c
++++ b/cpif/modem_main.c
+@@ -25,7 +25,6 @@
+ #include <linux/irq.h>
+ #include <linux/gpio.h>
+ #include <linux/proc_fs.h>
+-#include <linux/of_gpio.h>
+ #include <linux/delay.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/of_reserved_mem.h>
+@@ -625,7 +624,7 @@ static int simslot_count(struct seq_file *m, void *v)
+ 
+ static int simslot_count_open(struct inode *inode, struct file *file)
+ {
+-	return single_open(file, simslot_count, PDE_DATA(inode));
++	return single_open(file, simslot_count, pde_data(inode));
+ }
+ 
+ static const struct file_operations simslot_count_fops = {
+@@ -642,7 +641,7 @@ static enum mif_sim_mode get_sim_mode(struct device_node *of_node)
+ 	int gpio_ds_det;
+ 	int retval;
+ 
+-	gpio_ds_det = of_get_named_gpio(of_node, "mif,gpio_ds_det", 0);
++	gpio_ds_det = cpif_of_get_named_gpio(of_node, "mif,gpio_ds_det", 0);
+ 	if (!gpio_is_valid(gpio_ds_det)) {
+ 		mif_err("DT error: failed to get sim mode\n");
+ 		goto make_proc;
+@@ -715,7 +714,7 @@ static int cpif_cdev_alloc_region(struct modem_data *pdata, struct modem_shared
+ 		return ret;
+ 	}
+ 
+-	msd->cdev_class = class_create(THIS_MODULE, "cpif");
++	msd->cdev_class = class_create("cpif");
+ 	if (IS_ERR(msd->cdev_class)) {
+ 		mif_err("class_create() failed:%ld\n", PTR_ERR(msd->cdev_class));
+ 		ret = -ENOMEM;
+diff --git a/cpif/modem_notifier.c b/cpif/modem_notifier.c
+index b4d85dd..925a669 100644
+--- a/cpif/modem_notifier.c
++++ b/cpif/modem_notifier.c
+@@ -4,7 +4,7 @@
+  *
+  */
+ 
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #include <linux/string.h>
+ #include <linux/init.h>
+ #include <linux/module.h>
+diff --git a/cpif/modem_utils.c b/cpif/modem_utils.c
+index b24d0cd..ce42458 100644
+--- a/cpif/modem_utils.c
++++ b/cpif/modem_utils.c
+@@ -4,7 +4,7 @@
+  *
+  */
+ 
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #include <linux/string.h>
+ #include <linux/init.h>
+ #include <linux/module.h>
+@@ -28,6 +28,8 @@
+ #include <linux/mutex.h>
+ #include <linux/irq.h>
+ #include <linux/gpio.h>
++#include <linux/gpio/driver.h>
++#include <linux/of.h>
+ #include <linux/delay.h>
+ #include <linux/bitops.h>
+ #include <soc/google/exynos-modem-ctrl.h>
+@@ -264,7 +266,7 @@ __be32 ipv4str_to_be32(const char *ipv4str, size_t count)
+ 	char *next = ipstr;
+ 	int i;
+ 
+-	strlcpy(ipstr, ipv4str, ARRAY_SIZE(ipstr));
++	strscpy(ipstr, ipv4str, ARRAY_SIZE(ipstr));
+ 
+ 	for (i = 0; i < 4; i++) {
+ 		char *p;
+@@ -527,7 +529,7 @@ void mif_init_irq(struct modem_irq *irq, unsigned int num, const char *name,
+ {
+ 	spin_lock_init(&irq->lock);
+ 	irq->num = num;
+-	strncpy(irq->name, name, (MAX_NAME_LEN - 1));
++	strscpy(irq->name, name, MAX_NAME_LEN);
+ 	irq->flags = flags;
+ 	mif_info("name:%s num:%d flags:0x%08lX\n", name, num, flags);
+ }
+@@ -671,6 +673,33 @@ int mif_gpio_get_value(struct cpif_gpio *gpio, bool log_print)
+ }
+ EXPORT_SYMBOL(mif_gpio_get_value);
+ 
++/*
++ * Pixel 7 Pro port: of_get_named_gpio() is gone from Linux 7.3. Resolve a
++ * "<&bank pin flags>" property to a legacy GPIO number the same way: the
++ * phandle's GPIO chip (matched by fwnode), line = first cell. The flags cell
++ * is ignored, as of_get_named_gpio() ignored it.
++ */
++int cpif_of_get_named_gpio(const struct device_node *np, const char *propname, int index)
++{
++	struct of_phandle_args args;
++	struct gpio_device *gdev;
++	struct gpio_desc *desc;
++	int ret;
++
++	ret = of_parse_phandle_with_args(np, propname, "#gpio-cells", index, &args);
++	if (ret)
++		return ret;
++	gdev = gpio_device_find_by_fwnode(of_fwnode_handle(args.np));
++	of_node_put(args.np);
++	if (!gdev)
++		return -EPROBE_DEFER;
++	desc = args.args_count ? gpio_device_get_desc(gdev, args.args[0]) : ERR_PTR(-EINVAL);
++	ret = IS_ERR(desc) ? PTR_ERR(desc) : desc_to_gpio(desc);
++	gpio_device_put(gdev);
++	return ret;
++}
++EXPORT_SYMBOL(cpif_of_get_named_gpio);
++
+ int mif_gpio_toggle_value(struct cpif_gpio *gpio, int delay_ms)
+ {
+ 	int value;
+diff --git a/cpif/modem_utils.h b/cpif/modem_utils.h
+index b8c657e..6d2d857 100644
+--- a/cpif/modem_utils.h
++++ b/cpif/modem_utils.h
+@@ -533,6 +533,7 @@ void mif_disable_irq(struct modem_irq *irq);
+ bool mif_gpio_set_value(struct cpif_gpio *gpio, int value, unsigned int delay_ms);
+ int mif_gpio_get_value(struct cpif_gpio *gpio, bool log_print);
+ int mif_gpio_toggle_value(struct cpif_gpio *gpio, int delay_ms);
++int cpif_of_get_named_gpio(const struct device_node *np, const char *propname, int index);
+ 
+ struct file *mif_open_file(const char *path);
+ void mif_save_file(struct file *fp, const char *buff, size_t size);
+diff --git a/cpif/s51xx_pcie.h b/cpif/s51xx_pcie.h
+index b981cab..72978c2 100644
+--- a/cpif/s51xx_pcie.h
++++ b/cpif/s51xx_pcie.h
+@@ -13,18 +13,11 @@
+ 
+ extern void first_save_s51xx_status(struct pci_dev *pdev);
+ extern int s51xx_pcie_init(struct modem_ctl *mc);
+-extern int exynos_pcie_register_event(struct exynos_pcie_register_event *reg);
+-extern int exynos_pcie_deregister_event(struct exynos_pcie_register_event *reg);
+-
+-extern void exynos_pcie_rc_register_dump(int ch_num);
+-extern void exynos_pcie_rc_dump_all_status(int ch_num);
+-extern void exynos_pcie_rc_print_msi_register(int ch_num);
+-extern int exynos_pcie_rc_set_outbound_atu(int ch_num, u32 target_addr, u32 offset, u32 size);
+-extern bool exynos_pcie_rc_get_cpl_timeout_state(int ch_num);
+-extern void exynos_pcie_rc_set_cpl_timeout_state(int ch_num, bool recovery);
+-extern bool exynos_pcie_rc_get_sudden_linkdown_state(int ch_num);
+-extern void exynos_pcie_rc_set_sudden_linkdown_state(int ch_num, bool recovery);
+-extern void exynos_pcie_rc_force_linkdown_work(int ch_num);
++/*
++ * Pixel 7 Pro port: the root-complex API (exynos_pcie_*, register_separated_msi_vector)
++ * comes from a stand-in until a channel-0 host driver exports it.
++ */
++#include <linux/exynos-pcie-rc-api.h>
+ 
+ struct s51xx_pcie {
+ 	unsigned int busdev_num;
+@@ -47,18 +40,8 @@ struct s51xx_pcie {
+ 
+ //extern struct s51xx_pcie s5100pcie;
+ 
+-extern int exynos_pcie_rc_chk_link_status(int ch_num);
+-extern int exynos_pcie_rc_l1ss_ctrl(int enable, int id, int ch_num);
+-
+-extern int exynos_pcie_poweron(int ch_num, int spd);
+-extern int exynos_pcie_poweroff(int ch_num);
+-extern void exynos_pcie_set_perst_gpio(int ch_num, bool on);
+-extern void exynos_pcie_set_ready_cto_recovery(int ch_num);
+ /* not used: extern int exynos_pcie_gpio_onoff(int ch_num, int val); */
+ /* not used(comment out): extern void exynos_pcie_msi_init_ext(int ch_num); */
+-extern int register_separated_msi_vector(int ch_num,
+-					 irq_handler_t handler, void *context,
+-					 int *irq_num);
+ 
+ #define AUTOSUSPEND_TIMEOUT	200
+ 
+diff --git a/cpif/shm_ipc.c b/cpif/shm_ipc.c
+index 544a0f4..867e87d 100644
+--- a/cpif/shm_ipc.c
++++ b/cpif/shm_ipc.c
+@@ -496,9 +496,8 @@ fail:
+ 	return ret;
+ }
+ 
+-static int cp_shmem_remove(struct platform_device *pdev)
++static void cp_shmem_remove(struct platform_device *pdev)
+ {
+-	return 0;
+ }
+ 
+ static const struct of_device_id cp_shmem_dt_match[] = {

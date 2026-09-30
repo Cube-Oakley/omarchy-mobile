@@ -1,0 +1,4 @@
+{
+  "backend": "pixel-sit",
+  "socket": "/run/omarchy-mobile-telephony/socket"
+}

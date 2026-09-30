@@ -1,0 +1,93 @@
+diff --git i/router/diag_cntl.c w/router/diag_cntl.c
+index 7c94ac9..f812117 100644
+--- i/router/diag_cntl.c
++++ w/router/diag_cntl.c
+@@ -421,6 +421,12 @@ void diag_cntl_send_masks(struct peripheral *peripheral)
+ 
+ 		diag_cntl_send_msg_mask(peripheral, &range);
+ 	}
++
++	/* Log and event masks set before this peripheral connected would
++	 * otherwise never reach it. */
++	for (i = 0; i < MAX_EQUIP_ID; i++)
++		diag_cntl_send_log_mask(peripheral, i);
++	diag_cntl_send_event_mask(peripheral);
+ }
+ 
+ void diag_cntl_send_event_mask(struct peripheral *peripheral)
+diff --git i/router/dm.c w/router/dm.c
+index 94e174c..3a7c78e 100644
+--- i/router/dm.c
++++ w/router/dm.c
+@@ -111,6 +111,22 @@ static int dm_recv_hdlc(struct diag_client *dm, struct circ_buf *buf)
+ 	return 0;
+ }
+ 
++/* A client that went away must leave the broadcast list: its queue would
++ * otherwise keep growing and hold the peripherals' flow control shut. */
++static void dm_remove(struct diag_client *dm)
++{
++	watch_remove_fd(dm->in_fd);
++	if (dm->out_fd != dm->in_fd)
++		watch_remove_writeq(dm->out_fd);
++	list_del(&dm->node);
++	watch_purge_queue(&dm->outq);
++	close(dm->in_fd);
++	if (dm->out_fd != dm->in_fd)
++		close(dm->out_fd);
++	free((void *)dm->name);
++	free(dm);
++}
++
+ static int dm_recv_raw(struct diag_client *dm)
+ {
+ 	int saved_errno;
+@@ -119,8 +135,8 @@ static int dm_recv_raw(struct diag_client *dm)
+ 
+ 	for (;;) {
+ 		n = read(dm->in_fd, buf, sizeof(buf));
+-		if (!n) {
+-			watch_remove_fd(dm->in_fd);
++		if (!n || (n < 0 && (errno == ECONNRESET || errno == EPIPE))) {
++			dm_remove(dm);
+ 			break;
+ 		} else if (n < 0 && errno == EAGAIN) {
+ 			break;
+diff --git i/router/watch.c w/router/watch.c
+index 21ea4c4..e9935c0 100644
+--- i/router/watch.c
++++ w/router/watch.c
+@@ -202,6 +202,21 @@ static int watch_free_write_aio(struct mbuf *mbuf, void *data)
+ 	return 0;
+ }
+ 
++/* Drop every buffer still queued for a writer that went away, returning
++ * each one's flow credit so the peripheral it came from is not stalled. */
++void watch_purge_queue(struct list_head *queue)
++{
++	struct list_head *item;
++	struct list_head *next;
++	struct mbuf *mbuf;
++
++	list_for_each_safe(item, next, queue) {
++		mbuf = container_of(item, struct mbuf, node);
++		list_del(&mbuf->node);
++		watch_free_write_aio(mbuf, NULL);
++	}
++}
++
+ int watch_add_writeq(int fd, struct list_head *queue)
+ {
+ 	struct watch *w;
+diff --git i/router/watch.h w/router/watch.h
+index aea4be0..9e7453c 100644
+--- i/router/watch.h
++++ w/router/watch.h
+@@ -44,6 +44,7 @@ int watch_add_readq(int fd, struct list_head *queue,
+ int watch_add_writeq(int fd, struct list_head *queue);
+ void watch_remove_fd(int fd);
+ void watch_remove_writeq(int fd);
++void watch_purge_queue(struct list_head *queue);
+ int watch_add_quit(int (*cb)(int, void*), void *data);
+ int watch_add_timer(void (*cb)(void *), void *data,
+ 		    unsigned int interval, bool repeat);

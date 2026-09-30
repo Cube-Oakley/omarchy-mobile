@@ -15,6 +15,7 @@ patch -d "$WORK" -p1 < "$ROOT/kernel/power/q6routing-probe-order.patch"
 patch -d "$WORK" -p1 < "$ROOT/kernel/audio/sm8150-speakers.patch"
 patch -d "$WORK" -p1 < "$ROOT/kernel/audio/sm8150-slimbus-every-link.patch"
 patch -d "$WORK" -p1 < "$ROOT/kernel/audio/q6asm-dai-xlate-by-id.patch"
+patch -d "$WORK" -p1 < "$ROOT/kernel/audio/slim-ngd-pd-up-race.patch"
 python3 - "$WORK" <<'PY'
 from pathlib import Path
 import re,sys

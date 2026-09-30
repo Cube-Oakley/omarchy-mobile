@@ -41,6 +41,9 @@ Singleton {
     readonly property color accent: state.colors.accent || "#7aa2f7"
     readonly property color selection: state.colors.selection || "#292e42"
     readonly property color muted: state.colors.muted || "#414868"
+    // The theme's own red and green, for ending and answering calls.
+    readonly property color danger: state.colors.red || state.colors.color1 || "#f7768e"
+    readonly property color success: state.colors.green || state.colors.color2 || "#9ece6a"
     // Omarchy's corner choice. Square is the default; rounding above zero is round.
     readonly property int cornerRadius: state.radius === undefined ? 0 : state.radius
     readonly property bool square: state.corners ? state.corners === "square" : cornerRadius === 0

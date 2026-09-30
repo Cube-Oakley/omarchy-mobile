@@ -4,6 +4,16 @@ These files connect the shared Omarchy mobile overlay to the verified Pixel
 native Hyprland session. They are source-development artifacts, not host desktop
 configuration. Install them only inside the target Arch root.
 
+- `telephony.json`: selects the Pixel SIT backend for Phone and Messages.
+  Requires `modem/app_service.py`. The optional private modem bundle and boot
+  manager provide automatic startup; this adapter only selects the app backend.
+- `reboot.sh`: orderly Restart and Restart to bootloader actions for the
+  shared power menu. Hold the power button for two seconds to open it; a tap
+  still controls the display. Uses `pixel-reboot`, which stops the modem and
+  lets PID 1 stop writers and sync storage before restarting.
+- `power-suspend.sh`: delegates to `pixel-suspend` for guarded s2idle. The
+  shared shell owns idle policy; the helper refuses while plugged in or in a
+  call and requires the validated persistent modem/suspend bundle.
 - `mobile.json`: display scale, keyboard dimensions and common shortcut settings.
   The display driver's preferred mode is used; no OnePlus 90 Hz assumption.
 - `desktop-prepare.sh`: sources the shared generated mobile config into

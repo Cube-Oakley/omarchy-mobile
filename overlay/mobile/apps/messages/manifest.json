@@ -1,0 +1,7 @@
+{
+  "id": "messages",
+  "name": "Messages",
+  "comment": "Send and read text messages",
+  "icon": "mail-message-new",
+  "permissions": ["messages", "contacts"]
+}

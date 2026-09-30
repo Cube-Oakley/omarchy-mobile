@@ -1,0 +1,7 @@
+{
+  "id": "contacts",
+  "name": "Contacts",
+  "comment": "People, their numbers and photos",
+  "icon": "x-office-address-book",
+  "permissions": ["contacts", "files.home"]
+}

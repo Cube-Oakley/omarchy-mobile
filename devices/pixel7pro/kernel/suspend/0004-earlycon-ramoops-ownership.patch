@@ -1,0 +1,106 @@
+--- a/arch/arm64/kernel/head.S
++++ b/arch/arm64/kernel/head.S
+@@ -78,10 +78,12 @@
+ 	 * Clobbers only x9/x10; never invoke after MMU enable or on secondaries.
+ 	 */
+ 	.macro pixel_stamp index
++#ifndef CONFIG_PSTORE_RAM
+ 	mov_q x9, 0xfd3ff000
+ 	mov w10, #(65 + \index)
+ 	strb w10, [x9, #(12 + \index)]
+ 	dsb sy
++#endif
+ 	.endm
+ 
+ 	/*
+@@ -94,6 +96,8 @@
+ 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
+ 	 */
+ SYM_CODE_START(primary_entry)
++#ifndef CONFIG_PSTORE_RAM
++	/* The legacy progress log must not overwrite ramoops records. */
+ 	mov_q x9, 0xfd3ff000
+ 	mov_q x10, 0x2d2d2d2d
+ 	str w10, [x9, #12]
+@@ -111,6 +115,7 @@
+ 	str w10, [x9, #8]
+ 	mov_q x10, 0x43474244
+ 	str w10, [x9]
++#endif
+ 	pixel_stamp 0
+ 	bl	record_mmu_state
+ 	bl	preserve_boot_args
+--- a/arch/arm64/kernel/pixel_earlycon.c
++++ b/arch/arm64/kernel/pixel_earlycon.c
+@@ -2,7 +2,7 @@
+ /* Cheetah early framebuffer console, based on the verified RAM probe v2.
+  * Development-only: stock GS201 DT, retained ABL DPP0/DECON0, no display driver.
+  * Uses EFI earlycon's temporary-map -> early_initcall permanent-map pattern.
+- * CONFIG_PSTORE_RAM must be disabled: we own its console buffer during this test.
++ * With CONFIG_PSTORE_RAM, ramoops exclusively owns the persistent console RAM.
+  */
+ #include <linux/console.h>
+ #include <linux/font.h>
+@@ -52,9 +52,15 @@
+ 
+ static void pixel_save(const char *s, unsigned int n)
+ {
+-	u32 *log = pixel_map(PFB_LOG, PFB_LOG_SIZE, pixel_log);
++	u32 *log;
+ 	u32 used;
+ 
++	/* Includes setup_arch notes emitted before pixel_setup(). Never touch
++	 * the previous boot's ramoops header or its live console ring.
++	 */
++	if (IS_ENABLED(CONFIG_PSTORE_RAM))
++		return;
++	log = pixel_map(PFB_LOG, PFB_LOG_SIZE, pixel_log);
+ 	if (!log)
+ 		return;
+ 	used = READ_ONCE(log[2]);
+@@ -163,20 +169,19 @@
+ 	u32 *log;
+ 	u32 base, size, ctrl, global, trigger;
+ 
+-	/* Refuse configurations that would have two writers on the same RAM log. */
+-	if (IS_ENABLED(CONFIG_PSTORE_RAM))
+-		return -EINVAL;
+ 	memblock_reserve(PFB_BASE, PFB_BYTES);
+ 	memblock_mark_nomap(PFB_BASE, PFB_BYTES);
+-	memblock_reserve(PFB_LOG, SZ_4M);
+-	memblock_mark_nomap(PFB_LOG, SZ_4M);
+-	log = pixel_map(PFB_LOG, PFB_LOG_SIZE, NULL);
+-	if (!log)
+-		return -ENOMEM;
+-	log[1] = log[2] = 0;
+-	log[0] = 0x43474244;
+-	wmb();
+-	pixel_unmap(log, PFB_LOG_SIZE, NULL);
++	if (!IS_ENABLED(CONFIG_PSTORE_RAM)) {
++		memblock_reserve(PFB_LOG, SZ_4M);
++		memblock_mark_nomap(PFB_LOG, SZ_4M);
++		log = pixel_map(PFB_LOG, PFB_LOG_SIZE, NULL);
++		if (!log)
++			return -ENOMEM;
++		log[1] = log[2] = 0;
++		log[0] = 0x43474244;
++		wmb();
++		pixel_unmap(log, PFB_LOG_SIZE, NULL);
++	}
+ 	pixel_save("PIXEL LINUX EARLYCON SETUP\n", sizeof("PIXEL LINUX EARLYCON SETUP\n") - 1);
+ 	dma = early_ioremap(PFB_DMA, PAGE_SIZE);
+ 	decon = early_ioremap(PFB_DECON, PAGE_SIZE);
+@@ -209,9 +214,11 @@
+ 	if (!pixel_active)
+ 		return 0;
+ 	pixel_fb = ioremap_wc(PFB_BASE, PFB_BYTES);
+-	pixel_log = ioremap_wc(PFB_LOG, PFB_LOG_SIZE);
++	if (!IS_ENABLED(CONFIG_PSTORE_RAM))
++		pixel_log = ioremap_wc(PFB_LOG, PFB_LOG_SIZE);
+ 	pixel_decon = ioremap(PFB_DECON, PAGE_SIZE);
+-	if (!pixel_fb || !pixel_log || !pixel_decon)
++	if (!pixel_fb || !pixel_decon ||
++	    (!IS_ENABLED(CONFIG_PSTORE_RAM) && !pixel_log))
+ 		panic("Pixel earlycon permanent mapping failed");
+ 	pr_info("Pixel earlycon: permanent mappings ready\n");
+ 	return 0;

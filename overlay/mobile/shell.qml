@@ -17,8 +17,27 @@ ShellRoot {
     property string keyboardError: ""
     property var keyboardQueue: []
     property var keyboardLayer: null
+    // Alphabetical, so an app stays where it was found.
     property var apps: DesktopEntries.applications.values.filter(app => !app.noDisplay && app.command.length > 0)
+        .sort((a, b) => (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase()))
     readonly property int workspace: Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : 1
+    // A window that opens before Quickshell has loaded the workspace list
+    // (an app started with the session) keeps a null workspace for good, and
+    // the shell then treats the phone as home: no switcher card, no minimize.
+    // Re-query workspaces, then windows, until every window has one.
+    readonly property bool untrackedWindow: Hyprland.toplevels.values.some(w => !w.workspace)
+    onUntrackedWindowChanged: if (untrackedWindow) workspaceRepair.begin()
+    Timer {
+        id: workspaceRepair
+        property int attempts: 0
+        function begin() { attempts = 0; Hyprland.refreshWorkspaces(); restart(); }
+        Component.onCompleted: begin()
+        interval: 250
+        onTriggered: {
+            Hyprland.refreshToplevels();
+            if (root.untrackedWindow && ++attempts < 8) { Hyprland.refreshWorkspaces(); restart(); }
+        }
+    }
     function windowAddress(window) {
         if (!window) return "";
         const address = String(window.address).replace(/^0x/, "");
@@ -33,10 +52,27 @@ ShellRoot {
     function focusWindow(window) {
         const address = windowAddress(window);
         if (!address || !window.workspace || focusRequest.running) return;
-        focusRequest.command = ["hyprctl", "--batch",
-            "dispatch hl.dsp.focus({workspace=" + window.workspace.id + "}); " +
-            'dispatch hl.dsp.focus({window="address:' + address + '"})'];
-        console.log("MOBILE_FOCUS " + address + " workspace=" + window.workspace.id);
+        // Workspace 1 is the mobile foreground. Merely focusing a parked
+        // workspace leaves atHome true, so the home input layer covers the app.
+        const others = windowsOn(1).filter(w => windowAddress(w) !== address);
+        let slot = window.workspace.id;
+        if (slot === 1 && others.length) {
+            const used = {};
+            Hyprland.toplevels.values.forEach(w => { if (w.workspace) used[w.workspace.id] = true; });
+            slot = 2;
+            while (used[slot]) slot++;
+        }
+        const lines = [];
+        others.forEach(w => {
+            const other = windowAddress(w);
+            if (other) lines.push('dispatch hl.dsp.window.move({window="address:' + other + '", workspace=' + slot + ', follow=false})');
+        });
+        if (window.workspace.id !== 1)
+            lines.push('dispatch hl.dsp.window.move({window="address:' + address + '", workspace=1, follow=false})');
+        lines.push("dispatch hl.dsp.focus({workspace=1})");
+        lines.push('dispatch hl.dsp.focus({window="address:' + address + '"})');
+        focusRequest.command = ["hyprctl", "--batch", lines.join("; ")];
+        console.log("MOBILE_FOCUS " + address + " workspace=1");
         focusRequest.running = true;
     }
     Process {
@@ -44,6 +80,8 @@ ShellRoot {
         stdout: StdioCollector {}
         stderr: StdioCollector {}
         onExited: (code, status) => {
+            Hyprland.refreshWorkspaces();
+            Hyprland.refreshToplevels();
             // Dismiss on a clean exit. hyprctl often prints nothing or an extra
             // token after a successful batch; requiring every word to be "ok"
             // left the switcher up after the app had already focused.
@@ -165,10 +203,23 @@ ShellRoot {
     function edgeHeld() {
         if (gestureClosesSwitcher) return;
         overview.browse = 0;
-        if (page !== "spaces") beginDrawer("spaces");
-        overview.home = 0;
-        if (!gestureFromApp) motion.progress = 1;
-        else motion.animateTo(1);
+        const opening = page !== "spaces";
+        if (opening) beginDrawer("spaces");
+        if (!gestureFromApp) {
+            // From home, the backdrop dims in while the cards grow and fade in
+            // (the minimize animation reversed), with one easing and duration.
+            // animateTo() also ends the drag beginDrawer() started, so finger
+            // jitter while held cannot pull the switcher back to the finger.
+            // Releasing calls this again; the reveal is already running then.
+            if (opening) {
+                motion.progress = 0;
+                overview.revealFromHome(210);
+                motion.animateTo(1);
+            }
+        } else {
+            overview.home = 0;
+            motion.animateTo(1);
+        }
         if (gestureFromApp && overview.frontReady) schedulePark();
     }
     function edgeReleased(distance, velocity, held) {
@@ -315,6 +366,48 @@ ShellRoot {
         Quickshell.execDetached({ command: command, workingDirectory: app.workingDirectory || Quickshell.env("HOME") });
         console.log("MOBILE_LAUNCH " + app.id);
     }
+    // The call chip and an answered call: bring Phone forward, or start it.
+    function openPhone() {
+        closeDrawer();
+        shade.close();
+        keyboard("hide");
+        const open = Hyprland.toplevels.values.find(w => w.title === "Phone");
+        if (open) { focusWindow(open); return; }
+        // A newly launched dialer also needs a free foreground workspace,
+        // otherwise answering from another app tiles the call controls.
+        const park = goHome();
+        if (park === "stay") { startupError = "Close an app before opening Phone"; return; }
+        if (park) {
+            phoneLaunchPreparation.command = park;
+            phoneLaunchPreparation.running = true;
+        } else launchPhone();
+    }
+    function launchPhone() {
+        const app = root.apps.find(entry => entry.id === "phone");
+        if (app) launch(app);
+        else Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-app", "launch", "phone"]);
+        phoneFocus.attempts = 0;
+        phoneFocus.restart();
+    }
+    Process {
+        id: phoneLaunchPreparation
+        onExited: (code, status) => {
+            if (code === 0) root.launchPhone();
+            else root.startupError = "Could not open Phone";
+        }
+    }
+    Timer {
+        id: phoneFocus
+        property int attempts: 0
+        interval: 100
+        onTriggered: {
+            const open = Hyprland.toplevels.values.find(w => w.title === "Phone" && w.workspace);
+            if (open && !focusRequest.running) { root.focusWindow(open); return; }
+            Hyprland.refreshWorkspaces();
+            Hyprland.refreshToplevels();
+            if (++attempts < 50) restart();
+        }
+    }
     function terminal(from) {
         const origin = from ? from.mapToItem(launchZoom, 0, 0) : null;
         closeDrawer();
@@ -366,6 +459,11 @@ ShellRoot {
         function controlState(): string { return JSON.stringify({open: shade.opened, detail: shade.detail, notifications: shade.notificationCount, wifi: shade.wifi.connected, networks: shade.networks.length}); }
         function detail(name: string): void { if (["wifi", "battery", "calendar", "weather", "stats", "clipboard", "speedtest"].indexOf(name) >= 0) shade.showDetail(name); }
         function terminal(): void { root.terminal(); }
+        function powerMenu(): void { root.closeDrawer(); shade.close(); systemPowerMenu.show(); }
+        function phone(): void { root.openPhone(); }
+        // Power and volume keys silence a ringing call, as on Android.
+        function callSilence(): bool { const ringing = phoneCalls.ringing; phoneCalls.silence(); return ringing; }
+        function callState(): string { return JSON.stringify({calls: phoneCalls.calls, ringing: phoneCalls.ringing}); }
         function keyboard(): void { root.keyboard("toggle"); }
         function volume(action: string): void { volumeOsd.adjust(action); }
         function crt(action: string, token: string): string {
@@ -387,6 +485,7 @@ ShellRoot {
     }
     SystemClock { id: clock; precision: SystemClock.Minutes }
     VolumeOsd { id: volumeOsd }
+    PowerMenu { id: systemPowerMenu }
     RotateButton {}
     AmbientDisplay { notifications: shade.notificationValues }
     // The alert slider sets the ring group, as on Android: muted in Vibrate
@@ -428,6 +527,69 @@ ShellRoot {
         onExited: clipboardWatchRetry.start()
     }
     Timer { id: clipboardWatchRetry; interval: 10000; onTriggered: clipboardWatch.running = true }
+    IncomingCall {
+        id: phoneCalls
+        readonly property string slider: MobileStatus.controls.slider || "ring"
+        quiet: MobileStatus.dnd || slider === "silent"
+        vibrateOnly: slider === "vibrate"
+        haptics: MobileStatus.controls.haptics !== false
+        onArrived: { root.closeDrawer(); shade.close(); root.keyboard("hide"); toast.dismiss(); }
+        onBuzz: MobileStatus.control(["vibrate", "600", "90"])
+        onOpenPhone: root.openPhone()
+    }
+    // Preferences the shell follows as they change (Settings writes them).
+    property var prefsData: ({})
+    FileView {
+        id: prefsFile
+        path: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/omarchy-mobile/prefs.json"
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: { try { root.prefsData = JSON.parse(text()); } catch (e) { root.prefsData = {}; } }
+        onLoadFailed: root.prefsData = {}
+    }
+    Timer { interval: 30000; running: true; repeat: true; onTriggered: prefsFile.reload() }
+    // Screen timeout (prefs screenTimeout, seconds; 0 is never): that long
+    // without input turns the screen off, or to the always-on display, as a
+    // power-key press would; never with a call. Apps that inhibit idle (a
+    // video) keep it on. The screen lighting without input (a call, a wake)
+    // starts the count again.
+    readonly property int screenTimeout: [0, 15, 30, 60, 120, 300, 600].indexOf(prefsData.screenTimeout) >= 0
+        ? prefsData.screenTimeout : 60
+    property bool idleRestarting: false
+    IdleMonitor {
+        id: screenIdle
+        enabled: root.screenTimeout > 0 && phoneCalls.calls.length === 0 && !root.idleRestarting
+        timeout: root.screenTimeout
+        respectInhibitors: true
+        onIsIdleChanged: if (isIdle) Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-display",
+                                                              "idle", root.prefsData.alwaysOn === true ? "ambient" : "off"])
+    }
+    Timer { id: idleRestart; interval: 250; onTriggered: root.idleRestarting = false }
+    // Sleep while the screen is dark (omarchy-mobile-sleep, through the
+    // device's suspend adapter; Settings can turn it off).
+    Process {
+        id: sleepPolicy
+        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-sleep", "run"]
+        running: true
+        onExited: (code, status) => { if (code !== 3) sleepPolicyRetry.start(); }
+    }
+    Timer { id: sleepPolicyRetry; interval: 10000; onTriggered: sleepPolicy.running = true }
+    // Texts: the watcher files new texts from the modem and notifies; the
+    // unread count is kept for the status bar.
+    property int unreadTexts: 0
+    Process {
+        id: textWatch
+        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-messages", "watch"]
+        running: true
+        stdout: SplitParser {
+            onRead: line => {
+                try { const data = JSON.parse(line); if (data.ok) root.unreadTexts = data.unread || 0; } catch (e) {}
+            }
+        }
+        // Exit 3: no ModemManager, nothing to follow.
+        onExited: (code, status) => { if (code !== 3) textWatchRetry.start(); }
+    }
+    Timer { id: textWatchRetry; interval: 5000; onTriggered: textWatch.running = true }
     NotificationToast {
         id: toast
         blocked: MobileStatus.dnd || shade.opened || shade.screenshotPrivacy || MobileStatus.ambient
@@ -460,8 +622,26 @@ ShellRoot {
         RowLayout {
             anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16
             Text { font.family: MobileTheme.fontFamily; text: "omarchy"; color: MobileTheme.accent; font.pixelSize: 17; font.bold: true }
+            // Unread texts: tap for Messages.
+            Text {
+                visible: root.unreadTexts > 0
+                font.family: MobileTheme.fontFamily
+                text: "\u{F0369} " + root.unreadTexts
+                color: MobileTheme.accent
+                font.pixelSize: 14
+                TapHandler { onTapped: Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-app", "launch", "messages"]) }
+            }
+            // A call in progress: tap to return to it.
+            Rectangle {
+                visible: phoneCalls.ongoing !== null
+                implicitWidth: callChip.implicitWidth + 18
+                implicitHeight: 24
+                radius: MobileTheme.radius(12)
+                color: MobileTheme.success
+                Text { id: callChip; anchors.centerIn: parent; font.family: MobileTheme.fontFamily; text: "\u{F03F2} " + phoneCalls.elapsed; color: MobileTheme.background; font.pixelSize: 13; font.bold: true }
+                TapHandler { onTapped: root.openPhone() }
+            }
             Text { font.family: MobileTheme.fontFamily; text: root.keyboardError || root.startupError || "Space " + root.workspace; color: MobileTheme.secondary; font.pixelSize: 13; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter }
-            StatsStatus { TapHandler { onTapped: shade.showDetail("stats") } }
             WifiStatus { TapHandler { onTapped: shade.showDetail("wifi") } }
             BatteryStatus { TapHandler { onTapped: shade.showDetail("battery") } }
             Text { font.family: MobileTheme.fontFamily; text: Qt.formatDateTime(clock.date, "h:mm"); color: MobileTheme.foreground; font.pixelSize: 16; TapHandler { onTapped: shade.showDetail("calendar") } }
@@ -845,5 +1025,8 @@ ShellRoot {
             }
         }
     }
-    CrtPower { id: crtPower }
+    CrtPower {
+        id: crtPower
+        onOpened: { root.idleRestarting = true; idleRestart.restart(); }
+    }
 }

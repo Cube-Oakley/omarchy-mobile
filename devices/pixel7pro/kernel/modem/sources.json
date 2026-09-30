@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/LineageOS/android_kernel_google_gs201",
+  "commit": "40ff93424549ffebfbba32e9435dfc58c40decb2",
+  "files": {
+    "drivers/pci/controller/dwc/pcie-designware-host.c": "e75397cc8f6dc98e3ec4ea9b41ce19e4231d735110728e09be30aacbdc6c6dcf",
+    "drivers/pci/controller/dwc/pcie-designware.c": "5a94484b9c794aa850f03ce46bf9a0e70c91c101af4c4ed4239fd3ec15adf447",
+    "drivers/pci/controller/dwc/pcie-exynos-gs201-rc-cal.c": "60af200674ef8049816cf4fc89dbb7dad125ce800b442d359bab4fdd0e153150",
+    "drivers/pci/controller/dwc/pcie-exynos-rc.c": "7e1ca77d9315f69979d6b34e7bcc0322b4e4027039652009fee2b256412171f9",
+    "drivers/pci/controller/dwc/pcie-designware.h": "89fb1f9be33f11569bdaece45d1fd744755507a8cc6b45bac465d86490f42d49",
+    "drivers/pci/controller/dwc/pcie-exynos-rc.h": "2cc11ea26700d304c35218399ab5ff5e1b072701e759d5cfadb08c6b3e18c614",
+    "drivers/soc/google/cpif/modem_ctrl_s5100.c": "b5275361a02c7fbf6e8fdca425dbae03a88a5c950bdfe5ac37375ac3ef2fb777",
+    "drivers/soc/google/cpif/modem_ctrl.h": "0abb02f5b7ced9bf40c55b2a19e39c857d6a10139891afa8e1ebe0fec5c5ea42",
+    "drivers/soc/google/cpif/s51xx_pcie.c": "a670032aeb93e751616fd192f37bd987651c17dea3c33f0b0773f9bbaa1a3dc1",
+    "include/linux/exynos-pci-noti.h": "4bfdaa03b6c8de348100c25859123a36f044d7a989e6f19c80f16ff38f59c5b7",
+    "drivers/pinctrl/samsung/pinctrl-gs201.c": "a4fda669ca1ac98b8a142c788345c1691ff09b18f5c34bd6244dc51e2f1e79a7"
+  }
+}

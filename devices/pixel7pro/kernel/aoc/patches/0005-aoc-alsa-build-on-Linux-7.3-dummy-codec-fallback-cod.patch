@@ -1,0 +1,841 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:36:43 -0700
+Subject: [PATCH 5/7] aoc/alsa: build on Linux 7.3; dummy codec fallback; codec
+ TDM slots from DT (google,tdm-rx/tx-slots)
+
+---
+ aoc/alsa/Kbuild            |  9 +++++
+ aoc/alsa/aoc_alsa.h        |  5 ++-
+ aoc/alsa/aoc_alsa_card.c   | 75 +++++++++++++++++++++++++++++---------
+ aoc/alsa/aoc_alsa_compr.c  | 31 ++++++----------
+ aoc/alsa/aoc_alsa_hw.c     | 17 +++++----
+ aoc/alsa/aoc_alsa_incall.c | 22 +++++------
+ aoc/alsa/aoc_alsa_nohost.c | 10 ++---
+ aoc/alsa/aoc_alsa_path.c   | 18 ++++-----
+ aoc/alsa/aoc_alsa_pcm.c    | 22 +++++------
+ aoc/alsa/aoc_alsa_voice.c  | 13 +++----
+ aoc/alsa/aoc_alsa_voip.c   | 22 +++++------
+ aoc/aoc.h                  |  4 +-
+ 12 files changed, 144 insertions(+), 104 deletions(-)
+ create mode 100644 aoc/alsa/Kbuild
+
+diff --git a/aoc/alsa/Kbuild b/aoc/alsa/Kbuild
+new file mode 100644
+index 0000000..cf608ea
+--- /dev/null
++++ b/aoc/alsa/Kbuild
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Google's AOC ALSA/ASoC driver (android-gs-pantah-5.10-android14) for the Pixel 7 Pro (GS201).
++ccflags-y += -I$(src) -I$(src)/.. -I$(src)/../../aoc-ipc -I$(src)/../../stubs/include \
++	-I$(src)/../../gsa/include -DCONFIG_SOC_GS201=1
++obj-m += aoc_alsa_dev.o aoc_alsa_dev_util.o
++aoc_alsa_dev_util-y := aoc_alsa_path.o aoc_alsa_drv.o aoc_alsa_pcm.o aoc_alsa_voice.o \
++	aoc_alsa_compr.o aoc_alsa_ctl.o aoc_alsa_hw.o aoc_alsa_nohost.o aoc_alsa_incall.o \
++	aoc_alsa_voip.o
++aoc_alsa_dev-y := aoc_alsa_card.o
+diff --git a/aoc/alsa/aoc_alsa.h b/aoc/alsa/aoc_alsa.h
+index 9ebd338..2da5555 100644
+--- a/aoc/alsa/aoc_alsa.h
++++ b/aoc/alsa/aoc_alsa.h
+@@ -425,9 +425,10 @@ int aoc_set_sink_mode(struct aoc_chip *chip, int sink, int mode);
+ int aoc_set_usb_config(struct aoc_chip *chip);
+ int aoc_set_usb_config_v2(struct aoc_chip *chip);
+ 
+-int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
++struct iov_iter;
++int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, struct iov_iter *src,
+ 		    uint32_t count);
+-int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, void *dest,
++int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, struct iov_iter *dest,
+ 		   uint32_t count);
+ int aoc_audio_volume_set(struct aoc_chip *chip, uint32_t volume,
+ 			 int src, int dst);
+diff --git a/aoc/alsa/aoc_alsa_card.c b/aoc/alsa/aoc_alsa_card.c
+index 09be87e..c37c53e 100644
+--- a/aoc/alsa/aoc_alsa_card.c
++++ b/aoc/alsa/aoc_alsa_card.c
+@@ -263,6 +263,10 @@ static const struct be_param_cache default_be_params[PORT_MAX] = {
+ 			4, 48000, 4, SNDRV_PCM_FORMAT_S32_LE)
+ };
+ 
++static bool aoc_missing_codecs_dummy = true;
++module_param(aoc_missing_codecs_dummy, bool, 0644);
++MODULE_PARM_DESC(aoc_missing_codecs_dummy, "Use the dummy codec for links whose codec has no driver");
++
+ static struct snd_soc_dai_link_component null_component = {
+ 	.name = "snd-soc-dummy",
+ 	.dai_name = "snd-soc-dummy-dai",
+@@ -349,7 +353,7 @@ static int hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 		hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
+ 	struct snd_interval *channels =
+ 		hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
+-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+ 	struct aoc_chip *chip =
+ 		(struct aoc_chip *)snd_soc_card_get_drvdata(rtd->card);
+ 	struct snd_card_pdata *pdata =
+@@ -504,7 +508,7 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
+ {
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+ 	struct snd_soc_dai *codec_dai;
+-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+ 
+ 	u32 rate, bclk, channel;
+ 	int i, bit_width, ret;
+@@ -549,11 +553,33 @@ static int i2s_hw_params(struct snd_pcm_substream *substream,
+ 	return 0;
+ }
+ 
++/*
++ * Pixel 7 Pro port: codecs without slot controls of their own (mainline
++ * cs35l41) take their TDM slots from their DT node, google,tdm-rx-slots and
++ * google,tdm-tx-slots, which the board module adds.
++ */
++static void set_codec_slots(struct snd_soc_dai *dai)
++{
++	struct device_node *np = dai->component->dev->of_node;
++	unsigned int rx[8], tx[8];
++	int nrx, ntx, ret;
++
++	if (!np)
++		return;
++	nrx = of_property_read_variable_u32_array(np, "google,tdm-rx-slots", rx, 1, 8);
++	ntx = of_property_read_variable_u32_array(np, "google,tdm-tx-slots", tx, 1, 8);
++	if (nrx <= 0 && ntx <= 0)
++		return;
++	ret = snd_soc_dai_set_channel_map(dai, max(ntx, 0), tx, max(nrx, 0), rx);
++	if (ret && ret != -ENOTSUPP)
++		pr_warn("%s: set channel map %s fail %d", __func__, dai->name, ret);
++}
++
+ static int tdm_hw_params(struct snd_pcm_substream *substream,
+ 	struct snd_pcm_hw_params *param)
+ {
+ 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+-	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+ 	struct snd_soc_dai *codec_dai;
+ 	struct snd_soc_dai_link *dai_link = rtd->dai_link;
+ 	u32 rate, bclk, channel, tdmslot;
+@@ -627,6 +653,7 @@ static int tdm_hw_params(struct snd_pcm_substream *substream,
+ 		if (ret && ret != -ENOTSUPP)
+ 			pr_warn("%s: set tdm slot %s fail %d", __func__,
+ 					 codec_dai->name, ret);
++		set_codec_slots(codec_dai);
+ 
+ 		set_pll_clk(codec_dai, bclk, rate, pdata);
+ 		set_sys_clk(codec_dai, bclk, rate, SND_SOC_CLOCK_IN, pdata);
+@@ -1105,7 +1132,7 @@ static int of_parse_dai_cpu(struct device *dev,
+ 	dai->num_cpus = 1;
+ 	component->of_node = of_node;
+ 
+-	ret = snd_soc_of_get_dai_name(of_cpu_root, &component->dai_name);
++	ret = snd_soc_of_get_dai_name(of_cpu_root, &component->dai_name, 0);
+ 	if (ret) {
+ 		if (ret == -EPROBE_DEFER) {
+ 			pr_info("%s: wait cpu_dai for %s", __func__, dai->name);
+@@ -1137,6 +1164,19 @@ static int of_parse_dai_codec(struct device *dev,
+ 
+ 	ret = snd_soc_of_get_dai_link_codecs(dev, of_codec_root, dai);
+ 	of_node_put(of_codec_root);
++	/*
++	 * Pixel 7 Pro port: the amplifier and haptics codecs may not have a
++	 * driver yet. Rather than hold the whole card back, give their links
++	 * the dummy codec; the AoC-side endpoints (microphones included) work
++	 * without them. Reload the card once a codec binds.
++	 */
++	if (ret == -EPROBE_DEFER && aoc_missing_codecs_dummy) {
++		pr_warn("%s: codec for %s not registered; using the dummy codec\n",
++			__func__, dai->name);
++		dai->codecs = &null_component;
++		dai->num_codecs = 1;
++		ret = 0;
++	}
+ 	return ret;
+ }
+ 
+@@ -1189,8 +1229,9 @@ static int of_parse_one_dai(struct device_node *node, struct device *dev,
+ 			dai->trigger[1] = SND_SOC_DPCM_TRIGGER_POST;
+ 			break;
+ 		case 2:
+-			dai->trigger[0] = SND_SOC_DPCM_TRIGGER_BESPOKE;
+-			dai->trigger[1] = SND_SOC_DPCM_TRIGGER_BESPOKE;
++			/* BESPOKE triggers were removed from ASoC. */
++			dai->trigger[0] = SND_SOC_DPCM_TRIGGER_POST;
++			dai->trigger[1] = SND_SOC_DPCM_TRIGGER_POST;
+ 			break;
+ 		default:
+ 			dai->trigger[0] = SND_SOC_DPCM_TRIGGER_PRE;
+@@ -1225,15 +1266,17 @@ static int of_parse_one_dai(struct device_node *node, struct device *dev,
+ 
+ 	daifmt = of_get_child_by_name(node, "daifmt");
+ 	if (daifmt) {
+-		dai->dai_fmt =
+-			snd_soc_of_parse_daifmt(daifmt, NULL, NULL, NULL);
++		dai->dai_fmt = snd_soc_daifmt_parse_format(daifmt, NULL) |
++			snd_soc_daifmt_parse_clock_provider_as_flag(daifmt, NULL);
+ 		of_node_put(daifmt);
+ 		pr_debug("%s: daifmt 0x%x for %s", __func__, dai->dai_fmt,
+ 			dai->name);
+ 	}
+ 
+-	dai->dpcm_playback = of_property_read_bool(node, "playback");
+-	dai->dpcm_capture = of_property_read_bool(node, "capture");
++	dai->playback_only = of_property_read_bool(node, "playback") &&
++			     !of_property_read_bool(node, "capture");
++	dai->capture_only = of_property_read_bool(node, "capture") &&
++			    !of_property_read_bool(node, "playback");
+ 	dai->no_pcm = of_property_read_bool(node, "no-pcm");
+ 	dai->dynamic = of_property_read_bool(node, "dynamic");
+ 	dai->ignore_pmdown_time =
+@@ -1302,8 +1345,8 @@ static int aoc_of_parse_dai_link(struct device_node *node,
+ #ifdef DUMP_DAI_LINK_INFO
+ 		pr_info("dai: %s\n", dai_link->name);
+ 		pr_info("id: %u\n", (uint32_t)dai_link->id);
+-		pr_info("playback %u capture %u\n", dai_link->dpcm_playback,
+-			dai_link->dpcm_capture);
++		pr_info("playback-only %u capture-only %u\n", dai_link->playback_only,
++			dai_link->capture_only);
+ 		pr_info("no-pcm: %u\n", dai_link->no_pcm);
+ 		pr_info("dynamic: %u\n", dai_link->dynamic);
+ 		pr_info("\n");
+@@ -1708,7 +1751,7 @@ static void init_headset_jack(struct snd_soc_card *card,
+ 	err = snd_soc_card_jack_new(card, "Headset Jack",
+ 		SND_JACK_HEADSET | SND_JACK_BTN_0 |
+ 		SND_JACK_BTN_1 | SND_JACK_BTN_2 |
+-		SND_JACK_BTN_3, &pdata->jack,	NULL, 0);
++		SND_JACK_BTN_3, &pdata->jack);
+ 	if (err) {
+ 		pr_err("Fail to create headset jack %d\n",
+ 			err);
+@@ -1750,7 +1793,7 @@ static void init_backend_control(struct snd_soc_pcm_runtime *rtd, u32 id)
+ 	    !be_res_map[idx].controls)
+ 		return;
+ 
+-	cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+ 	snd_soc_add_dai_controls(cpu_dai,
+ 		 be_res_map[idx].controls, be_res_map[idx].num_controls);
+ }
+@@ -1929,7 +1972,7 @@ err:
+ 	return ret;
+ }
+ 
+-static int aoc_snd_card_remove(struct platform_device *pdev)
++static void aoc_snd_card_remove(struct platform_device *pdev)
+ {
+ 	struct snd_soc_card *card = platform_get_drvdata(pdev);
+ 
+@@ -1937,8 +1980,6 @@ static int aoc_snd_card_remove(struct platform_device *pdev)
+ 		snd_soc_unregister_card(card);
+ 		snd_soc_card_set_drvdata(card, NULL);
+ 	}
+-
+-	return 0;
+ }
+ 
+ static const struct of_device_id aoc_snd_of_match[] = {
+diff --git a/aoc/alsa/aoc_alsa_compr.c b/aoc/alsa/aoc_alsa_compr.c
+index bfc768a..47f2413 100644
+--- a/aoc/alsa/aoc_alsa_compr.c
++++ b/aoc/alsa/aoc_alsa_compr.c
+@@ -14,25 +14,13 @@
+ #include <linux/platform_device.h>
+ #include <linux/version.h>
+ 
+-#include <trace/hooks/snd_compr.h>
+ 
+ #include "aoc_alsa.h"
++#include <linux/uio.h>
+ #include "aoc_alsa_drv.h"
+ 
+ static void aoc_stop_work_handler(struct work_struct *work);
+ 
+-static void vh_ep_use_pause_in_drain(void *data, bool *use_pause_in_drain, bool *leave_draining)
+-{
+-	*use_pause_in_drain = true;
+-	*leave_draining = true;
+-}
+-
+-static int aoc_compr_vh_snd_compr_init()
+-{
+-	return register_trace_android_vh_snd_compr_use_pause_in_drain(vh_ep_use_pause_in_drain,
+-									NULL);
+-}
+-
+ static void aoc_compr_reset_handler(aoc_aud_service_event_t evnt, void *cookies)
+ {
+ 	struct aoc_alsa_stream *alsa_stream = (struct aoc_alsa_stream *)cookies;
+@@ -366,9 +354,7 @@ static int aoc_compr_playback_open(struct snd_compr_stream *cstream)
+ 	alsa_stream->draining = 0; // set to 1 when partial drain
+ 
+ 	alsa_stream->timer_interval_ns = COMPR_OFFLOAD_TIMER_INTERVAL_NANOSECS;
+-	hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC,
+-		     HRTIMER_MODE_REL);
+-	alsa_stream->hr_timer.function = &aoc_compr_hrtimer_irq_handler;
++	hrtimer_setup(&(alsa_stream->hr_timer), &aoc_compr_hrtimer_irq_handler, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 
+ 	dev->prvdata = alsa_stream; /* For interrupt-driven playback */
+ 
+@@ -572,7 +558,7 @@ out:
+ }
+ 
+ static int aoc_compr_pointer(struct snd_soc_component *component, struct snd_compr_stream *cstream,
+-			     struct snd_compr_tstamp *arg)
++			     struct snd_compr_tstamp64 *arg)
+ {
+ 	struct snd_compr_runtime *runtime = cstream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -625,7 +611,12 @@ static int aoc_compr_playback_copy(struct snd_compr_stream *cstream,
+ 	if (err < 0)
+ 		pr_err("ERR: %d failed to send metadata\n", err);
+ 
+-	err = aoc_audio_write(alsa_stream, buf, count);
++	{
++		struct iov_iter iter;
++
++		iov_iter_ubuf(&iter, ITER_SOURCE, buf, count);
++		err = aoc_audio_write(alsa_stream, &iter, count);
++	}
+ 	if (err < 0) {
+ 		pr_err("ERR:%d failed to write to buffer\n", err);
+ 		return err;
+@@ -796,7 +787,7 @@ static int aoc_compr_new(struct snd_soc_component *component, struct snd_soc_pcm
+ static const struct snd_soc_component_driver aoc_compr_component = {
+ 	.name = "AoC COMPR",
+ 	.compress_ops = &snd_aoc_compr_ops,
+-	.pcm_construct = aoc_compr_new,
++	.pcm_new = aoc_compr_new,
+ };
+ #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0))
+ static const struct snd_soc_component_driver aoc_compr_component = {
+@@ -864,7 +855,7 @@ int aoc_compr_init(void)
+ 		return err;
+ 	}
+ 
+-	aoc_compr_vh_snd_compr_init();
++	/* Android vendor hook (pause in drain) not available on mainline. */
+ 	return 0;
+ }
+ 
+diff --git a/aoc/alsa/aoc_alsa_hw.c b/aoc/alsa/aoc_alsa_hw.c
+index 45e632e..bf7d1bc 100644
+--- a/aoc/alsa/aoc_alsa_hw.c
++++ b/aoc/alsa/aoc_alsa_hw.c
+@@ -14,6 +14,7 @@
+ #include "aoc_alsa_path.h"
+ 
+ #include <linux/modem_notifier.h>
++#include <linux/uio.h>
+ 
+ #ifndef ALSA_AOC_CMD_LOG_DISABLE
+ static int cmd_count;
+@@ -29,7 +30,7 @@ extern struct be_path_cache port_array[PORT_MAX];
+  * TODO: TDM/I2S will be removed from port naming and will be replaced
+  * by sink-associated devices such as spker, headphone, bt, usb, mode
+  */
+-static aoc_audio_sink[] = {
++static int aoc_audio_sink[] = {
+ 	[PORT_I2S_0_RX] = SINK_HEADPHONE, [PORT_I2S_0_TX] = -1,
+ 	[PORT_I2S_1_RX] = SINK_BT,        [PORT_I2S_1_TX] = -1,
+ 	[PORT_I2S_2_RX] = SINK_USB,       [PORT_I2S_2_TX] = -1,
+@@ -162,7 +163,7 @@ static int hw_id_to_phone_mic_source(int hw_id)
+ }
+ 
+ /* temp usage */
+-static aoc_audio_stream_type[] = {
++static int aoc_audio_stream_type[] = {
+ 	[0] = MMAPED,  [1] = NORMAL,   [2] = NORMAL,	   [3] = NORMAL,  [4] = NORMAL,
+ 	[5] = NORMAL,  [6] = COMPRESS, [7] = NORMAL,	   [8] = NORMAL,  [9] = MMAPED,
+ 	[10] = RAW,    [11] = NORMAL,  [12] = NORMAL,	   [13] = NORMAL, [14] = NORMAL,
+@@ -761,7 +762,8 @@ int aoc_sidetone_eq_set(struct aoc_chip *chip, int biquad_idx, long *val)
+ 	cmd.stage_num = biquad_idx;
+ 	for (i = 0; i < n_params; i++) {
+ 		tmp = (uint32_t)val[i];
+-		cmd.coeffs[i] = *(float *)(&tmp);
++		/* The bits of an IEEE float; no FP instructions in the kernel. */
++		memcpy(&cmd.coeffs[i], &tmp, sizeof(tmp));
+ 	}
+ 	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd, sizeof(cmd), (uint8_t *)&cmd,
+ 				chip);
+@@ -2680,7 +2682,7 @@ int aoc_audio_voip_stop(struct aoc_alsa_stream *alsa_stream)
+ /* TODO: this function is modified to deal with the issue where ALSA appl_ptr
+  * and the reader pointer in AoC ringer buffer are out-of-sync due to overflow
+  */
+-int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, void *dest,
++int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, struct iov_iter *dest,
+ 		   uint32_t count)
+ {
+ 	int err = 0;
+@@ -2715,7 +2717,7 @@ int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, void *dest,
+ 	if (!aoc_online_state(dev))
+ 		memset(tmp, 0, count);
+ 
+-	err = copy_to_user(dest, tmp, count);
++	err = count - copy_to_iter(tmp, count, dest);
+ 	if (err != 0) {
+ 		pr_err("ERR: %d bytes not copied to user space\n", err);
+ 		err = -EFAULT;
+@@ -2725,7 +2727,7 @@ out:
+ 	return err < 0 ? err : 0;
+ }
+ 
+-int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
++int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, struct iov_iter *src,
+ 		    uint32_t count)
+ {
+ 	int err = 0;
+@@ -2757,7 +2759,7 @@ int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
+ 		if (alsa_stream->cstream)
+ 			pr_debug("compr offload, count: %d, blocksize: %d\n", count, block_size);
+ 
+-		err = copy_from_user(tmp, src, block_size);
++		err = block_size - copy_from_iter(tmp, block_size, src);
+ 		if (err != 0) {
+ 			pr_err("ERR: %d bytes not read from user space\n", err);
+ 			err = -EFAULT;
+@@ -2771,7 +2773,6 @@ int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
+ 		}
+ 
+ 		count -= block_size;
+-		src += block_size;
+ 	}
+ 
+ out:
+diff --git a/aoc/alsa/aoc_alsa_incall.c b/aoc/alsa/aoc_alsa_incall.c
+index 72a2636..095bd7c 100644
+--- a/aoc/alsa/aoc_alsa_incall.c
++++ b/aoc/alsa/aoc_alsa_incall.c
+@@ -10,6 +10,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/version.h>
+ 
++#include <linux/uio.h>
+ #include "aoc_alsa.h"
+ #include "aoc_alsa_drv.h"
+ 
+@@ -226,8 +227,7 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
+ 		alsa_stream->isr_type = INTR;
+ 	} else {
+ 		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
+-		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-		alsa_stream->hr_timer.function = &aoc_incall_hifi_hrtimer_irq_handler;
++		hrtimer_setup(&(alsa_stream->hr_timer), &aoc_incall_hifi_hrtimer_irq_handler, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 		alsa_stream->isr_type = TIMER;
+ 	}
+ 
+@@ -457,7 +457,7 @@ static int snd_aoc_pcm_trigger(struct snd_soc_component *component,
+ /* Copy data from user space to hardware buffer  */
+ static int snd_aoc_pcm_playback_copy_user(struct snd_soc_component *component,
+ 					  struct snd_pcm_substream *substream, int channel,
+-					  unsigned long pos, void __user *buf, unsigned long count)
++					  unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -473,7 +473,7 @@ static int snd_aoc_pcm_playback_copy_user(struct snd_soc_component *component,
+ /* Copy data from hardware buffer to user space */
+ static int snd_aoc_pcm_capture_copy_user(struct snd_soc_component *component,
+ 					 struct snd_pcm_substream *substream, int channel,
+-					 unsigned long pos, void __user *buf, unsigned long count)
++					 unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -489,7 +489,7 @@ static int snd_aoc_pcm_capture_copy_user(struct snd_soc_component *component,
+ /* Copy data between hardware buffer and user space */
+ static int snd_aoc_pcm_copy_user(struct snd_soc_component *component,
+ 				 struct snd_pcm_substream *substream, int channel,
+-				 unsigned long pos, void __user *buf, unsigned long count)
++				 unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+ 		return snd_aoc_pcm_playback_copy_user(component, substream, channel, pos, buf,
+@@ -533,18 +533,18 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
+ {
+ 	struct snd_pcm_substream *substream = NULL;
+ 	/* Allocate DMA memory */
+-	if (rtd->dai_link->dpcm_playback) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream) {
+ 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
+ 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-					      snd_dma_continuous_data(GFP_KERNEL),
++					      NULL,
+ 					      snd_aoc_playback_hw.buffer_bytes_max,
+ 					      snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+ 
+-	if (rtd->dai_link->dpcm_capture) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
+ 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
+ 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-					      snd_dma_continuous_data(GFP_KERNEL),
++					      NULL,
+ 					      snd_aoc_playback_hw.buffer_bytes_max,
+ 					      snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+@@ -560,11 +560,11 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
+ 	.ioctl = snd_aoc_pcm_lib_ioctl,
+ 	.hw_params = snd_aoc_pcm_hw_params,
+ 	.hw_free = snd_aoc_pcm_hw_free,
+-	.copy_user = snd_aoc_pcm_copy_user,
++	.copy = snd_aoc_pcm_copy_user,
+ 	.prepare = snd_aoc_pcm_prepare,
+ 	.trigger = snd_aoc_pcm_trigger,
+ 	.pointer = snd_aoc_pcm_pointer,
+-	.pcm_construct = aoc_pcm_new,
++	.pcm_new = aoc_pcm_new,
+ };
+ 
+ static int aoc_pcm_probe(struct platform_device *pdev)
+diff --git a/aoc/alsa/aoc_alsa_nohost.c b/aoc/alsa/aoc_alsa_nohost.c
+index 1667173..888191d 100644
+--- a/aoc/alsa/aoc_alsa_nohost.c
++++ b/aoc/alsa/aoc_alsa_nohost.c
+@@ -88,21 +88,21 @@ static int aoc_nohost_new(struct snd_soc_component *component,
+ 	struct snd_pcm_substream *substream = NULL;
+ 
+ 	/* Allocate DMA memory */
+-	if (rtd->dai_link->dpcm_playback) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream) {
+ 		substream =
+ 			rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
+ 		snd_pcm_lib_preallocate_pages(
+ 			substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-			snd_dma_continuous_data(GFP_KERNEL),
++			NULL,
+ 			snd_aoc_nohost_hw.buffer_bytes_max,
+ 			snd_aoc_nohost_hw.buffer_bytes_max);
+ 	}
+-	if (rtd->dai_link->dpcm_capture) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
+ 		substream =
+ 			rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
+ 		snd_pcm_lib_preallocate_pages(
+ 			substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-			snd_dma_continuous_data(GFP_KERNEL),
++			NULL,
+ 			snd_aoc_nohost_hw.buffer_bytes_max,
+ 			snd_aoc_nohost_hw.buffer_bytes_max);
+ 	}
+@@ -116,7 +116,7 @@ static const struct snd_soc_component_driver aoc_nohost_component = {
+ 	.hw_params = snd_aoc_nohost_hw_params,
+ 	.hw_free = snd_aoc_nohost_hw_free,
+ 	.prepare = snd_aoc_nohost_prepare,
+-	.pcm_construct = aoc_nohost_new,
++	.pcm_new = aoc_nohost_new,
+ };
+ 
+ static int aoc_nohost_probe(struct platform_device *pdev)
+diff --git a/aoc/alsa/aoc_alsa_path.c b/aoc/alsa/aoc_alsa_path.c
+index 8309098..b5fe969 100644
+--- a/aoc/alsa/aoc_alsa_path.c
++++ b/aoc/alsa/aoc_alsa_path.c
+@@ -12,7 +12,6 @@
+ #include <linux/device.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+-#include <linux/of_gpio.h>
+ #include <linux/platform_device.h>
+ #include <linux/string.h>
+ #include <sound/soc.h>
+@@ -38,7 +37,6 @@ struct be_path_cache port_array[PORT_MAX] = {
+ static const struct snd_soc_dai_ops be_dai_ops;
+ static struct mutex path_mutex;
+ 
+-static int aoc_compress_new(struct snd_soc_pcm_runtime *rtd, int num);
+ 
+ static const uint32_t rx_ep_list[] = {
+ 	IDX_EP2_RX,           /* low-latency-playback */
+@@ -181,7 +179,10 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
+ 			.channels_min = 1,
+ 			.channels_max = 2,
+ 		},
+-		.compress_new = aoc_compress_new,
++		/*
++		 * Pixel 7 Pro port: compress_new moved into the DAI ops in
++		 * newer ASoC; compressed offload on EP7 is not set up yet.
++		 */
+ 		.name = "EP7 PB",
+ 		.id = IDX_EP7_RX,
+ 	},
+@@ -859,11 +860,6 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
+ 	},
+ };
+ 
+-static int aoc_compress_new(struct snd_soc_pcm_runtime *rtd, int num)
+-{
+-	return snd_soc_new_compress(rtd, num);
+-}
+-
+ static int be_startup(struct snd_pcm_substream *stream, struct snd_soc_dai *dai)
+ {
+ 	pr_debug("%s: dai %s id 0x%x", __func__, dai->name, dai->id);
+@@ -1169,7 +1165,7 @@ static int aoc_path_put(uint32_t ep_id, uint32_t hw_id,
+ 			struct snd_ctl_elem_value *ucontrol)
+ {
+ 	struct snd_soc_dapm_widget *widget =
+-		snd_soc_dapm_kcontrol_widget(kcontrol);
++		snd_soc_dapm_kcontrol_to_widget(kcontrol);
+ 	struct snd_soc_component *component =
+ 		snd_soc_dapm_to_component(widget->dapm);
+ 	struct aoc_chip *chip =
+@@ -2243,7 +2239,7 @@ static const struct snd_soc_dapm_route aoc_routes[] = {
+ };
+ 
+ static int aoc_of_xlate_dai_name(struct snd_soc_component *component,
+-				 struct of_phandle_args *args,
++				 const struct of_phandle_args *args,
+ 				 const char **dai_name)
+ {
+ 	int i, ret = -EINVAL, head, next;
+@@ -2284,7 +2280,7 @@ static int aoc_of_xlate_dai_name(struct snd_soc_component *component,
+ 
+ static int aoc_cmp_probe(struct snd_soc_component *comp)
+ {
+-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(comp);
++	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(comp);
+ 	int ret;
+ 
+ 	ret = snd_soc_dapm_new_controls(dapm, aoc_widget,
+diff --git a/aoc/alsa/aoc_alsa_pcm.c b/aoc/alsa/aoc_alsa_pcm.c
+index 2734651..eec9afc 100644
+--- a/aoc/alsa/aoc_alsa_pcm.c
++++ b/aoc/alsa/aoc_alsa_pcm.c
+@@ -10,6 +10,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/version.h>
+ 
++#include <linux/uio.h>
+ #include "aoc_alsa.h"
+ #include "aoc_alsa_drv.h"
+ 
+@@ -349,8 +350,7 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
+ 		alsa_stream->isr_type = INTR;
+ 	} else {
+ 		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
+-		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-		alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
++		hrtimer_setup(&(alsa_stream->hr_timer), &aoc_pcm_hrtimer_irq_handler, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 		alsa_stream->isr_type = TIMER;
+ 	}
+ 
+@@ -613,7 +613,7 @@ static int snd_aoc_pcm_trigger(struct snd_soc_component *component,
+ 
+ /* Copy data from user space to hardware buffer  */
+ static int snd_aoc_pcm_playback_copy_user(struct snd_pcm_substream *substream, int channel,
+-					  unsigned long pos, void __user *buf, unsigned long count)
++					  unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -628,7 +628,7 @@ static int snd_aoc_pcm_playback_copy_user(struct snd_pcm_substream *substream, i
+ 
+ /* Copy data from hardware buffer to user space */
+ static int snd_aoc_pcm_capture_copy_user(struct snd_pcm_substream *substream, int channel,
+-					 unsigned long pos, void __user *buf, unsigned long count)
++					 unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -644,7 +644,7 @@ static int snd_aoc_pcm_capture_copy_user(struct snd_pcm_substream *substream, in
+ /* Copy data between hardware buffer and user space */
+ static int snd_aoc_pcm_copy_user(struct snd_soc_component *component,
+ 				 struct snd_pcm_substream *substream, int channel,
+-				 unsigned long pos, void __user *buf, unsigned long count)
++				 unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+ 		return snd_aoc_pcm_playback_copy_user(substream, channel, pos, buf, count);
+@@ -719,18 +719,18 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
+ {
+ 	struct snd_pcm_substream *substream = NULL;
+ 	/* Allocate DMA memory */
+-	if (rtd->dai_link->dpcm_playback) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream) {
+ 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
+ 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-					      snd_dma_continuous_data(GFP_KERNEL),
++					      NULL,
+ 					      snd_aoc_playback_hw.buffer_bytes_max,
+ 					      snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+ 
+-	if (rtd->dai_link->dpcm_capture) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
+ 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
+ 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-					      snd_dma_continuous_data(GFP_KERNEL),
++					      NULL,
+ 					      snd_aoc_playback_hw.buffer_bytes_max,
+ 					      snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+@@ -748,12 +748,12 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
+ 	.ioctl = snd_aoc_pcm_lib_ioctl,
+ 	.hw_params = snd_aoc_pcm_hw_params,
+ 	.hw_free = snd_aoc_pcm_hw_free,
+-	.copy_user = snd_aoc_pcm_copy_user,
++	.copy = snd_aoc_pcm_copy_user,
+ 	.prepare = snd_aoc_pcm_prepare,
+ 	.trigger = snd_aoc_pcm_trigger,
+ 	.pointer = snd_aoc_pcm_pointer,
+ 	.mmap = snd_aoc_pcm_mmap,
+-	.pcm_construct = aoc_pcm_new,
++	.pcm_new = aoc_pcm_new,
+ };
+ 
+ static int aoc_pcm_probe(struct platform_device *pdev)
+diff --git a/aoc/alsa/aoc_alsa_voice.c b/aoc/alsa/aoc_alsa_voice.c
+index bd57290..22c2104 100644
+--- a/aoc/alsa/aoc_alsa_voice.c
++++ b/aoc/alsa/aoc_alsa_voice.c
+@@ -121,8 +121,7 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
+ 
+ 	alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
+ 	timer_setup(&(alsa_stream->timer), aoc_pcm_timer_irq_handler, 0);
+-	hrtimer_init( &(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL );
+-	alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
++	hrtimer_setup(&(alsa_stream->hr_timer), &aoc_pcm_hrtimer_irq_handler, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 
+ 	chip->default_mic_hw_gain =
+ 		aoc_mic_hw_gain_get(chip, MIC_HIGH_POWER_GAIN);
+@@ -294,22 +293,22 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
+ {
+ 	struct snd_pcm_substream *substream = NULL;
+ 	/* Allocate DMA memory */
+-	if (rtd->dai_link->dpcm_playback) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream) {
+ 		substream =
+ 			rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
+ 		snd_pcm_lib_preallocate_pages(
+ 			substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-			snd_dma_continuous_data(GFP_KERNEL),
++			NULL,
+ 			snd_aoc_playback_hw.buffer_bytes_max,
+ 			snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+ 
+-	if (rtd->dai_link->dpcm_capture) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
+ 		substream =
+ 			rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
+ 		snd_pcm_lib_preallocate_pages(
+ 			substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-			snd_dma_continuous_data(GFP_KERNEL),
++			NULL,
+ 			snd_aoc_playback_hw.buffer_bytes_max,
+ 			snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+@@ -325,7 +324,7 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
+ 	.hw_params = snd_aoc_pcm_hw_params,
+ 	.hw_free = snd_aoc_pcm_hw_free,
+ 	.prepare = snd_aoc_pcm_prepare,
+-	.pcm_construct = aoc_pcm_new,
++	.pcm_new = aoc_pcm_new,
+ };
+ 
+ static int aoc_pcm_probe(struct platform_device *pdev)
+diff --git a/aoc/alsa/aoc_alsa_voip.c b/aoc/alsa/aoc_alsa_voip.c
+index cf98d16..2b4c137 100644
+--- a/aoc/alsa/aoc_alsa_voip.c
++++ b/aoc/alsa/aoc_alsa_voip.c
+@@ -10,6 +10,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/version.h>
+ 
++#include <linux/uio.h>
+ #include "aoc_alsa.h"
+ #include "aoc_alsa_drv.h"
+ 
+@@ -224,8 +225,7 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
+ 		alsa_stream->isr_type = INTR;
+ 	} else {
+ 		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
+-		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-		alsa_stream->hr_timer.function = &aoc_voip_hrtimer_irq_handler;
++		hrtimer_setup(&(alsa_stream->hr_timer), &aoc_voip_hrtimer_irq_handler, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+ 		alsa_stream->isr_type = TIMER;
+ 	}
+ 
+@@ -455,7 +455,7 @@ static int snd_aoc_pcm_trigger(struct snd_soc_component *component,
+ /* Copy data from user space to hardware buffer  */
+ static int snd_aoc_pcm_playback_copy_user(struct snd_soc_component *component,
+ 					  struct snd_pcm_substream *substream, int channel,
+-					  unsigned long pos, void __user *buf, unsigned long count)
++					  unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -471,7 +471,7 @@ static int snd_aoc_pcm_playback_copy_user(struct snd_soc_component *component,
+ /* Copy data from hardware buffer to user space */
+ static int snd_aoc_pcm_capture_copy_user(struct snd_soc_component *component,
+ 					 struct snd_pcm_substream *substream, int channel,
+-					 unsigned long pos, void __user *buf, unsigned long count)
++					 unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	struct snd_pcm_runtime *runtime = substream->runtime;
+ 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+@@ -487,7 +487,7 @@ static int snd_aoc_pcm_capture_copy_user(struct snd_soc_component *component,
+ /* Copy data between hardware buffer and user space */
+ static int snd_aoc_pcm_copy_user(struct snd_soc_component *component,
+ 				 struct snd_pcm_substream *substream, int channel,
+-				 unsigned long pos, void __user *buf, unsigned long count)
++				 unsigned long pos, struct iov_iter *buf, unsigned long count)
+ {
+ 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+ 		return snd_aoc_pcm_playback_copy_user(component, substream, channel, pos, buf,
+@@ -531,18 +531,18 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
+ {
+ 	struct snd_pcm_substream *substream = NULL;
+ 	/* Allocate DMA memory */
+-	if (rtd->dai_link->dpcm_playback) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream) {
+ 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
+ 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-					      snd_dma_continuous_data(GFP_KERNEL),
++					      NULL,
+ 					      snd_aoc_playback_hw.buffer_bytes_max,
+ 					      snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+ 
+-	if (rtd->dai_link->dpcm_capture) {
++	if (rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
+ 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
+ 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
+-					      snd_dma_continuous_data(GFP_KERNEL),
++					      NULL,
+ 					      snd_aoc_playback_hw.buffer_bytes_max,
+ 					      snd_aoc_playback_hw.buffer_bytes_max);
+ 	}
+@@ -558,11 +558,11 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
+ 	.ioctl = snd_aoc_pcm_lib_ioctl,
+ 	.hw_params = snd_aoc_pcm_hw_params,
+ 	.hw_free = snd_aoc_pcm_hw_free,
+-	.copy_user = snd_aoc_pcm_copy_user,
++	.copy = snd_aoc_pcm_copy_user,
+ 	.prepare = snd_aoc_pcm_prepare,
+ 	.trigger = snd_aoc_pcm_trigger,
+ 	.pointer = snd_aoc_pcm_pointer,
+-	.pcm_construct = aoc_pcm_new,
++	.pcm_new = aoc_pcm_new,
+ };
+ 
+ static int aoc_pcm_probe(struct platform_device *pdev)
+diff --git a/aoc/aoc.h b/aoc/aoc.h
+index 29d3deb..642ed88 100644
+--- a/aoc/aoc.h
++++ b/aoc/aoc.h
+@@ -90,7 +90,9 @@ void aoc_trigger_watchdog(const char *reason);
+ /* Rings should have the ring flag set, slots = 1, size = ring size
+  * tx/rx stats for rings are measured in bytes, otherwise msg sends
+  */
+-#define AOC_MAX_ENDPOINTS 80
++/* 80 in this branch; the GS201 firmware (12255112) has 82 services, and
++ * Google's later drivers allow 200. It only bounds a sanity check. */
++#define AOC_MAX_ENDPOINTS 200
+ #define AOC_ENDPOINT_NONE 0xffffffff
+ 
+ /* Offset from the beginning of the DRAM region for the firmware to be stored */

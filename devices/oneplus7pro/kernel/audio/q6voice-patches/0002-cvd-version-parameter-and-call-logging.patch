@@ -1,0 +1,58 @@
+diff -ruN a/q6voice.c b/q6voice.c
+--- a/q6voice.c	2026-09-27 01:27:03.707968886 -0700
++++ b/q6voice.c	2026-09-27 01:27:03.727124445 -0700
+@@ -16,6 +16,14 @@
+ #define VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS		0x00010F71
+ #define VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT		0x00010F77
+ 
++/*
++ * CVD 2.3 and later create the vocproc with the v3 command. -1 follows the
++ * device tree (qcom,cvd-v2.3); 0 and 1 force v2 or v3 for the next call.
++ */
++static int cvd_version = -1;
++module_param(cvd_version, int, 0644);
++MODULE_PARM_DESC(cvd_version, "-1: device tree, 0: CVP create v2, 1: v3");
++
+ struct q6voice_path_runtime {
+ 	struct q6voice_session *sessions[Q6VOICE_SERVICE_COUNT];
+ 	unsigned int started;
+@@ -72,7 +80,11 @@
+ 	struct q6voice_session *mvm, *cvp;
+ 	int ret;
+ 
+-	dev_dbg(dev, "start path %d\n", p->type);
++	bool v3 = cvd_version < 0 ? p->v->cvd_v2_3 : cvd_version > 0;
++
++	dev_info(dev, "start path %d: tx port %#x rx port %#x, vocproc %s\n",
++		 p->type, q6afe_get_port_id(p->tx_port),
++		 q6afe_get_port_id(p->rx_port), v3 ? "v3" : "v2");
+ 
+ 	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
+ 	if (!mvm) {
+@@ -84,7 +96,7 @@
+ 
+ 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
+ 	if (!cvp) {
+-		if (p->v->cvd_v2_3)
++		if (v3)
+ 			cvp = session_create_v3(p->type,
+ 						q6afe_get_port_id(p->tx_port),
+ 						q6afe_get_port_id(p->rx_port),
+@@ -118,6 +130,8 @@
+ 		goto start_err;
+ 	}
+ 
++	dev_info(dev, "path %d started (mvm %#x, cvp %#x)\n", p->type,
++		 mvm->handle, cvp->handle);
+ 	return ret;
+ 
+ start_err:
+@@ -174,7 +188,7 @@
+ 	struct q6voice_session *cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
+ 	int ret;
+ 
+-	dev_dbg(dev, "stop path %d\n", p->type);
++	dev_info(dev, "stop path %d\n", p->type);
+ 
+ 	ret = q6mvm_start(mvm, false);
+ 	if (ret)

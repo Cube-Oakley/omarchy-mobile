@@ -1,4 +1,5 @@
 import importlib.util
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ def load(root):
     os.environ['OMARCHY_MOBILE_SYSFS'] = str(root / 'sys')
     os.environ['OMARCHY_MOBILE_DEV'] = str(root / 'dev')
     os.environ['XDG_STATE_HOME'] = str(root / 'state')
+    os.environ['XDG_CONFIG_HOME'] = str(root / 'config')
     spec = importlib.util.spec_from_file_location('controls', SOURCE)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -112,10 +114,19 @@ class ControlsTests(unittest.TestCase):
         self.assertTrue(all(gap >= 2.0 for gap in gaps))
 
     def test_auto_brightness_discounts_the_panel_light(self):
-        dim, bright = self.controls.AutoBrightness(offset=0), self.controls.AutoBrightness(offset=0)
+        dim, bright = (self.controls.AutoBrightness(offset=0, panel_lux=190.0) for _ in range(2))
         dim.light(113.0, 0.01, 10, now=0.0)
         bright.light(301.0, 1.0, 100, now=0.0)
         self.assertEqual(dim.target(), bright.target())
+
+    def test_panel_light_comes_from_the_device_profile(self):
+        self.assertEqual(self.controls.panel_lux(), 0.0)
+        write(self.root / 'config/omarchy-mobile/device.json', '{"panelLux": 190}')
+        self.assertEqual(self.controls.panel_lux(), 190.0)
+        # A sensor that does not see the panel: the reading is the room.
+        auto = self.controls.AutoBrightness(offset=0)
+        auto.light(113.0, 1.0, 100, now=0.0)
+        self.assertEqual(auto.target(), round(auto.base(math.log10(114.0))))
 
     def test_auto_brightness_learns_the_slider(self):
         auto = self.controls.AutoBrightness()

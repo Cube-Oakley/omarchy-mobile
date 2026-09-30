@@ -1,10 +1,12 @@
 # Dedicated bring-up SSH daemon; does not alter the distribution config.
+# Every interface, so Wi-Fi reaches the phone when USB does not come up; only
+# private addresses (the USB link, home and office networks) may log in.
 Port 22
-ListenAddress 172.16.42.1
+ListenAddress 0.0.0.0
 HostKey /etc/ssh/ssh_host_ed25519_key
 PidFile /run/sshd-usb.pid
 AuthorizedKeysFile .ssh/authorized_keys
-AllowUsers root
+AllowUsers root@10.0.0.0/8 root@172.16.0.0/12 root@192.168.0.0/16
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 AuthenticationMethods publickey

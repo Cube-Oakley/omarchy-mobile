@@ -1,0 +1,242 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 02:38:37 -0700
+Subject: [PATCH 1/4] stubs: vendor interfaces cpif uses, failing without
+ touching hardware
+
+The PCIe channel-0 root-complex API (Google's pcie-exynos-rc exports),
+exynos_smc(), logbuffer and CAL's DFS lookup have no counterpart in this
+kernel. Stand-ins for each: RC calls fail (-ENODEV) or report the link
+down, exynos_smc() returns an error without an SMC, logbuffer drops
+lines, CAL returns 0.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ stubs/README                                 |  16 +++
+ stubs/include/linux/exynos-pcie-rc-api.h     | 115 +++++++++++++++++++
+ stubs/include/linux/soc/samsung/exynos-smc.h |  18 +++
+ stubs/include/misc/logbuffer.h               |  23 ++++
+ stubs/include/soc/google/cal-if.h            |  14 +++
+ 5 files changed, 186 insertions(+)
+ create mode 100644 stubs/README
+ create mode 100644 stubs/include/linux/exynos-pcie-rc-api.h
+ create mode 100644 stubs/include/linux/soc/samsung/exynos-smc.h
+ create mode 100644 stubs/include/misc/logbuffer.h
+ create mode 100644 stubs/include/soc/google/cal-if.h
+
+diff --git a/stubs/README b/stubs/README
+new file mode 100644
+index 0000000..4d60c22
+--- /dev/null
++++ b/stubs/README
+@@ -0,0 +1,16 @@
++Minimal stand-ins for Google vendor interfaces that cpif (the GS201 modem
++interface driver) uses, written for the Pixel 7 Pro port. Each provides only
++what cpif calls, and fails or does nothing rather than touch hardware:
++
++  linux/exynos-pcie-rc-api.h   PCIe root-complex API for channel 0 (power
++                               on/off, link state, events, MSI vectors,
++                               L1SS, PERST, recovery flags, dumps): calls
++                               fail with -ENODEV or report "link down"
++  linux/soc/samsung/exynos-smc.h
++                               exynos_smc(): never enters EL3, returns an
++                               error (only the on-SoC-modem security path
++                               calls it)
++  misc/logbuffer.h             Google's logbuffer: registration fails, lines
++                               are dropped
++  soc/google/cal-if.h          cal_dfs_get_max_freq(): 0 (only the
++                               on-SoC-modem ECT path calls it)
+diff --git a/stubs/include/linux/exynos-pcie-rc-api.h b/stubs/include/linux/exynos-pcie-rc-api.h
+new file mode 100644
+index 0000000..db41bae
+--- /dev/null
++++ b/stubs/include/linux/exynos-pcie-rc-api.h
+@@ -0,0 +1,115 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Stand-in for the API that Google's PCIe root-complex driver
++ * (drivers/pci/controller/dwc/pcie-exynos-rc.c, exported to cpif) provides
++ * for the modem on channel 0. Prototypes as cpif's s51xx_pcie.h declares
++ * them.
++ *
++ * This kernel has no channel-0 host yet: the Wi-Fi host (pixel-pcie) drives
++ * channel 1 only, and channel 0 needs its own configuration path (secure ATU
++ * set up by EL3 through SMC 0x820020D8, no iATU writes from Linux, fixed MSI
++ * page, x2 lanes, Gen1 for the ROM stage). Until a host driver exports these,
++ * every call fails or reports "no link" without touching hardware, so cpif's
++ * boot path stops at "CP EP driver initialization" with an error instead of
++ * reaching the PCIe controller.
++ *
++ * To use a real host: delete this header, declare the functions extern
++ * again in s51xx_pcie.h, and have the channel-0 host module export them.
++ */
++#ifndef _PIXEL_STUB_EXYNOS_PCIE_RC_API_H
++#define _PIXEL_STUB_EXYNOS_PCIE_RC_API_H
++#include <linux/errno.h>
++#include <linux/interrupt.h>
++#include <linux/printk.h>
++#include <linux/types.h>
++#include <linux/exynos-pci-noti.h>
++
++#define PIXEL_PCIE_RC_STUB() pr_warn_ratelimited("cpif: %s: no PCIe channel-0 host driver\n", __func__)
++
++/* Link control: power the RC up and train the link (spd 1 = Gen1 for the ROM stage), or down. */
++static inline int exynos_pcie_poweron(int ch_num, int spd)
++{
++	PIXEL_PCIE_RC_STUB();
++	return -ENODEV;
++}
++
++static inline int exynos_pcie_poweroff(int ch_num)
++{
++	PIXEL_PCIE_RC_STUB();
++	return -ENODEV;
++}
++
++/* 0: link down. */
++static inline int exynos_pcie_rc_chk_link_status(int ch_num)
++{
++	return 0;
++}
++
++static inline int exynos_pcie_rc_l1ss_ctrl(int enable, int id, int ch_num)
++{
++	PIXEL_PCIE_RC_STUB();
++	return -ENODEV;
++}
++
++static inline void exynos_pcie_set_perst_gpio(int ch_num, bool on)
++{
++	PIXEL_PCIE_RC_STUB();
++}
++
++/* Link-down and completion-timeout notifications to cpif. */
++static inline int exynos_pcie_register_event(struct exynos_pcie_register_event *reg)
++{
++	PIXEL_PCIE_RC_STUB();
++	return -ENODEV;
++}
++
++static inline int exynos_pcie_deregister_event(struct exynos_pcie_register_event *reg)
++{
++	return -ENODEV;
++}
++
++/* Per-queue MSI vectors ("separated MSI"): DWC MSI blocks 1-4 for pktproc DL queues. */
++static inline int register_separated_msi_vector(int ch_num, irq_handler_t handler,
++						void *context, int *irq_num)
++{
++	PIXEL_PCIE_RC_STUB();
++	return -ENODEV;
++}
++
++/*
++ * Outbound iATU window for CP BTL dumps. On channel 0 the iATU is EL3-owned;
++ * a real host must refuse this too (cpif calls it only with CONFIG_CP_BTL).
++ */
++static inline int exynos_pcie_rc_set_outbound_atu(int ch_num, u32 target_addr, u32 offset,
++						  u32 size)
++{
++	return -EOPNOTSUPP;
++}
++
++/* Recovery state kept by the RC driver: never set without a host. */
++static inline bool exynos_pcie_rc_get_cpl_timeout_state(int ch_num)
++{
++	return false;
++}
++
++static inline void exynos_pcie_rc_set_cpl_timeout_state(int ch_num, bool recovery) { }
++
++static inline bool exynos_pcie_rc_get_sudden_linkdown_state(int ch_num)
++{
++	return false;
++}
++
++static inline void exynos_pcie_rc_set_sudden_linkdown_state(int ch_num, bool recovery) { }
++
++static inline void exynos_pcie_set_ready_cto_recovery(int ch_num) { }
++
++static inline void exynos_pcie_rc_force_linkdown_work(int ch_num)
++{
++	PIXEL_PCIE_RC_STUB();
++}
++
++/* Register dumps for crash logs: nothing to dump. */
++static inline void exynos_pcie_rc_register_dump(int ch_num) { }
++static inline void exynos_pcie_rc_dump_all_status(int ch_num) { }
++static inline void exynos_pcie_rc_print_msi_register(int ch_num) { }
++#endif
+diff --git a/stubs/include/linux/soc/samsung/exynos-smc.h b/stubs/include/linux/soc/samsung/exynos-smc.h
+new file mode 100644
+index 0000000..11f85d8
+--- /dev/null
++++ b/stubs/include/linux/soc/samsung/exynos-smc.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Stand-in for Google's <linux/soc/samsung/exynos-smc.h>. cpif calls
++ * exynos_smc() only from shmem_security_request() (SMC 0x82000700 CP
++ * signature check and 0x82001011 SSS clock), which the PCIe link never uses:
++ * ld->security_req is set for LINKDEV_SHMEM (on-SoC modems) only. This never
++ * enters EL3; it fails instead.
++ */
++#ifndef _PIXEL_STUB_EXYNOS_SMC_H
++#define _PIXEL_STUB_EXYNOS_SMC_H
++#include <linux/errno.h>
++
++static inline unsigned long exynos_smc(unsigned long cmd, unsigned long arg1,
++				       unsigned long arg2, unsigned long arg3)
++{
++	return (unsigned long)-EOPNOTSUPP;
++}
++#endif
+diff --git a/stubs/include/misc/logbuffer.h b/stubs/include/misc/logbuffer.h
+new file mode 100644
+index 0000000..e761d94
+--- /dev/null
++++ b/stubs/include/misc/logbuffer.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Stand-in for Google's logbuffer (google-modules/bms), which keeps a
++ * private ring of driver log lines for bugreports. There is none here:
++ * registration fails (cpif carries on with a NULL log, as it does on stock
++ * when registration fails) and log lines are dropped.
++ */
++#ifndef _PIXEL_STUB_LOGBUFFER_H
++#define _PIXEL_STUB_LOGBUFFER_H
++#include <linux/compiler.h>
++#include <linux/err.h>
++
++struct logbuffer;
++
++static inline struct logbuffer *logbuffer_register(const char *name)
++{
++	return ERR_PTR(-ENODEV);
++}
++
++static inline void logbuffer_unregister(struct logbuffer *instance) { }
++
++static inline __printf(2, 3) void logbuffer_log(struct logbuffer *instance, const char *fmt, ...) { }
++#endif
+diff --git a/stubs/include/soc/google/cal-if.h b/stubs/include/soc/google/cal-if.h
+new file mode 100644
+index 0000000..1f9476b
+--- /dev/null
++++ b/stubs/include/soc/google/cal-if.h
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Stand-in for Google's CAL interface. cpif reads the MIF DVFS ceiling from
++ * it only while parsing ECT tables, which it does for LINKDEV_SHMEM (on-SoC
++ * modems) only and only with CONFIG_ECT.
++ */
++#ifndef _PIXEL_STUB_CAL_IF_H
++#define _PIXEL_STUB_CAL_IF_H
++
++static inline unsigned int cal_dfs_get_max_freq(unsigned int id)
++{
++	return 0;
++}
++#endif

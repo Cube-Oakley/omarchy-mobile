@@ -33,6 +33,8 @@ import time
 SYS = Path(os.environ.get('OMARCHY_MOBILE_SYSFS', '/sys'))
 DEV = Path(os.environ.get('OMARCHY_MOBILE_DEV', '/dev'))
 STATE = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'omarchy-mobile/controls.json'
+CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config')))
+DEVICE = CONFIG / 'omarchy-mobile/device.json'
 
 # Brightness follows the eye: the slider's share squared, never below 1% of
 # the panel's range, so the bottom of the slider is dim but not black.
@@ -44,9 +46,10 @@ TORCH_SHARE = 0.5
 ABS_SND_PROFILE = 0x22
 PROFILES = {0: 'silent', 1: 'vibrate', 2: 'ring'}
 EV_ABS, EV_FF, FF_RUMBLE = 0x03, 0x15, 0x50
-# The OnePlus 7 Pro's light sensor sits under the panel, which adds about
-# 190 lux at full output (the room's 110 lux read 113 at 5%, 301 at 100%).
-PANEL_LUX = 190.0
+# A light sensor under the panel may see the panel's own light: the device
+# profile's panelLux is what it adds at full output. The OnePlus 7 Pro's adds
+# about 190 lux (the room's 110 lux read 113 at 5%, 301 at 100%); the Pixel
+# 7 Pro's AoC leaves the panel out (0).
 
 
 class AutoBrightness:
@@ -58,8 +61,9 @@ class AutoBrightness:
     INTERVAL = 2.0    # seconds between changes
     SETTLE = 5.0      # seconds a slider drag is left alone
 
-    def __init__(self, offset=None):
+    def __init__(self, offset=None, panel_lux=0.0):
         self.offset = offset
+        self.panel_lux = panel_lux
         self.level = None      # filtered log10(lux + 1)
         self.applied = None
         self.written = 0.0
@@ -82,7 +86,7 @@ class AutoBrightness:
     def light(self, lux, share, current, now):
         """A sensor reading: lux, the panel's current output share (0-1) and
         slider percent. Returns a percent to apply, or None."""
-        ambient = max(0.0, lux - PANEL_LUX * share)
+        ambient = max(0.0, lux - self.panel_lux * share)
         level = math.log10(ambient + 1)
         if self.level is None:
             self.level = level
@@ -304,6 +308,25 @@ def die_with_parent():
     ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG
 
 
+def panel_lux():
+    """The device profile's panelLux (see AutoBrightness), 0 if it has none."""
+    try:
+        value = json.loads(DEVICE.read_text()).get('panelLux', 0)
+    except (OSError, ValueError, AttributeError):
+        return 0.0
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def screen_on():
+    """Whether Hyprland shows the screen (DPMS on); on if it cannot say."""
+    try:
+        out = subprocess.run(['hyprctl', '-i', '0', '-j', 'monitors'],
+                             capture_output=True, text=True, timeout=10).stdout
+        return any(m.get('dpmsStatus', True) for m in json.loads(out or '[]'))
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return True
+
+
 def sensor_ready(has):
     """Whether iio-sensor-proxy has opened a sensor (HasAccelerometer,
     HasAmbientLight). Version 3.9 takes its D-Bus name before opening its
@@ -320,33 +343,52 @@ def sensor_ready(has):
 
 def auto_run():
     """Follow the light sensor through iio-sensor-proxy (monitor-sensor) while
-    automatic brightness is on; the slider's final levels, which serve
-    remembers, teach it the user's preference."""
+    automatic brightness is on and the screen is on (the sensor is released
+    while it is off); the slider's final levels, which serve remembers, teach
+    it the user's preference. A reading stands until the next one, and counts
+    again every second: sensors that report only changes go quiet in steady
+    light, and the curve still has to settle."""
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # End with the shell too: a killed shell leaves its children running, and
+    # this one would hold its sensor.
+    die_with_parent()
     state = load_state()
     if state.get('auto_brightness') is not True:
         return
-    auto = AutoBrightness(state.get('auto_offset'))
+    auto = AutoBrightness(state.get('auto_offset'), panel_lux())
     remembered = state.get('brightness')
+    # Only readings: the value monitor-sensor starts with may be the daemon's
+    # placeholder, or stale from before the screen went off.
     pattern = re.compile(r'Light changed: ([0-9.]+)')
     while True:
-        if not sensor_ready('HasAmbientLight'):
+        if not screen_on() or not sensor_ready('HasAmbientLight'):
             time.sleep(3)
             continue
         try:
             proc = subprocess.Popen(['stdbuf', '-oL', 'monitor-sensor', '--light'],
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                     preexec_fn=die_with_parent)
         except OSError:
             time.sleep(30)
             continue
+        pending, lux, checked = b'', None, time.monotonic()
         try:
-            for line in proc.stdout:
-                if 'vanished' in line:
-                    break  # the daemon restarted: wait until it is ready again
-                match = pattern.search(line)
+            while True:
+                if time.monotonic() - checked >= 3:
+                    checked = time.monotonic()
+                    if not screen_on():
+                        break  # screen off: release the light sensor
+                if select.select([proc.stdout], [], [], 1)[0]:
+                    data = os.read(proc.stdout.fileno(), 4096)
+                    if not data or b'vanished' in data:
+                        break  # the daemon restarted: wait until it is ready again
+                    *lines, pending = (pending + data).split(b'\n')
+                    for line in lines:
+                        match = pattern.search(line.decode(errors='replace'))
+                        if match:
+                            lux = float(match.group(1))
                 light = backlight()
-                if not match or light is None:
+                if lux is None or light is None:
                     continue
                 _, raw, maximum = light
                 state = load_state()
@@ -359,14 +401,15 @@ def auto_run():
                         state['auto_offset'] = auto.offset
                         save_state(state)
                 current = percent_for(raw, maximum)
-                wanted = auto.light(float(match.group(1)), raw / maximum, current, time.monotonic())
+                wanted = auto.light(lux, raw / maximum, current, time.monotonic())
                 if wanted is not None:
                     for level in ramp(current, wanted):
                         set_brightness(level, remember=False)
                         time.sleep(0.04)
-                    print(json.dumps({'auto': {'lux': float(match.group(1)), 'percent': wanted}}), flush=True)
+                    print(json.dumps({'auto': {'lux': lux, 'percent': wanted}}), flush=True)
         finally:
             proc.terminate()
+            proc.wait()
         time.sleep(1)
 
 

@@ -1,0 +1,28 @@
+diff --git i/router/diag.c w/router/diag.c
+index a65d348..3694e41 100644
+--- i/router/diag.c
++++ w/router/diag.c
+@@ -139,6 +139,9 @@ int main(int argc, char **argv)
+ 	int ret;
+ 	int c;
+ 
++	/* Keep the log readable when stdout is a file. */
++	setvbuf(stdout, NULL, _IOLBF, 0);
++
+ 	for (;;) {
+ 		c = getopt(argc, argv, "hs:u:");
+ 		if (c < 0)
+diff --git i/router/diag_cntl.c w/router/diag_cntl.c
+index f812117..429a613 100644
+--- i/router/diag_cntl.c
++++ w/router/diag_cntl.c
+@@ -285,6 +285,9 @@ static int diag_cntl_feature_mask(struct peripheral *peripheral,
+ 		local_mask |= DIAG_FEATURE_SOCKETS_ENABLED;
+ 	local_mask |= DIAG_FEATURE_DIAG_ID;
+ 	local_mask |= DIAG_FEATURE_DIAG_ID_FEATURE_MASK;
++	/* As the vendor driver does: the peripheral then takes its masks,
++	 * log masks included, from this side. */
++	local_mask |= DIAG_FEATURE_MASK_CENTRALIZATION;
+ 
+ 	printf("[%s] mask:", peripheral->name);
+ 

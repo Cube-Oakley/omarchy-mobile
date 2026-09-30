@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:50:05 -0700
+Subject: [PATCH 7/7] stubs: Google's modem_notifier.h (notifier interface
+ only)
+
+---
+ stubs/include/linux/modem_notifier.h | 53 ++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+ create mode 100644 stubs/include/linux/modem_notifier.h
+
+diff --git a/stubs/include/linux/modem_notifier.h b/stubs/include/linux/modem_notifier.h
+new file mode 100644
+index 0000000..77e6dcf
+--- /dev/null
++++ b/stubs/include/linux/modem_notifier.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* Copyright (C) 2015 Samsung Electronics.
++ *
++ */
++
++#ifndef __MODEM_NOTIFIER_H__
++#define __MODEM_NOTIFIER_H__
++
++struct notifier_block;
++
++/* refer to enum modem_state  */
++enum modem_event {
++	MODEM_EVENT_RESET	= 1,
++	MODEM_EVENT_EXIT,
++	MODEM_EVENT_ONLINE	= 4,
++	MODEM_EVENT_OFFLINE	= 5,
++	MODEM_EVENT_WATCHDOG	= 9,
++};
++
++enum modem_voice_call_event {
++	MODEM_VOICE_CALL_OFF	= 0,
++	MODEM_VOICE_CALL_ON	= 1,
++};
++
++#if IS_ENABLED(CONFIG_EXYNOS_MODEM_IF)
++extern int register_modem_event_notifier(struct notifier_block *nb);
++extern void modem_notify_event(enum modem_event evt, void *mc);
++#else
++static inline int register_modem_event_notifier(struct notifier_block *nb)
++{
++	return 0;
++}
++static inline void modem_notify_event(enum modem_event evt, void *mc) {}
++#endif
++
++#if IS_ENABLED(CONFIG_SUSPEND_DURING_VOICE_CALL)
++extern int register_modem_voice_call_event_notifier(struct notifier_block *nb);
++extern void unregister_modem_voice_call_event_notifier(struct notifier_block *nb);
++extern void modem_voice_call_notify_event(enum modem_voice_call_event evt, void *data);
++#else
++static inline int register_modem_voice_call_event_notifier(struct notifier_block *nb)
++{
++	return 0;
++}
++
++static inline void unregister_modem_voice_call_event_notifier(struct notifier_block *nb)
++{
++}
++
++static inline void modem_voice_call_notify_event(enum modem_voice_call_event evt, void *data) {}
++#endif
++
++#endif/*__MODEM_NOTIFIER_H__*/

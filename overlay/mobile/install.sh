@@ -18,6 +18,7 @@ install -m755 "$source_dir/shell-watchdog.sh" "$HOME/.local/bin/omarchy-mobile-s
 install -m755 "$source_dir/keyboard.sh" "$HOME/.local/bin/omarchy-mobile-keyboard"
 install -m755 "$source_dir/display-power.sh" "$HOME/.local/bin/omarchy-mobile-display"
 install -m755 "$source_dir/power-button.py" "$HOME/.local/bin/omarchy-mobile-power"
+install -m755 "$source_dir/power-menu.py" "$HOME/.local/bin/omarchy-mobile-power-menu"
 install -m755 "$source_dir/battery.py" "$HOME/.local/bin/omarchy-mobile-battery"
 install -m755 "$source_dir/about.py" "$HOME/.local/bin/omarchy-mobile-about"
 install -m755 "$source_dir/weather.py" "$HOME/.local/bin/omarchy-mobile-weather"
@@ -28,10 +29,15 @@ mkdir -p "$config/wireplumber/wireplumber.conf.d"
 install -m644 "$source_dir/wireplumber/"*.conf "$config/wireplumber/wireplumber.conf.d/"
 install -m755 "$source_dir/stats.py" "$HOME/.local/bin/omarchy-mobile-stats"
 install -m755 "$source_dir/prefs.py" "$HOME/.local/bin/omarchy-mobile-prefs"
+install -m755 "$source_dir/sleep.py" "$HOME/.local/bin/omarchy-mobile-sleep"
 install -m755 "$source_dir/clipboard.py" "$HOME/.local/bin/omarchy-mobile-clipboard"
 install -m755 "$source_dir/settings.sh" "$HOME/.local/bin/omarchy-mobile-settings"
 install -m755 "$source_dir/app.py" "$HOME/.local/bin/omarchy-mobile-app"
 install -m755 "$source_dir/files.py" "$HOME/.local/bin/omarchy-mobile-files"
+install -m755 "$source_dir/phone.py" "$HOME/.local/bin/omarchy-mobile-phone"
+install -m755 "$source_dir/telephony.py" "$HOME/.local/bin/omarchy-mobile-telephony"
+install -m755 "$source_dir/messages.py" "$HOME/.local/bin/omarchy-mobile-messages"
+install -m755 "$source_dir/contacts.py" "$HOME/.local/bin/omarchy-mobile-contacts"
 install -m755 "$source_dir/bluetooth.py" "$HOME/.local/bin/omarchy-mobile-bluetooth"
 install -m755 "$source_dir/storage.py" "$HOME/.local/bin/omarchy-mobile-storage"
 install -m755 "$source_dir/display.py" "$HOME/.local/bin/omarchy-mobile-displayinfo"
@@ -41,7 +47,7 @@ install -m755 "$source_dir/ambient.py" "$HOME/.local/bin/omarchy-mobile-ambient"
 kit="$data/omarchy-mobile/qml/OmarchyMobile"
 mkdir -p "$kit" "$config/quickshell/omarchy-mobile-settings" "$data/applications"
 install -m644 "$source_dir/MobileTheme.qml" "$source_dir/TouchButton.qml" \
-    "$source_dir/TouchTextField.qml" "$source_dir/DetailRow.qml" "$kit/"
+    "$source_dir/TouchTextField.qml" "$source_dir/DetailRow.qml" "$source_dir/Avatar.qml" "$kit/"
 install -m644 "$source_dir/kit/"*.qml "$source_dir/kit/qmldir" "$kit/"
 install -m644 "$source_dir/settings/shell.qml" "$config/quickshell/omarchy-mobile-settings/"
 install -m644 "$source_dir/settings/omarchy-mobile-settings.desktop" "$data/applications/"
@@ -70,6 +76,21 @@ if command -v cmake >/dev/null && command -v ninja >/dev/null && pkg-config --ex
     install -m755 "$camera_build/libomarchycamera.so" "$camera_module/"
 else
     echo "Skipping the camera engine: it needs cmake, ninja and libcamera." >&2
+fi
+# Hyprland 0.56 sends every finger's moves and lift to wherever the last finger
+# landed; touch-fingers sends them to the finger's own surface (a shell left
+# without a lift stops taking taps). A plugin loads only into the Hyprland it
+# was built against, so it is built here, and again after a Hyprland update.
+if command -v g++ >/dev/null && command -v make >/dev/null && pkg-config --exists hyprland; then
+    touch_build="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy-mobile/touch-fingers"
+    mkdir -p "$touch_build" "$HOME/.local/lib/omarchy-mobile"
+    nice -n 10 make -s -f "$source_dir/touch-fingers/Makefile" \
+        SRC="$source_dir/touch-fingers/main.cpp" OUT="$touch_build/touch-fingers.so"
+    # Replaced by rename: the running Hyprland keeps the old file mapped.
+    install -m755 "$touch_build/touch-fingers.so" "$HOME/.local/lib/omarchy-mobile/touch-fingers.so.new"
+    mv -f "$HOME/.local/lib/omarchy-mobile/touch-fingers.so.new" "$HOME/.local/lib/omarchy-mobile/touch-fingers.so"
+else
+    echo "Skipping touch-fingers: it needs g++, make and Hyprland's headers." >&2
 fi
 install -m755 "$source_dir/theme.py" "$HOME/.local/bin/omarchy-mobile-theme"
 install -m755 "$source_dir/theme_install.py" "$HOME/.local/bin/omarchy-mobile-theme-install"
@@ -114,11 +135,21 @@ PY
 if [[ -n $device ]]; then
     install -m644 "$device/mobile.json" "$config/omarchy-mobile/device.json"
     install -m755 "$device/desktop-prepare.sh" "$config/omarchy-mobile/session-prepare"
+    if [[ -f "$device/reboot.sh" ]]; then
+        install -m755 "$device/reboot.sh" "$config/omarchy-mobile/reboot"
+    fi
+    if [[ -f "$device/telephony.json" ]]; then
+        install -m600 "$device/telephony.json" "$config/omarchy-mobile/telephony.json"
+    fi
     if [[ -f "$device/power-suspend.sh" ]]; then
         install -m755 "$device/power-suspend.sh" "$config/omarchy-mobile/suspend"
     fi
     if [[ -f "$device/wallpaper-apply.sh" ]]; then
         install -m755 "$device/wallpaper-apply.sh" "$config/omarchy-mobile/wallpaper-apply"
+    fi
+    if [[ -f "$device/call-audio.sh" ]]; then
+        install -m755 "$device/call-audio.sh" "$config/omarchy-mobile/call-audio"
+        install -m755 "$device/call-audio-hold.py" "$config/omarchy-mobile/call-audio-hold"
     fi
 else
     # Standard Hyprland integration; append one user override without resetting it.

@@ -10,7 +10,12 @@ PanelWindow {
     WlrLayershell.layer: WlrLayer.Background
     WlrLayershell.namespace: "omarchy-mobile-wallpaper"
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
-    mask: Region {}
+    // No input mask: the wallpaper takes the touches nothing else does (the
+    // gaps around windows, an empty workspace). Hyprland 0.56 follows one
+    // touched surface at a time, and a finger landing on no surface loses the
+    // lift of a finger already down on the shell: the shell then counts that
+    // finger as held and ignores every tap after it. Holding the phone
+    // sideways, the grip on the screen's edge did this to the rotate button.
     color: MobileTheme.background
     Image {
         anchors.fill: parent

@@ -1,0 +1,41 @@
+diff -ruN a/q6voice-dai.c b/q6voice-dai.c
+--- a/q6voice-dai.c	2026-09-27 11:27:12.877626730 -0700
++++ b/q6voice-dai.c	2026-09-27 11:27:12.900833626 -0700
+@@ -24,18 +24,26 @@
+ 	return Q6VOICE_PATH_COUNT;
+ }
+ 
+-static int q6voice_dai_startup(struct snd_pcm_substream *substream,
++/*
++ * The voice session starts at prepare, not at open: DPCM prepares the back
++ * ends first, so the AFE ports (started in q6afe's prepare) already run when
++ * the vocproc is created and enabled on them, as in the downstream driver.
++ * A second prepare of the same direction finds it started.
++ */
++static int q6voice_dai_prepare(struct snd_pcm_substream *substream,
+ 			       struct snd_soc_dai *dai)
+ {
+ 	struct q6voice *v = snd_soc_dai_get_drvdata(dai);
+ 	enum q6voice_path_type path = q6voice_get_path(dai->driver->id);
++	int ret;
+ 
+ 	if (path == Q6VOICE_PATH_COUNT) {
+ 		dev_err(dai->dev, "Invalid DAI ID %u\n", dai->driver->id);
+ 		return -EINVAL;
+ 	}
+ 
+-	return q6voice_start(v, path, substream->stream);
++	ret = q6voice_start(v, path, substream->stream);
++	return ret == -EALREADY ? 0 : ret;
+ }
+ 
+ static void q6voice_dai_shutdown(struct snd_pcm_substream *substream,
+@@ -53,7 +61,7 @@
+ }
+ 
+ static const struct snd_soc_dai_ops q6voice_dai_ops = {
+-	.startup = q6voice_dai_startup,
++	.prepare = q6voice_dai_prepare,
+ 	.shutdown = q6voice_dai_shutdown,
+ };
+ 

@@ -1,0 +1,167 @@
+net: qrtr: smd: wake the system for chosen indications
+
+The glink interrupt runs through s2idle (IRQF_NO_SUSPEND) but is never
+armed for wakeup, so an incoming call or text from the modem waited for
+the next RTC or power-key wake. Indications from the server ports listed
+in wake_ports on wake_node now raise a hard wakeup and hold the system
+awake for 3 s. Empty by default; the ports are written at boot.
+
+--- a/net/qrtr/smd.c
++++ b/net/qrtr/smd.c
+@@ -5,8 +5,12 @@
+  */
+ 
+ #include <linux/module.h>
++#include <linux/device.h>
++#include <linux/qrtr.h>
+ #include <linux/skbuff.h>
+ #include <linux/rpmsg.h>
++#include <linux/soc/qcom/qmi.h>
++#include <linux/unaligned.h>
+ 
+ #include "qrtr.h"
+ 
+@@ -16,6 +20,105 @@
+ 	struct device *dev;
+ };
+ 
++/*
++ * Wake the system for QMI indications from chosen services on one node, so
++ * that an incoming call or text ends s2idle. The glink interrupt keeps
++ * running in suspend (IRQF_NO_SUSPEND), and the kernel never arms such an
++ * interrupt for wakeup, so without this the message waits for the next wake.
++ * Server ports change between modem boots: userspace writes the voice and
++ * messaging ports (qrtr-lookup) to wake_ports. Empty, nothing wakes.
++ */
++static unsigned int wake_node;
++module_param(wake_node, uint, 0644);
++MODULE_PARM_DESC(wake_node, "QRTR node whose indications may wake the system");
++static unsigned int wake_ports[8];
++static int wake_nports;
++module_param_array(wake_ports, uint, &wake_nports, 0644);
++MODULE_PARM_DESC(wake_ports, "Server ports on wake_node whose indications wake the system");
++static unsigned int wake_events;
++module_param(wake_events, uint, 0444);
++MODULE_PARM_DESC(wake_events, "Indications that raised a wakeup");
++
++#define QRTR_SMD_WAKE_HOLD_MS	3000
++
++/* As in af_qrtr.c. */
++#define QRTR_PROTO_VER_1	1
++#define QRTR_PROTO_VER_2	3
++
++struct qrtr_smd_hdr_v1 {
++	__le32 version;
++	__le32 type;
++	__le32 src_node_id;
++	__le32 src_port_id;
++	__le32 confirm_rx;
++	__le32 size;
++	__le32 dst_node_id;
++	__le32 dst_port_id;
++} __packed;
++
++struct qrtr_smd_hdr_v2 {
++	u8 version;
++	u8 type;
++	u8 flags;
++	u8 optlen;
++	__le16 size;
++	__le16 src_node_id;
++	__le16 src_port_id;
++	__le16 dst_node_id;
++	__le16 dst_port_id;
++} __packed;
++
++static struct wakeup_source *qrtr_smd_ws;
++
++/* Runs in the glink interrupt handler: parse only, never block. */
++static void qcom_smd_qrtr_wake(const void *data, int len)
++{
++	const struct qrtr_smd_hdr_v1 *v1 = data;
++	const struct qrtr_smd_hdr_v2 *v2 = data;
++	const u8 *buf = data;
++	unsigned int node, port, hdrlen, type, i;
++	int nports = min_t(int, READ_ONCE(wake_nports), ARRAY_SIZE(wake_ports));
++
++	if (!qrtr_smd_ws || nports <= 0 || len < 1)
++		return;
++
++	switch (buf[0]) {
++	case QRTR_PROTO_VER_1:
++		if (len < sizeof(*v1))
++			return;
++		type = le32_to_cpu(v1->type);
++		node = le32_to_cpu(v1->src_node_id);
++		port = le32_to_cpu(v1->src_port_id);
++		hdrlen = sizeof(*v1);
++		break;
++	case QRTR_PROTO_VER_2:
++		if (len < sizeof(*v2))
++			return;
++		type = v2->type;
++		node = le16_to_cpu(v2->src_node_id);
++		port = le16_to_cpu(v2->src_port_id);
++		hdrlen = sizeof(*v2) + v2->optlen;
++		break;
++	default:
++		return;
++	}
++
++	/* The QMI header: type, transaction id, message id, length. */
++	if (type != QRTR_TYPE_DATA || node != READ_ONCE(wake_node) ||
++	    len < hdrlen + 5 || buf[hdrlen] != QMI_INDICATION)
++		return;
++
++	for (i = 0; i < nports; i++) {
++		if (READ_ONCE(wake_ports[i]) != port)
++			continue;
++		wake_events++;
++		pm_wakeup_ws_event(qrtr_smd_ws, QRTR_SMD_WAKE_HOLD_MS, true);
++		pr_info_ratelimited("qrtr-smd: wake for indication 0x%04x from %u:%u\n",
++				    get_unaligned_le16(&buf[hdrlen + 3]), node, port);
++		return;
++	}
++}
++
+ /* from smd to qrtr */
+ static int qcom_smd_qrtr_callback(struct rpmsg_device *rpdev,
+ 				  void *data, int len, void *priv, u32 addr)
+@@ -26,6 +129,8 @@
+ 	if (!qdev)
+ 		return -EAGAIN;
+ 
++	qcom_smd_qrtr_wake(data, len);
++
+ 	rc = qrtr_endpoint_post(&qdev->ep, data, len);
+ 	if (rc == -EINVAL) {
+ 		dev_err(qdev->dev, "invalid ipcrouter packet\n");
+@@ -104,7 +209,27 @@
+ 	},
+ };
+ 
+-module_rpmsg_driver(qcom_smd_qrtr_driver);
++static int __init qcom_smd_qrtr_init(void)
++{
++	int rc;
++
++	qrtr_smd_ws = wakeup_source_register(NULL, "qrtr-smd-wake");
++	if (!qrtr_smd_ws)
++		return -ENOMEM;
++
++	rc = register_rpmsg_driver(&qcom_smd_qrtr_driver);
++	if (rc)
++		wakeup_source_unregister(qrtr_smd_ws);
++	return rc;
++}
++module_init(qcom_smd_qrtr_init);
++
++static void __exit qcom_smd_qrtr_exit(void)
++{
++	unregister_rpmsg_driver(&qcom_smd_qrtr_driver);
++	wakeup_source_unregister(qrtr_smd_ws);
++}
++module_exit(qcom_smd_qrtr_exit);
+ 
+ MODULE_ALIAS("rpmsg:IPCRTR");
+ MODULE_DESCRIPTION("Qualcomm IPC-Router SMD interface driver");

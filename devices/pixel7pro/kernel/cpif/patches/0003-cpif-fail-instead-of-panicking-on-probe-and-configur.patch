@@ -1,0 +1,207 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 02:40:36 -0700
+Subject: [PATCH 3/4] cpif: fail instead of panicking on probe and
+ configuration errors, and on a userspace panic request
+
+Google's cpif panics when its probe fails, when shm_ipc's probe fails, when
+the shared-memory offset words read back wrong, when the pktproc DT and
+config disagree, and when the boot daemon asks for it after a CP crash
+(IOCTL_TRIGGER_KERNEL_PANIC). On a phone where every piece of the modem
+path is new, each of these would take the AP down: return the error
+instead, and refuse the ioctl with -EPERM.
+
+The probe error path did not undo toe_dev_create(), whose static misc
+device (umts_toe0) would outlive its devm state once the probe returns an
+error: undo it (toe_dev_destroy). An io device without a link fails the
+probe instead of BUG().
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ cpif/bootdump_io_device.c |  9 +++++++--
+ cpif/link_rx_pktproc.c    |  4 ++--
+ cpif/link_tx_pktproc.c    |  2 +-
+ cpif/modem_ctrl.c         |  2 +-
+ cpif/modem_main.c         | 15 ++++++++++-----
+ cpif/modem_toe_device.c   | 12 ++++++++++++
+ cpif/modem_toe_device.h   |  1 +
+ cpif/shm_ipc.c            |  3 ++-
+ 8 files changed, 36 insertions(+), 12 deletions(-)
+
+diff --git a/cpif/bootdump_io_device.c b/cpif/bootdump_io_device.c
+index 7122ac9..67d8213 100644
+--- a/cpif/bootdump_io_device.c
++++ b/cpif/bootdump_io_device.c
+@@ -348,8 +348,13 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
+ 				CP_CRASH_INFO_SIZE - strlen(CP_CRASH_TAG)))
+ 				return -EFAULT;
+ 		mif_info("Crash Reason: %s\n", buff);
+-		panic("%s", buff);
+-		return 0;
++		/*
++		 * Pixel 7 Pro port: the boot daemon asks for a kernel panic when
++		 * the CP crashes (for a combined AP+CP dump on stock). There is
++		 * no dump path here; refuse instead of taking the AP down.
++		 */
++		mif_err("%s: not panicking for a CP crash\n", iod->name);
++		return -EPERM;
+ 	}
+ 
+ 	case IOCTL_GET_LOG_DUMP:
+diff --git a/cpif/link_rx_pktproc.c b/cpif/link_rx_pktproc.c
+index bb9582f..51753c8 100644
+--- a/cpif/link_rx_pktproc.c
++++ b/cpif/link_rx_pktproc.c
+@@ -1778,8 +1778,8 @@ static int pktproc_get_info(struct pktproc_adaptor *ppa, struct device_node *np)
+ 
+ 	/* Check if config and dt are consistent */
+ 	if (ppa->use_hw_iocc != IS_ENABLED(CONFIG_LINK_DEVICE_PCIE_IOCC)) {
++		/* Pixel 7 Pro port: refuse; do not panic the kernel. */
+ 		mif_err("PCIe IOCC config and dt are inconsistent\n");
+-		panic("PCIe IOCC config and dt are inconsistent\n");
+ 		return -EINVAL;
+ 	}
+ 
+@@ -1811,8 +1811,8 @@ int pktproc_create(struct platform_device *pdev, struct mem_link_device *mld,
+ 
+ 	mif_dt_read_u32_noerr(np, "pktproc_dl_support", ppa->support);
+ 	if (!ppa->support) {
++		/* Pixel 7 Pro port: no panic */
+ 		mif_err("pktproc_support is 0.\n");
+-		panic("pktproc_support is 0\n");
+ 		return 0;
+ 	}
+ 
+diff --git a/cpif/link_tx_pktproc.c b/cpif/link_tx_pktproc.c
+index bfb04c3..e248d6b 100644
+--- a/cpif/link_tx_pktproc.c
++++ b/cpif/link_tx_pktproc.c
+@@ -336,8 +336,8 @@ static int pktproc_get_info_ul(struct pktproc_adaptor_ul *ppa_ul,
+ 	mif_dt_read_u64(np, "pktproc_cp_base", ppa_ul->cp_base);
+ 	mif_dt_read_u32(np, "pktproc_ul_num_queue", ppa_ul->num_queue);
+ 	if (ppa_ul->num_queue == 1 && !IS_ENABLED(CONFIG_CP_PKTPROC_UL_SINGLE_QUEUE)) {
++		/* Pixel 7 Pro port: refuse; do not panic the kernel. */
+ 		mif_err("Need to enable UL single queue config for single UL queue\n");
+-		panic("Need to enable UL single queue config for single UL queue.\n");
+ 		return -EINVAL;
+ 	}
+ 	mif_dt_read_u32(np, "pktproc_ul_max_packet_size", ppa_ul->default_max_packet_size);
+diff --git a/cpif/modem_ctrl.c b/cpif/modem_ctrl.c
+index 819022f..435ff00 100644
+--- a/cpif/modem_ctrl.c
++++ b/cpif/modem_ctrl.c
+@@ -86,7 +86,7 @@ int modem_ctrl_check_offset_data(struct modem_ctl *mc)
+ 
+ data_error:
+ 	mif_err("offset data is damaged\n");
+-	panic("CPIF shmem offset data is damaged\n");
++	/* Pixel 7 Pro port: fail the boot; do not panic the kernel. */
+ 	return -EFAULT;
+ }
+ 
+diff --git a/cpif/modem_main.c b/cpif/modem_main.c
+index 82096ac..0e1cd31 100644
+--- a/cpif/modem_main.c
++++ b/cpif/modem_main.c
+@@ -239,7 +239,7 @@ static int attach_devices(struct io_device *iod, struct device *dev)
+ 
+ 	if (!get_current_link(iod)) {
+ 		mif_err("%s->link == NULL\n", iod->name);
+-		BUG();
++		return -EINVAL;
+ 	}
+ 
+ 	iod->ws = cpif_wake_lock_register(dev, iod->name);
+@@ -790,7 +790,7 @@ static int cpif_probe(struct platform_device *pdev)
+ 	/* create link device */
+ 	ld = call_link_init_func(pdev, pdata->link_type);
+ 	if (!ld)
+-		goto free_mc;
++		goto free_toe;
+ 
+ 	mif_info("%s: %s link created\n", pdata->name, ld->name);
+ 
+@@ -805,7 +805,7 @@ static int cpif_probe(struct platform_device *pdev)
+ 	err = cpif_cdev_alloc_region(pdata, msd);
+ 	if (err) {
+ 		mif_err("cpif_cdev_alloc_region() err:%d\n", err);
+-		goto free_mc;
++		goto free_toe;
+ 	}
+ 
+ 	/* create io deivces and connect to modemctl device */
+@@ -836,7 +836,9 @@ static int cpif_probe(struct platform_device *pdev)
+ 		    iod[i]->attrs & IO_ATTR_STATE_RESET_NOTI)
+ 			list_add_tail(&iod[i]->list, &modemctl->modem_state_notify_list);
+ 
+-		attach_devices(iod[i], dev);
++		/* Pixel 7 Pro port: an iod without a link fails the probe (was BUG()) */
++		if (attach_devices(iod[i], dev))
++			goto free_iod;
+ 	}
+ 
+ 	cp_btl_create(&pdata->btl, dev);
+@@ -876,6 +878,9 @@ free_chrdev:
+ 	class_destroy(msd->cdev_class);
+ 	unregister_chrdev_region(MAJOR(msd->cdev_major), pdata->num_iodevs);
+ 
++free_toe:
++	toe_dev_destroy(pdev);
++
+ free_mc:
+ 	if (modemctl) {
+ 		call_modem_uninit_func(modemctl, pdata);
+@@ -890,7 +895,7 @@ free_mc:
+ fail:
+ 	mif_err("%s: xxx\n", pdev->name);
+ 
+-	panic("CP interface driver probe failed\n");
++	/* Pixel 7 Pro port: fail the probe; do not panic the kernel. */
+ 	return err;
+ }
+ 
+diff --git a/cpif/modem_toe_device.c b/cpif/modem_toe_device.c
+index 929dd7f..7d4c055 100644
+--- a/cpif/modem_toe_device.c
++++ b/cpif/modem_toe_device.c
+@@ -207,3 +207,15 @@ error:
+ 
+ 	return ret;
+ }
++
++/*
++ * Pixel 7 Pro port: undo toe_dev_create() when the cpif probe fails later,
++ * so the static misc device does not outlive its devm-allocated state.
++ */
++void toe_dev_destroy(struct platform_device *pdev)
++{
++	misc_deregister(&toe_dev_misc);
++	sysfs_remove_group(&pdev->dev.kobj, &toe_group);
++	devm_kfree(&pdev->dev, tc);
++	tc = NULL;
++}
+diff --git a/cpif/modem_toe_device.h b/cpif/modem_toe_device.h
+index f017541..677881e 100644
+--- a/cpif/modem_toe_device.h
++++ b/cpif/modem_toe_device.h
+@@ -43,5 +43,6 @@ struct toe_ctrl_t {
+ void toe_set_iod_clat_netdev(struct io_device *iod, void *args);
+ int toe_dev_init(struct mem_link_device *mld);
+ int toe_dev_create(struct platform_device *pdev);
++void toe_dev_destroy(struct platform_device *pdev);
+ 
+ #endif /* __MODEM_TOE_DEVICE_H__ */
+diff --git a/cpif/shm_ipc.c b/cpif/shm_ipc.c
+index 867e87d..7ade866 100644
+--- a/cpif/shm_ipc.c
++++ b/cpif/shm_ipc.c
+@@ -492,7 +492,8 @@ static int cp_shmem_probe(struct platform_device *pdev)
+ 	return 0;
+ 
+ fail:
+-	panic("CP shmem probe failed\n");
++	/* Pixel 7 Pro port: fail the probe; do not panic the kernel. */
++	mif_err("CP shmem probe failed: %d\n", ret);
+ 	return ret;
+ }
+ 

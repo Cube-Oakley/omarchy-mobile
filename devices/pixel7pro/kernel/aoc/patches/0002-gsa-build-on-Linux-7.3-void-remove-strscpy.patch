@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 23:09:59 -0700
+Subject: [PATCH 2/7] gsa: build on Linux 7.3 (void remove, strscpy)
+
+---
+ gsa/Kbuild     | 5 +++++
+ gsa/gsa_core.c | 4 +---
+ gsa/gsa_tz.c   | 2 +-
+ 3 files changed, 7 insertions(+), 4 deletions(-)
+ create mode 100644 gsa/Kbuild
+
+diff --git a/gsa/Kbuild b/gsa/Kbuild
+new file mode 100644
+index 0000000..98c369a
+--- /dev/null
++++ b/gsa/Kbuild
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Google's GSA driver (GS201 kernel), built out of tree; no pKVM on this boot.
++ccflags-y += -I$(src)/include -I$(src)/../trusty/include
++obj-m += gsa.o
++gsa-y := gsa_core.o gsa_mbox.o gsa_tz.o
+diff --git a/gsa/gsa_core.c b/gsa/gsa_core.c
+index 64d56cb..4b848af 100644
+--- a/gsa/gsa_core.c
++++ b/gsa/gsa_core.c
+@@ -626,15 +626,13 @@ static int gsa_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
+-static int gsa_remove(struct platform_device *pdev)
++static void gsa_remove(struct platform_device *pdev)
+ {
+ 	struct gsa_dev_state *s = platform_get_drvdata(pdev);
+ 
+ 	/* close connection to tz services */
+ 	gsa_tz_chan_close(&s->aoc_srv);
+ 	gsa_tz_chan_close(&s->tpu_srv);
+-
+-	return 0;
+ }
+ 
+ static const struct of_device_id gsa_of_match[] = {
+diff --git a/gsa/gsa_tz.c b/gsa/gsa_tz.c
+index 9419060..a601bdf 100644
+--- a/gsa/gsa_tz.c
++++ b/gsa/gsa_tz.c
+@@ -223,7 +223,7 @@ void gsa_tz_chan_ctx_init(struct gsa_tz_chan_ctx *ctx, const char *port,
+ 			  struct device *dev)
+ {
+ 	ctx->dev = dev;
+-	strlcpy(ctx->port, port, sizeof(ctx->port));
++	strscpy(ctx->port, port, sizeof(ctx->port));
+ 	mutex_init(&ctx->req_lock);
+ 	mutex_init(&ctx->rsp_lock);
+ 	init_completion(&ctx->reply_comp);

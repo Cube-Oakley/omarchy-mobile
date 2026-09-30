@@ -1,6 +1,15 @@
 -- Loaded after the verified hardware bring-up configuration.
 hl.config({ general = { gaps_in = 0, gaps_out = 6 } })
 
+-- Each finger's moves and lift go to the surface it went down on
+-- (touch-fingers, which install.sh builds against this Hyprland).
+local touch_fingers = os.getenv("HOME") .. "/.local/lib/omarchy-mobile/touch-fingers.so"
+local plugin = io.open(touch_fingers, "r")
+if plugin then
+    plugin:close()
+    hl.plugin.load(touch_fingers)
+end
+
 -- Pair press/release so the release that wakes the phone cannot sleep it again.
 hl.unbind("XF86PowerOff")
 hl.bind("XF86PowerOff", hl.dsp.exec_cmd("$HOME/.local/bin/omarchy-mobile-power press"),

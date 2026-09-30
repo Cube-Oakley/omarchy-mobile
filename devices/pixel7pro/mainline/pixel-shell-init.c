@@ -105,6 +105,36 @@ static void serial_shell(void)
     _exit(116);
 }
 
+#ifdef PIXEL_PERSISTENT_ROOT
+static int stop_modem(void)
+{
+    const char *service = "/usr/local/lib/omarchy-mobile/modem/manager.py";
+    if (access("/run/arch/run/pixel-modem", F_OK)) return 0;
+    pid_t child = fork();
+    if (!child) {
+        signal(SIGTERM, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+        if (chroot("/run/arch") || chdir("/")) _exit(120);
+        execl("/usr/bin/python3", "python3", service, "stop", (char *)NULL);
+        _exit(121);
+    }
+    if (child < 0) return -1;
+    /* Keep the watchdog/RFS alive throughout the ordered stop. A failed
+     * shutdown leaves the recovery shell available instead of killing RFS
+     * while CP might still be using it. */
+    for (int i = 0; i < 240; i++) {
+        int status;
+        pid_t done = waitpid(child, &status, WNOHANG);
+        if (done == child)
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+        if (done < 0 && errno != EINTR) return -1;
+        sleep(1);
+    }
+    kill(child, SIGTERM);
+    return -1;
+}
+#endif
+
 int main(void)
 {
     struct utsname u;
@@ -158,6 +188,9 @@ int main(void)
 #endif
     clock_gettime(CLOCK_MONOTONIC, &start);
     unsigned int last_status = 0;
+#ifdef PIXEL_PERSISTENT_ROOT
+restart_wait:
+#endif
     while (!stop) {
         int status;
         pid_t child;
@@ -184,6 +217,12 @@ int main(void)
     }
     logmsg("reboot requested (signal=%d)", stop);
 #ifdef PIXEL_PERSISTENT_ROOT
+    if (stop_modem()) {
+        logmsg("modem shutdown incomplete; keeping recovery and RFS running");
+        stop = 0;
+        limit = 0;
+        goto restart_wait;
+    }
     /* Stop writers before flushing the persistent filesystem. */
     kill(-1, SIGTERM);
     sleep(2);

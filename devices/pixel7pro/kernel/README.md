@@ -1,6 +1,44 @@
 # Pixel native kernel checkpoints
 
-Current display baseline: [v19](panel-v19/README.md), applied after the cumulative
+Current baseline: [v26](audio-v26/README.md): audio, sensors and
+Bluetooth. Google's AoC drivers run the audio DSP, which drives the
+microphones, the two speaker amplifiers ([spi](spi/README.md),
+[gpio](gpio/README.md)) and the sensors ([aoc-power](aoc-power/README.md),
+[sensors](../sensors/README.md)); Bluetooth starts at boot. The kernel image's
+code is v25's apart from the Bluetooth drivers.
+
+Previous baseline: [v25](sleep-v25/README.md): sleep, Wi-Fi power and
+brightness. Wi-Fi firmware deep sleep, panel sleep while the screen is off, a
+panel backlight device and s2idle as the default system sleep. With the
+[L1 substates](pcie/README.md), the screen-off idle draw falls from 2.11 W to
+1.47 W. New modules: [keys](keys/README.md), [i2c](i2c/README.md),
+[torch](torch/README.md) and [haptics](haptics/README.md).
+
+Older baseline: [v24](wifi-v24/README.md): Wi-Fi. brcmfmac drives the
+BCM4389 with Google's stock firmware, over PCIe channel 1 from the
+[PCIe module](pcie/README.md). The kernel image's code is v23's; the changes
+are in the Wi-Fi modules, which the image now carries with their firmware.
+
+Older baseline: [v23](power-v23/README.md): idle power (memory clock
+released while the screen is off, a slower thermal poll when cool), with the
+[C2 idle](cpupm/README.md) and [power domain](pd/README.md) modules and the
+[ODPM power meters](odpm/README.md).
+
+Previous baseline: [v22](smooth-v22/README.md): full CPU rates under a 20 ms
+thermal cap, on top of [v21 smoothness](smooth-v21/README.md) (120 Hz on a
+normal boot, GPU and CPU frequency scaling, retuned CPU thermal trips).
+
+Previous baseline: [v20 native boot](native-boot-v20/README.md), a complete patch
+that boots from `boot_a` without fastboot. It brings up the USB 2 PHY on a
+normal boot and accepts that boot's CPU clock state. Together with the
+[UFS driver](storage/README.md)'s HS gear 4 link, this makes the persistent
+desktop start on its own. Out-of-tree modules loaded by the persistent boot:
+[UFS](storage/README.md) (HS gear 4, device reset), [RTC](rtc/README.md),
+[battery and charge control](battery/README.md),
+[power key](powerkey/README.md) and [reboot target](reboot/README.md)
+(reboot to fastboot works with a warm reset). The history below predates it.
+
+Previous display baseline: [v19](panel-v19/README.md), applied after the cumulative
 v18 image D patch. It adds clean shared CRT screen off/on. The
 [power-key module](powerkey/README.md) supplies Linux input events; the
 [UFS handoff driver](storage/README.md) and `--persistent-root` build option are

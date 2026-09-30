@@ -1,0 +1,295 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/acpm_ipc";
+		__overlay__ { status = "disabled"; };
+	};
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <1>;
+			gs201_cmu_apm: clock-controller@18000000 {
+				compatible = "google,gs201-cmu-apm";
+				reg = <0 0x18000000 0x8000>;
+				#clock-cells = <1>;
+				/* Patched from the live DT, never copied stock phandles. */
+				clocks = <0xffffffff>, <0xfffffffe>;
+				clock-names = "oscclk", "padclk";
+			};
+			gs201_apm_mbox: mailbox@18210000 {
+				compatible = "google,gs201-mbox";
+				reg = <0 0x18210000 0x1000>;
+				clocks = <&gs201_cmu_apm 7>;
+				clock-names = "pclk";
+				interrupt-parent = <0xffffffff>;
+				interrupts = <0 78 4>;
+				#mbox-cells = <0>;
+			};
+			gs201_apm_sram: sram@18500000 {
+				compatible = "mmio-sram";
+				reg = <0 0x18500000 0x48000>;
+			};
+			little_opps: opp-table-little {
+				/* Stock GS201 rates (pixel-em); LITTLE floor from dm-tables in pixel_acpm.c.
+				 * MID stops at 1999 MHz and BIG at 2048 MHz: at 2850 MHz one BIG core
+				 * reached 87 C within a second under the polled thermal policy. */
+				compatible = "operating-points-v2";
+				opp-shared;
+				opp-300000000 { opp-hz = /bits/ 64 <300000000>; clock-latency-ns = <1000000>; };
+				opp-574000000 { opp-hz = /bits/ 64 <574000000>; clock-latency-ns = <1000000>; };
+				opp-738000000 { opp-hz = /bits/ 64 <738000000>; clock-latency-ns = <1000000>; };
+				opp-930000000 { opp-hz = /bits/ 64 <930000000>; clock-latency-ns = <1000000>; };
+				opp-1098000000 { opp-hz = /bits/ 64 <1098000000>; clock-latency-ns = <1000000>; };
+				opp-1197000000 { opp-hz = /bits/ 64 <1197000000>; clock-latency-ns = <1000000>; };
+				opp-1328000000 { opp-hz = /bits/ 64 <1328000000>; clock-latency-ns = <1000000>; };
+				opp-1401000000 { opp-hz = /bits/ 64 <1401000000>; clock-latency-ns = <1000000>; };
+				opp-1598000000 { opp-hz = /bits/ 64 <1598000000>; clock-latency-ns = <1000000>; };
+				opp-1704000000 { opp-hz = /bits/ 64 <1704000000>; clock-latency-ns = <1000000>; };
+				opp-1803000000 { opp-hz = /bits/ 64 <1803000000>; clock-latency-ns = <1000000>; };
+			};
+			mid_opps: opp-table-mid {
+				compatible = "operating-points-v2";
+				opp-shared;
+				opp-400000000 { opp-hz = /bits/ 64 <400000000>; clock-latency-ns = <1000000>; };
+				opp-553000000 { opp-hz = /bits/ 64 <553000000>; clock-latency-ns = <1000000>; };
+				opp-696000000 { opp-hz = /bits/ 64 <696000000>; clock-latency-ns = <1000000>; };
+				opp-799000000 { opp-hz = /bits/ 64 <799000000>; clock-latency-ns = <1000000>; };
+				opp-910000000 { opp-hz = /bits/ 64 <910000000>; clock-latency-ns = <1000000>; };
+				opp-1024000000 { opp-hz = /bits/ 64 <1024000000>; clock-latency-ns = <1000000>; };
+				opp-1197000000 { opp-hz = /bits/ 64 <1197000000>; clock-latency-ns = <1000000>; };
+				opp-1328000000 { opp-hz = /bits/ 64 <1328000000>; clock-latency-ns = <1000000>; };
+				opp-1491000000 { opp-hz = /bits/ 64 <1491000000>; clock-latency-ns = <1000000>; };
+				opp-1663000000 { opp-hz = /bits/ 64 <1663000000>; clock-latency-ns = <1000000>; };
+				opp-1836000000 { opp-hz = /bits/ 64 <1836000000>; clock-latency-ns = <1000000>; };
+				opp-1999000000 { opp-hz = /bits/ 64 <1999000000>; clock-latency-ns = <1000000>; };
+			};
+			big_opps: opp-table-big {
+				compatible = "operating-points-v2";
+				opp-shared;
+				opp-500000000 { opp-hz = /bits/ 64 <500000000>; clock-latency-ns = <1000000>; };
+				opp-851000000 { opp-hz = /bits/ 64 <851000000>; clock-latency-ns = <1000000>; };
+				opp-984000000 { opp-hz = /bits/ 64 <984000000>; clock-latency-ns = <1000000>; };
+				opp-1106000000 { opp-hz = /bits/ 64 <1106000000>; clock-latency-ns = <1000000>; };
+				opp-1277000000 { opp-hz = /bits/ 64 <1277000000>; clock-latency-ns = <1000000>; };
+				opp-1426000000 { opp-hz = /bits/ 64 <1426000000>; clock-latency-ns = <1000000>; };
+				opp-1582000000 { opp-hz = /bits/ 64 <1582000000>; clock-latency-ns = <1000000>; };
+				opp-1745000000 { opp-hz = /bits/ 64 <1745000000>; clock-latency-ns = <1000000>; };
+				opp-1826000000 { opp-hz = /bits/ 64 <1826000000>; clock-latency-ns = <1000000>; };
+				opp-2048000000 { opp-hz = /bits/ 64 <2048000000>; clock-latency-ns = <1000000>; };
+			};
+			gs201_thermal: thermal-sensor {
+				compatible = "google,gs201-acpm-thermal";
+				samsung,acpm-ipc = <&gs201_acpm>;
+				#thermal-sensor-cells = <1>;
+			};
+			gs201_acpm: power-management {
+				compatible = "google,gs201-acpm-ipc";
+				#clock-cells = <1>;
+				mboxes = <&gs201_apm_mbox>;
+				shmem = <&gs201_apm_sram>;
+			};
+		};
+	};
+	fragment@2 {
+		target-path = "/thermal-zones";
+		__overlay__ {
+			pixel-big {
+				polling-delay = <250>;
+				polling-delay-passive = <100>;
+				thermal-sensors = <&gs201_thermal 0>;
+				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
+				 * well before, and reboot below them; a reboot resumes stock control. */
+				critical-action = "reboot";
+				trips {
+					big_passive: passive {
+						temperature = <75000>;
+						hysteresis = <2000>;
+						type = "passive";
+					};
+					critical {
+						temperature = <95000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+				cooling-maps {
+					map {
+						trip = <&big_passive>;
+						/* CPU phandle patched from live DT. */
+						cooling-device = <0xfffffffd 0 0xffffffff>;
+					};
+				};
+			};
+			pixel-mid {
+				polling-delay = <250>;
+				polling-delay-passive = <100>;
+				thermal-sensors = <&gs201_thermal 1>;
+				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
+				 * well before, and reboot below them; a reboot resumes stock control. */
+				critical-action = "reboot";
+				trips {
+					mid_passive: passive {
+						temperature = <75000>;
+						hysteresis = <2000>;
+						type = "passive";
+					};
+					critical {
+						temperature = <95000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+				cooling-maps {
+					map {
+						trip = <&mid_passive>;
+						/* CPU phandle patched from live DT. */
+						cooling-device = <0xfffffffd 0 0xffffffff>;
+					};
+				};
+			};
+			pixel-little {
+				polling-delay = <250>;
+				polling-delay-passive = <100>;
+				thermal-sensors = <&gs201_thermal 2>;
+				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
+				 * well before, and reboot below them; a reboot resumes stock control. */
+				critical-action = "reboot";
+				trips {
+					little_passive: passive {
+						temperature = <75000>;
+						hysteresis = <2000>;
+						type = "passive";
+					};
+					critical {
+						temperature = <95000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+				cooling-maps {
+					map {
+						trip = <&little_passive>;
+						/* CPU phandle patched from live DT. */
+						cooling-device = <0xfffffffd 0 0xffffffff>;
+					};
+				};
+			};
+			pixel-g3d {
+				polling-delay = <1000>;
+				polling-delay-passive = <250>;
+				thermal-sensors = <&gs201_thermal 3>;
+				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				critical-action = "reboot";
+				trips {
+					critical {
+						temperature = <80000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+			};
+			pixel-isp {
+				polling-delay = <1000>;
+				polling-delay-passive = <250>;
+				thermal-sensors = <&gs201_thermal 4>;
+				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				critical-action = "reboot";
+				trips {
+					critical {
+						temperature = <80000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+			};
+			pixel-tpu {
+				polling-delay = <1000>;
+				polling-delay-passive = <250>;
+				thermal-sensors = <&gs201_thermal 5>;
+				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				critical-action = "reboot";
+				trips {
+					critical {
+						temperature = <80000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+			};
+			pixel-aur {
+				polling-delay = <1000>;
+				polling-delay-passive = <250>;
+				thermal-sensors = <&gs201_thermal 6>;
+				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				critical-action = "reboot";
+				trips {
+					critical {
+						temperature = <80000>;
+						hysteresis = <2000>;
+						type = "critical";
+					};
+				};
+			};
+		};
+	};
+
+	fragment@3 {
+		target-path = "/cpus";
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <0>;
+			cpu@0000 {
+				reg = <0 0x000>;
+				clocks = <&gs201_acpm 2>;
+				operating-points-v2 = <&little_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0100 {
+				reg = <0 0x100>;
+				clocks = <&gs201_acpm 2>;
+				operating-points-v2 = <&little_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0200 {
+				reg = <0 0x200>;
+				clocks = <&gs201_acpm 2>;
+				operating-points-v2 = <&little_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0300 {
+				reg = <0 0x300>;
+				clocks = <&gs201_acpm 2>;
+				operating-points-v2 = <&little_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0400 {
+				reg = <0 0x400>;
+				clocks = <&gs201_acpm 3>;
+				operating-points-v2 = <&mid_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0500 {
+				reg = <0 0x500>;
+				clocks = <&gs201_acpm 3>;
+				operating-points-v2 = <&mid_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0600 {
+				reg = <0 0x600>;
+				clocks = <&gs201_acpm 4>;
+				operating-points-v2 = <&big_opps>;
+				#cooling-cells = <2>;
+			};
+			cpu@0700 {
+				reg = <0 0x700>;
+				clocks = <&gs201_acpm 4>;
+				operating-points-v2 = <&big_opps>;
+				#cooling-cells = <2>;
+			};
+		};
+	};
+
+};

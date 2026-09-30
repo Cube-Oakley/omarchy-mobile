@@ -8,7 +8,8 @@ the session user can still run other programs. Helpers such as the file browser
 must refuse work the grant does not allow.
 
 Launching replaces an existing window for that app, the same way Settings does,
-and does not touch the main shell.
+and does not touch the main shell. An optional argument (a conversation, a
+number to dial) reaches the app as OMARCHY_MOBILE_APP_ARG.
 """
 import json
 import os
@@ -25,6 +26,18 @@ PERMISSIONS = {
     'camera': {
         'title': 'Camera',
         'detail': 'Use the cameras, and save photos to Pictures.',
+    },
+    'phone': {
+        'title': 'Phone calls',
+        'detail': 'Place and answer calls, and keep a list of recent calls.',
+    },
+    'messages': {
+        'title': 'Text messages',
+        'detail': 'Read, send and delete your text messages.',
+    },
+    'contacts': {
+        'title': 'Contacts',
+        'detail': 'Read and change your contacts.',
     },
 }
 
@@ -162,8 +175,10 @@ def stop_previous(qml):
             os.kill(int(entry.name), 15)
 
 
-def launch(app_id):
+def launch(app_id, argument=''):
     load_manifest(app_id)
+    if len(argument) > 200 or not argument.isprintable():
+        raise ValueError('Invalid app argument')
     qml = qml_path(app_id)
     if not qml.is_file():
         raise FileNotFoundError(qml)
@@ -175,6 +190,7 @@ def launch(app_id):
     os.environ['QML_IMPORT_PATH'] = imports + (':' + previous if previous else '')
     os.environ['QML2_IMPORT_PATH'] = os.environ['QML_IMPORT_PATH']
     os.environ['OMARCHY_MOBILE_APP'] = app_id
+    os.environ['OMARCHY_MOBILE_APP_ARG'] = argument
     if not os.environ.get('WAYLAND_DISPLAY'):
         raise RuntimeError('Launch from a Wayland session')
     if not os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'):
@@ -200,8 +216,8 @@ def main(argv):
         if action == 'apps' and len(argv) == 2:
             print(json.dumps(installed()))
             return 0
-        if action == 'launch' and len(argv) == 3:
-            launch(argv[2])
+        if action == 'launch' and len(argv) in (3, 4):
+            launch(argv[2], argv[3] if len(argv) == 4 else '')
         print('Usage: omarchy-mobile-app status|grant|revoke|apps|launch ...', file=sys.stderr)
         return 2
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:

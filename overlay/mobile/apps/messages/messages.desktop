@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Messages
+Comment=Send and read text messages
+Exec=omarchy-mobile-app launch messages
+Icon=mail-message-new
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+StartupNotify=true

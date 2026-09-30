@@ -1,0 +1,40 @@
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -406,6 +406,7 @@
+ 	struct brcmf_pcie_shared_info shared;
+ 	wait_queue_head_t mbdata_resp_wait;
+ 	bool mbdata_completed;
++	bool d3_ack_pending; /* publish only after control-ring read pointer */
+ 	bool irq_allocated;
+ 	bool wowl_enabled;
+ 	u8 dma_idx_sz;
+@@ -1121,8 +1122,15 @@
+ 	}
+ 	if (dtoh_mb_data & BRCMF_D2H_DEV_D3_ACK) {
+ 		brcmf_dbg(PCIE, "D2H_MB_DATA: D3 ACK\n");
+-		devinfo->mbdata_completed = true;
+-		wake_up(&devinfo->mbdata_resp_wait);
++		if (devinfo->mb_ctrlmsg) {
++			/* The message is still inside process_rx(). Do not let PM
++			 * set STATE_DOWN until its ring read pointer is committed.
++			 */
++			devinfo->d3_ack_pending = true;
++		} else {
++			WRITE_ONCE(devinfo->mbdata_completed, true);
++			wake_up(&devinfo->mbdata_resp_wait);
++		}
+ 	}
+ 	if (dtoh_mb_data & BRCMF_D2H_DEV_FWHALT) {
+ 		brcmf_dbg(PCIE, "D2H_MB_DATA: FW HALT\n");
+@@ -1318,6 +1326,11 @@
+ 	if (devinfo->state == BRCMFMAC_PCIE_STATE_UP)
+ 		brcmf_pcie_intr_enable(devinfo);
+ 	devinfo->in_irq = false;
++	if (devinfo->d3_ack_pending) {
++		devinfo->d3_ack_pending = false;
++		WRITE_ONCE(devinfo->mbdata_completed, true);
++		wake_up(&devinfo->mbdata_resp_wait);
++	}
+ 	return IRQ_HANDLED;
+ }
+ 

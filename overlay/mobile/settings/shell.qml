@@ -11,6 +11,15 @@ ShellRoot {
     property bool speedOpen: false
     property bool dnsAuto: true
     property bool dnsEditing: false
+    // Wi-Fi IPv4: Automatic (DHCP) or Static. ipEditing names the field typed in.
+    property bool ipAuto: true
+    property string ipEditing: ""
+    function fillCurrentIp() {
+        const current = (root.wifi.ipv4 || [])[0] || "";
+        ipAddressField.text = current;
+        ipGatewayField.text = root.wifi.gateway || "";
+        ipDnsField.text = (root.wifi.dns || []).filter(d => d.indexOf(":") < 0).join(" ");
+    }
     property var wifi: ({available: false})
     property var networks: []
     property string networkMessage: ""
@@ -22,6 +31,7 @@ ShellRoot {
         }
         if (panel === "home") return;
         dnsEditing = false;
+        ipEditing = "";
         panel = panel === "wifi" ? "network" : "home";
     }
     property string backStamp: ""
@@ -151,6 +161,15 @@ ShellRoot {
                 if (result.available !== undefined && result.networks === undefined) {
                     root.wifi = result;
                     if (!root.dnsEditing) root.dnsAuto = result.dns_auto !== false;
+                    if (!root.ipEditing) {
+                        root.ipAuto = result.ipv4_method !== "manual";
+                        const fixed = result.ipv4_static || {};
+                        if (!root.ipAuto && ipAddressField) {
+                            ipAddressField.text = fixed.address || "";
+                            ipGatewayField.text = fixed.gateway || "";
+                            ipDnsField.text = (fixed.dns || []).join(" ");
+                        }
+                    }
                     if (dnsField && !root.dnsEditing)
                         dnsField.text = (result.dns_static || []).join(" ");
                     if (root.panel === "wifi" && result.interface)
@@ -175,7 +194,9 @@ ShellRoot {
         onBackingWindowVisibleChanged: if (!backingWindowVisible) Qt.quit()
         function fieldWantsKeyboard() {
             return (root.dnsEditing && root.panel === "wifi" && !root.dnsAuto)
-                || (root.panel === "appearance" && appearance.installerKeyboard);
+                || (root.ipEditing !== "" && root.panel === "wifi" && !root.ipAuto)
+                || (root.panel === "appearance" && appearance.installerKeyboard)
+                || (root.panel === "weather" && weatherPage.editing);
         }
         function suppressKeyboard() {
             if (fieldWantsKeyboard())
@@ -239,7 +260,7 @@ ShellRoot {
             PageHeader {
                 Layout.fillWidth: true
                 kicker: root.panel === "home" ? "OMARCHY" : "SETTINGS"
-                title: root.speedOpen ? "Speed test" : ({home: "Settings", appearance: "Appearance", clipboard: "Clipboard", network: "Network", wifi: "Wi-Fi", sound: "Sound", battery: "Battery", about: "About", bluetooth: "Bluetooth", display: "Display", storage: "Storage", apps: "Apps"})[root.panel] || "Settings"
+                title: root.speedOpen ? "Speed test" : ({home: "Settings", appearance: "Appearance", clipboard: "Clipboard", network: "Network", wifi: "Wi-Fi", sound: "Sound", battery: "Battery", about: "About", bluetooth: "Bluetooth", display: "Display", storage: "Storage", apps: "Apps", weather: "Weather"})[root.panel] || "Settings"
                 backVisible: root.panel !== "home" || root.speedOpen
                 onBackClicked: root.goBack()
             }
@@ -262,6 +283,7 @@ ShellRoot {
                     SettingsRow { width: parent.width; label: "Battery"; onClicked: root.panel = "battery" }
                     SettingsRow { width: parent.width; label: "Storage"; onClicked: root.panel = "storage" }
                     SettingsRow { width: parent.width; label: "Apps"; onClicked: root.panel = "apps" }
+                    SettingsRow { width: parent.width; label: "Weather"; value: "Location"; onClicked: root.panel = "weather" }
                     SettingsRow { width: parent.width; label: "Clipboard"; value: "History"; onClicked: root.panel = "clipboard" }
                     SettingsRow {
                         width: parent.width
@@ -316,6 +338,12 @@ ShellRoot {
             }
             AppsPage {
                 visible: root.panel === "apps"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
+            WeatherPage {
+                id: weatherPage
+                visible: root.panel === "weather"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
             }
@@ -432,6 +460,87 @@ ShellRoot {
                     DetailRow { width: parent.width; visible: root.wifi.connected === true; label: "Gateway"; value: root.wifi.gateway || "—" }
                     DetailRow { width: parent.width; visible: root.wifi.connected === true; label: "DNS in use"; value: (root.wifi.dns || []).join("\n") || "—" }
                     TouchButton { width: parent.width; label: "Speed test"; enabled: root.wifi.connected === true; onClicked: root.speedOpen = true }
+                    Text { width: parent.width; text: "IP address"; color: MobileTheme.foreground; font.family: MobileTheme.fontFamily; font.pixelSize: 19; font.bold: true }
+                    SettingsRow {
+                        width: parent.width
+                        label: "Automatic (DHCP)"
+                        value: root.ipAuto ? "On" : "Off"
+                        selected: root.ipAuto
+                        onClicked: {
+                            root.ipAuto = !root.ipAuto;
+                            if (!root.ipAuto && !ipAddressField.text) root.fillCurrentIp();
+                        }
+                    }
+                    TouchTextField {
+                        id: ipAddressField
+                        width: parent.width
+                        implicitHeight: 50
+                        visible: !root.ipAuto
+                        placeholderText: "Address, e.g. 192.168.1.50/24"
+                        inputMethodHints: Qt.ImhPreferNumbers
+                        color: MobileTheme.foreground
+                        placeholderTextColor: MobileTheme.secondary
+                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
+                        editing: root.ipEditing === "address"
+                        onEditingRequested: root.ipEditing = "address"
+                    }
+                    TouchTextField {
+                        id: ipGatewayField
+                        width: parent.width
+                        implicitHeight: 50
+                        visible: !root.ipAuto
+                        placeholderText: "Gateway, e.g. 192.168.1.1"
+                        inputMethodHints: Qt.ImhPreferNumbers
+                        color: MobileTheme.foreground
+                        placeholderTextColor: MobileTheme.secondary
+                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
+                        editing: root.ipEditing === "gateway"
+                        onEditingRequested: root.ipEditing = "gateway"
+                    }
+                    TouchTextField {
+                        id: ipDnsField
+                        width: parent.width
+                        implicitHeight: 50
+                        visible: !root.ipAuto
+                        placeholderText: "DNS, e.g. 192.168.1.1 1.1.1.1"
+                        inputMethodHints: Qt.ImhPreferNumbers
+                        color: MobileTheme.foreground
+                        placeholderTextColor: MobileTheme.secondary
+                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
+                        editing: root.ipEditing === "dns"
+                        onEditingRequested: root.ipEditing = "dns"
+                    }
+                    Text {
+                        width: parent.width
+                        visible: !root.ipAuto
+                        wrapMode: Text.WordWrap
+                        text: "Choose an address outside the router's DHCP range, or reserve it for this phone in the router, so no other device is given it."
+                        color: MobileTheme.secondary
+                        font.family: MobileTheme.fontFamily
+                        font.pixelSize: 13
+                    }
+                    Row {
+                        width: parent.width
+                        spacing: 10
+                        TouchButton {
+                            width: root.ipAuto ? 0 : (parent.width - 10) / 2
+                            visible: !root.ipAuto
+                            label: "Use current"
+                            enabled: root.wifi.connected === true
+                            onClicked: root.fillCurrentIp()
+                        }
+                        TouchButton {
+                            width: root.ipAuto ? parent.width : (parent.width - 10) / 2
+                            label: "Apply IP settings"
+                            enabled: !!root.wifi.uuid && !net.running
+                            onClicked: {
+                                root.ipEditing = "";
+                                net.run("ipv4", root.ipAuto ? {uuid: root.wifi.uuid, auto: true}
+                                    : {uuid: root.wifi.uuid, auto: false, address: ipAddressField.text,
+                                       gateway: ipGatewayField.text, dns: ipDnsField.text});
+                            }
+                        }
+                    }
                     Text { width: parent.width; text: "DNS"; color: MobileTheme.foreground; font.family: MobileTheme.fontFamily; font.pixelSize: 19; font.bold: true }
                     SettingsRow {
                         width: parent.width
@@ -455,7 +564,7 @@ ShellRoot {
                     TouchButton {
                         width: parent.width
                         label: "Apply DNS"
-                        enabled: root.wifi.uuid && !net.running
+                        enabled: !!root.wifi.uuid && !net.running
                         onClicked: {
                             root.dnsEditing = false;
                             net.run("dns", {uuid: root.wifi.uuid, auto: root.dnsAuto, servers: dnsField.text});
@@ -464,7 +573,7 @@ ShellRoot {
                     TouchButton {
                         width: parent.width
                         label: "Forget this network"
-                        enabled: root.wifi.uuid && !net.running
+                        enabled: !!root.wifi.uuid && !net.running
                         onClicked: net.run("forget", {uuid: root.wifi.uuid})
                     }
                     Row {

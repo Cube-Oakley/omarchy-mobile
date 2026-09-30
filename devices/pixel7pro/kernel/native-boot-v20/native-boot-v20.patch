@@ -1,0 +1,4636 @@
+diff --git c/Documentation/devicetree/bindings/clock/google,gs201-cmu-apm.yaml i/Documentation/devicetree/bindings/clock/google,gs201-cmu-apm.yaml
+new file mode 100644
+index 000000000..25dd6acf5
+--- /dev/null
++++ i/Documentation/devicetree/bindings/clock/google,gs201-cmu-apm.yaml
+@@ -0,0 +1,55 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/clock/google,gs201-cmu-apm.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Google GS201 APM clock controller
++
++maintainers:
++  - Tudor Ambarus <tudor.ambarus@linaro.org>
++
++description: |
++  CMU_APM contains the clock selectors and gates supplying the ACPM mailbox.
++  The initial implementation exposes this path and the firmware-owned ALIVE
++  PLL's nominal fixed outputs. Selectors are read-only; PLL programming is
++  reserved to firmware. Clock identifiers are in dt-bindings/clock/google,gs201.h.
++
++properties:
++  compatible:
++    const: google,gs201-cmu-apm
++
++  reg:
++    maxItems: 1
++
++  clocks:
++    items:
++      - description: Board oscillator clock
++      - description: External pad clock
++
++  clock-names:
++    items:
++      - const: oscclk
++      - const: padclk
++
++  '#clock-cells':
++    const: 1
++
++required:
++  - compatible
++  - reg
++  - clocks
++  - clock-names
++  - '#clock-cells'
++
++additionalProperties: false
++
++examples:
++  - |
++    clock-controller@18000000 {
++        compatible = "google,gs201-cmu-apm";
++        reg = <0x18000000 0x8000>;
++        clocks = <&oscclk>, <&padclk>;
++        clock-names = "oscclk", "padclk";
++        #clock-cells = <1>;
++    };
+diff --git c/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml i/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml
+index e68f9c3ca..5a80b6ca0 100644
+--- c/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml
++++ i/Documentation/devicetree/bindings/firmware/google,gs101-acpm-ipc.yaml
+@@ -22,7 +22,9 @@ description: |
+ 
+ properties:
+   compatible:
+-    const: google,gs101-acpm-ipc
++    enum:
++      - google,gs101-acpm-ipc
++      - google,gs201-acpm-ipc
+ 
+   "#clock-cells":
+     const: 1
+diff --git c/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml i/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml
+index 8eccd4338..ec40ef52c 100644
+--- c/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml
++++ i/Documentation/devicetree/bindings/gpu/arm,mali-valhall-csf.yaml
+@@ -18,6 +18,7 @@ properties:
+     oneOf:
+       - items:
+           - enum:
++              - google,gs201-mali
+               - mediatek,mt8196-mali
+               - nxp,imx95-mali            # G310
+               - rockchip,rk3588-mali
+diff --git c/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml i/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml
+index c109c1f7a..9e6c01f29 100644
+--- c/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml
++++ i/Documentation/devicetree/bindings/mailbox/google,gs101-mbox.yaml
+@@ -22,6 +22,7 @@ properties:
+   compatible:
+     enum:
+       - google,gs101-mbox
++      - google,gs201-mbox
+       - samsung,exynos850-mbox
+ 
+   reg:
+diff --git c/Documentation/devicetree/bindings/power/google,gs201-g3d-pmu.yaml i/Documentation/devicetree/bindings/power/google,gs201-g3d-pmu.yaml
+new file mode 100644
+index 000000000..b18172e33
+--- /dev/null
++++ i/Documentation/devicetree/bindings/power/google,gs201-g3d-pmu.yaml
+@@ -0,0 +1,51 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/power/google,gs201-g3d-pmu.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Google GS201 GPU power domains
++
++maintainers:
++  - Tudor Ambarus <tudor.ambarus@linaro.org>
++
++description: |
++  GS201 GPU power controls use secure PMU writes. The top domain (0) retains
++  CMU and SYSREG context across power collapse. The embedded core domain (1)
++  is a child of the top domain.
++
++properties:
++  compatible:
++    const: google,gs201-g3d-pmu
++
++  reg:
++    items:
++      - description: PMU GPU top and embedded-core control/status window
++      - description: GPU CMU retention registers
++      - description: GPU SYSREG retention registers
++
++  reg-names:
++    items:
++      - const: pmu
++      - const: cmu
++      - const: sysreg
++
++  '#power-domain-cells':
++    const: 1
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - '#power-domain-cells'
++
++additionalProperties: false
++
++examples:
++  - |
++    power-controller@18061e00 {
++        compatible = "google,gs201-g3d-pmu";
++        reg = <0x18061e00 0x208>, <0x27f00000 0x8000>, <0x27f20000 0x1000>;
++        reg-names = "pmu", "cmu", "sysreg";
++        #power-domain-cells = <1>;
++    };
+diff --git c/Documentation/devicetree/bindings/thermal/google,gs201-acpm-thermal.yaml i/Documentation/devicetree/bindings/thermal/google,gs201-acpm-thermal.yaml
+new file mode 100644
+index 000000000..3e15b6a0c
+--- /dev/null
++++ i/Documentation/devicetree/bindings/thermal/google,gs201-acpm-thermal.yaml
+@@ -0,0 +1,41 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/thermal/google,gs201-acpm-thermal.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Google GS201 firmware-owned thermal sensors
++
++maintainers:
++  - Tudor Ambarus <tudor.ambarus@linaro.org>
++
++description: |
++  The GS201 ACPM firmware exposes seven temperature groups over IPC channel 9.
++  Sensor IDs are BIG (0), MID (1), LITTLE (2), G3D (3), ISP (4), TPU (5), AUR (6).
++  Sensors must be initialized by firmware before this polling interface is used.
++
++properties:
++  compatible:
++    const: google,gs201-acpm-thermal
++
++  samsung,acpm-ipc:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Reference to the GS201 ACPM IPC controller.
++
++  '#thermal-sensor-cells':
++    const: 1
++
++required:
++  - compatible
++  - samsung,acpm-ipc
++  - '#thermal-sensor-cells'
++
++additionalProperties: false
++
++examples:
++  - |
++    thermal-sensor {
++        compatible = "google,gs201-acpm-thermal";
++        samsung,acpm-ipc = <&acpm>;
++        #thermal-sensor-cells = <1>;
++    };
+diff --git c/arch/arm64/kernel/Makefile i/arch/arm64/kernel/Makefile
+index d2690c3ec..cdcf7e323 100644
+--- c/arch/arm64/kernel/Makefile
++++ i/arch/arm64/kernel/Makefile
+@@ -34,7 +34,7 @@ obj-y			:= debug-monitors.o entry.o irq.o fpsimd.o		\
+ 			   cpufeature.o alternative.o cacheinfo.o		\
+ 			   smp.o smp_spin_table.o topology.o smccc-call.o	\
+ 			   syscall.o proton-pack.o idle.o patching.o pi/	\
+-			   rsi.o jump_label.o
++			   rsi.o jump_label.o pixel_earlycon.o pixel_usb.o pixel_watchdog.o
+ 
+ obj-$(CONFIG_COMPAT)			+= sys32.o signal32.o			\
+ 					   sys_compat.o
+@@ -87,3 +87,6 @@ endif
+ 
+ # for cleaning
+ subdir- += vdso vdso32
++
++obj-$(CONFIG_EXYNOS_ACPM_PROTOCOL) += pixel_acpm.o
++obj-$(CONFIG_GS201_G3D_PM_DOMAINS) += pixel_gpu.o
+diff --git c/arch/arm64/kernel/head.S i/arch/arm64/kernel/head.S
+index 87a822e5c..b7aa09da1 100644
+--- c/arch/arm64/kernel/head.S
++++ i/arch/arm64/kernel/head.S
+@@ -73,6 +73,17 @@
+ 
+ 	.section ".idmap.text","a"
+ 
++	/* Cheetah RAM-only bring-up: MMU-off primary-path progress markers.
++	 * Probe v2 verified this console reservation and MMU-off EL2 entry.
++	 * Clobbers only x9/x10; never invoke after MMU enable or on secondaries.
++	 */
++	.macro pixel_stamp index
++	mov_q x9, 0xfd3ff000
++	mov w10, #(65 + \index)
++	strb w10, [x9, #(12 + \index)]
++	dsb sy
++	.endm
++
+ 	/*
+ 	 * The following callee saved general purpose registers are used on the
+ 	 * primary lowlevel boot path:
+@@ -83,8 +94,27 @@
+ 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
+ 	 */
+ SYM_CODE_START(primary_entry)
++	mov_q x9, 0xfd3ff000
++	mov_q x10, 0x2d2d2d2d
++	str w10, [x9, #12]
++	str w10, [x9, #16]
++	str w10, [x9, #20]
++	str w10, [x9, #24]
++	str w10, [x9, #28]
++	str w10, [x9, #32]
++	str w10, [x9, #36]
++	str w10, [x9, #40]
++	mov w10, #10
++	strb w10, [x9, #43]
++	mov w10, #32
++	str w10, [x9, #4]
++	str w10, [x9, #8]
++	mov_q x10, 0x43474244
++	str w10, [x9]
++	pixel_stamp 0
+ 	bl	record_mmu_state
+ 	bl	preserve_boot_args
++	pixel_stamp 1
+ 
+ 	adrp	x1, early_init_stack
+ 	mov	sp, x1
+@@ -92,6 +122,7 @@ SYM_CODE_START(primary_entry)
+ 	adrp	x0, __pi_init_idmap_pg_dir
+ 	mov	x1, xzr
+ 	bl	__pi_create_init_idmap
++	pixel_stamp 2
+ 
+ 	/*
+ 	 * If the page tables have been populated with non-cacheable
+@@ -116,9 +147,11 @@ SYM_CODE_START(primary_entry)
+ 	adr_l	x2, dcache_clean_poc
+ 	blr	x2
+ 
+-1:	mov	x0, x19
++1:	pixel_stamp 3
++	mov	x0, x19
+ 	bl	init_kernel_el			// w0=cpu_boot_mode
+ 	mov	x20, x0
++	pixel_stamp 4
+ 
+ 	/*
+ 	 * The following calls CPU setup code, see arch/arm64/mm/proc.S for
+@@ -127,6 +160,7 @@ SYM_CODE_START(primary_entry)
+ 	 * the TCR will have been set.
+ 	 */
+ 	bl	__cpu_setup			// initialise processor
++	pixel_stamp 5
+ 	b	__primary_switch
+ SYM_CODE_END(primary_entry)
+ 
+@@ -506,6 +540,7 @@ SYM_FUNC_START_LOCAL(__no_granule_support)
+ SYM_FUNC_END(__no_granule_support)
+ 
+ SYM_FUNC_START_LOCAL(__primary_switch)
++	pixel_stamp 6
+ 	adrp	x1, reserved_pg_dir
+ 	adrp	x2, __pi_init_idmap_pg_dir
+ 	bl	__enable_mmu
+diff --git c/arch/arm64/kernel/pixel_acpm.c i/arch/arm64/kernel/pixel_acpm.c
+new file mode 100644
+index 000000000..daa2a0186
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_acpm.c
+@@ -0,0 +1,301 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* RAM-only test glue for proper GS201 CCF/mailbox/ACPM drivers.
++ * No automatic activation: inspect first, then explicitly write activate=1.
++ * Queries are available after activation. CPU governors require a separate,
++ * guarded opt-in and are limited by the board test OPP tables.
++ */
++#include <linux/cpu.h>
++#include <linux/device.h>
++#include <linux/firmware/samsung/exynos-acpm-protocol.h>
++#include <linux/io.h>
++#include <linux/libfdt.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/slab.h>
++#include <linux/platform_device.h>
++#include <linux/thermal.h>
++#include "pixel_acpm_overlay.h"
++
++#define SRAM_BASE 0x18500000
++#define SRAM_SIZE 0x48000
++static int overlay_id;
++static bool activated;
++static struct device *query_dev;
++static struct acpm_handle *handle;
++
++static bool sram_range(u32 offset, u32 length)
++{
++	return !(offset & 3) && offset <= SRAM_SIZE && length <= SRAM_SIZE - offset;
++}
++
++static int inspect_handoff(void)
++{
++	struct device_node *np;
++	struct resource res;
++	void __iomem *sram, *cmu;
++	u32 table, count, i;
++	int ret;
++
++	if (!of_machine_is_compatible("google,GS201 CHEETAH"))
++		return -ENODEV;
++	np = of_find_node_by_path("/acpm_ipc");
++	if (!np)
++		return -ENODEV;
++	ret = of_address_to_resource(np, 1, &res);
++	of_node_put(np);
++	if (ret || res.start != SRAM_BASE || resource_size(&res) != SRAM_SIZE)
++		return -EINVAL;
++	sram = ioremap(SRAM_BASE, SRAM_SIZE);
++	if (!sram)
++		return -ENOMEM;
++	table = readl(sram + 0xa008);
++	count = readl(sram + 0xa018);
++	pr_info("Pixel ACPM: AP channels=%u table=%#x\n", count, table);
++	ret = -EINVAL;
++	if (!count || count > 16 || !sram_range(table, count * 72))
++		goto out;
++	for (i = 0; i < count; i++) {
++		void __iomem *ch = sram + table + i * 72;
++		u32 id = readl(ch), type = readl(ch + 12), qlen = readl(ch + 52);
++		u32 mlen = readl(ch + 56), poll = readl(ch + 68);
++		u32 ptrs[] = { 16, 20, 40, 44 };
++		u32 queues[] = { 24, 48 };
++		unsigned int j;
++
++		pr_info("Pixel ACPM: channel %u id=%u type=%u qlen=%u mlen=%u poll=%u\n",
++			i, id, type, qlen, mlen, poll);
++		if (id != i || (type != 1 && type != 2))
++			goto out;
++		/*
++		 * Register/buffer channels use a different transport and may contain
++		 * firmware-local addresses. The ACPM driver must skip them entirely.
++		 */
++		if (type == 2)
++			continue;
++		if (qlen < 2 || qlen > 1024 || !mlen ||
++		    mlen > 256 || (mlen & 3) || poll > 1)
++			goto out;
++		for (j = 0; j < ARRAY_SIZE(ptrs); j++) {
++			u32 off = readl(ch + ptrs[j]);
++
++			if (!sram_range(off, 4) ||
++			    (qlen > 1 && readl(sram + off) >= qlen))
++				goto out;
++		}
++		for (j = 0; j < ARRAY_SIZE(queues); j++)
++			if (!sram_range(readl(ch + queues[j]), qlen * mlen))
++				goto out;
++		if (!i && (!poll || mlen != 16 || qlen < 2))
++			goto out;
++	}
++	ret = 0;
++out:
++	iounmap(sram);
++	if (ret)
++		return ret;
++	cmu = ioremap(0x18000000, 0x8000);
++	if (!cmu)
++		return -ENOMEM;
++	pr_info("Pixel ACPM: CMU func=%08x source=%08x gate=%08x mailbox=%08x\n",
++		readl(cmu + 0x1000), readl(cmu + 0x1004),
++		readl(cmu + 0x2084), readl(cmu + 0x20d4));
++	iounmap(cmu);
++	return 0;
++}
++
++static int inspect_set(const char *val, const struct kernel_param *kp)
++{
++	if (!sysfs_streq(val, "1"))
++		return -EINVAL;
++	return inspect_handoff();
++}
++
++static int activate_set(const char *val, const struct kernel_param *kp)
++{
++	struct device_node *osc, *pad, *gic, *np;
++	void *blob;
++	fdt32_t clocks[2];
++	int off, ret;
++
++	if (!sysfs_streq(val, "1") || activated)
++		return -EINVAL;
++	ret = inspect_handoff();
++	if (ret)
++		return ret;
++	osc = of_find_node_by_path("/ext_24_5m");
++	pad = of_find_node_by_path("/ext_100m");
++	gic = of_find_compatible_node(NULL, NULL, "arm,gic-v3");
++	if (!osc || !pad || !gic || !osc->phandle || !pad->phandle || !gic->phandle) {
++		ret = -EINVAL;
++		goto put_nodes;
++	}
++	blob = kmemdup(pixel_acpm_overlay, sizeof(pixel_acpm_overlay), GFP_KERNEL);
++	if (!blob) {
++		ret = -ENOMEM;
++		goto put_nodes;
++	}
++	clocks[0] = cpu_to_fdt32(osc->phandle);
++	clocks[1] = cpu_to_fdt32(pad->phandle);
++	off = fdt_path_offset(blob, "/fragment@1/__overlay__/clock-controller@18000000");
++	ret = fdt_setprop_inplace(blob, off, "clocks", clocks, sizeof(clocks));
++	if (!ret) {
++		off = fdt_path_offset(blob, "/fragment@1/__overlay__/mailbox@18210000");
++		ret = fdt_setprop_inplace_u32(blob, off, "interrupt-parent", gic->phandle);
++	}
++	if (!ret) {
++		static const char * const zones[] = { "big", "mid", "little" };
++		static const unsigned int cpus[] = { 6, 4, 0 };
++		unsigned int i;
++
++		for (i = 0; i < ARRAY_SIZE(zones); i++) {
++			struct device_node *cpu = of_get_cpu_node(cpus[i], NULL);
++			fdt32_t map[3];
++			char path[96];
++
++			if (!cpu || !cpu->phandle) {
++				of_node_put(cpu);
++				ret = -EINVAL;
++				break;
++			}
++			map[0] = cpu_to_fdt32(cpu->phandle);
++			map[1] = cpu_to_fdt32(0);
++			map[2] = cpu_to_fdt32(U32_MAX);
++			of_node_put(cpu);
++			snprintf(path, sizeof(path),
++				 "/fragment@2/__overlay__/pixel-%s/cooling-maps/map", zones[i]);
++			off = fdt_path_offset(blob, path);
++			ret = fdt_setprop_inplace(blob, off, "cooling-device", map, sizeof(map));
++			if (ret)
++				break;
++		}
++	}
++	if (!ret)
++		ret = of_overlay_fdt_apply(blob, sizeof(pixel_acpm_overlay), &overlay_id, NULL);
++	kfree(blob);
++	if (ret)
++		goto put_nodes;
++	activated = true;
++	pr_info("Pixel ACPM: overlay %d applied; cpufreq requires separate opt-in\n", overlay_id);
++	query_dev = root_device_register("pixel-acpm-query");
++	if (IS_ERR(query_dev)) {
++		ret = PTR_ERR(query_dev);
++		query_dev = NULL;
++		goto put_nodes;
++	}
++	np = of_find_node_by_path("/power-management");
++	handle = devm_acpm_get_by_node(query_dev, np);
++	of_node_put(np);
++	if (IS_ERR(handle)) {
++		ret = PTR_ERR(handle);
++		handle = NULL;
++		pr_err("Pixel ACPM: firmware driver not ready: %d\n", ret);
++	}
++put_nodes:
++	of_node_put(osc);
++	of_node_put(pad);
++	of_node_put(gic);
++	return ret;
++}
++
++static int query_set(const char *val, const struct kernel_param *kp)
++{
++	unsigned int id;
++	unsigned long rate;
++	int ret = kstrtouint(val, 0, &id);
++
++	if (ret)
++		return ret;
++	if (!handle)
++		return -ENODEV;
++	if (id > 13)
++		return -EINVAL;
++	rate = handle->ops->dvfs.get_rate(handle, 0, id);
++	pr_info("Pixel ACPM: frequency query id=%u rate=%lu Hz\n", id, rate);
++	return rate ? 0 : -EIO;
++}
++
++static int temperature_set(const char *val, const struct kernel_param *kp)
++{
++	static const char * const names[] = {
++		"BIG", "MID", "LITTLE", "G3D", "ISP", "TPU", "AUR",
++	};
++	unsigned int id;
++	int temp, ret = kstrtouint(val, 0, &id);
++
++	if (ret)
++		return ret;
++	if (!handle)
++		return -ENODEV;
++	if (id >= ARRAY_SIZE(names))
++		return -EINVAL;
++	/* Stock GS201 DT selects channel 9 and zone IDs 0..6. */
++	ret = handle->ops->tmu.read_temp(handle, 9, id, &temp);
++	if (ret) {
++		pr_err("Pixel ACPM: temperature query %s failed: %d\n", names[id], ret);
++		return ret;
++	}
++	pr_info("Pixel ACPM: temperature query id=%u %s=%d C\n", id, names[id], temp);
++	return 0;
++}
++
++static int cpufreq_set(const char *val, const struct kernel_param *kp)
++{
++	static const char * const zones[] = {
++		"pixel-big", "pixel-mid", "pixel-little", "pixel-g3d",
++		"pixel-isp", "pixel-tpu", "pixel-aur",
++	};
++	static const unsigned long boot_rates[] = { 1197000000, 1197000000, 1106000000 };
++	static struct platform_device *pdev;
++	struct thermal_zone_device *tz;
++	unsigned int i;
++	int temp, ret;
++
++	if (!sysfs_streq(val, "1") || pdev)
++		return -EINVAL;
++	if (!handle || num_online_cpus() != 8)
++		return -ENODEV;
++	/* Require live thermal zones and fresh, plausible firmware temperatures. */
++	for (i = 0; i < ARRAY_SIZE(zones); i++) {
++		tz = thermal_zone_get_zone_by_name(zones[i]);
++		if (IS_ERR(tz))
++			return PTR_ERR(tz);
++		ret = handle->ops->tmu.read_temp(handle, 9, i, &temp);
++		if (ret)
++			return ret;
++		if (temp < 5 || temp >= 60)
++			return -ERANGE;
++	}
++	/* Never bootstrap a governor from an unexpected firmware clock state.
++	 * A normal (not fastboot) boot leaves the little cluster at 1598 MHz,
++	 * above its bounded table; cpufreq moves an unlisted initial rate to a
++	 * table rate as it starts, so that state is accepted too.
++	 */
++	for (i = 0; i < ARRAY_SIZE(boot_rates); i++) {
++		unsigned long rate = handle->ops->dvfs.get_rate(handle, 0, i + 2);
++
++		if (rate != boot_rates[i] && !(i == 0 && rate == 1598000000))
++			return -ERANGE;
++	}
++	pdev = platform_device_register_simple("cpufreq-dt", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		ret = PTR_ERR(pdev);
++		pdev = NULL;
++		return ret;
++	}
++	pr_info("Pixel ACPM: cpufreq-dt requested with bounded OPPs and thermal cooling\n");
++	return 0;
++}
++
++static const struct kernel_param_ops inspect_ops = { .set = inspect_set };
++static const struct kernel_param_ops activate_ops = { .set = activate_set };
++static const struct kernel_param_ops query_ops = { .set = query_set };
++static const struct kernel_param_ops temperature_ops = { .set = temperature_set };
++static const struct kernel_param_ops cpufreq_ops = { .set = cpufreq_set };
++module_param_cb(cpufreq, &cpufreq_ops, NULL, 0200);
++module_param_cb(inspect, &inspect_ops, NULL, 0200);
++module_param_cb(activate, &activate_ops, NULL, 0200);
++module_param_cb(query, &query_ops, NULL, 0200);
++module_param_cb(temperature, &temperature_ops, NULL, 0200);
++MODULE_DESCRIPTION("Explicit RAM-only GS201 ACPM bring-up controls");
++MODULE_LICENSE("GPL");
+diff --git c/arch/arm64/kernel/pixel_acpm_overlay.h i/arch/arm64/kernel/pixel_acpm_overlay.h
+new file mode 100644
+index 000000000..a102f97ef
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_acpm_overlay.h
+@@ -0,0 +1,592 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Generated from mainline/pixel-acpm-overlay.dts */
++static const unsigned char pixel_acpm_overlay[] __aligned(8) = {
++	0xd0, 0x0d, 0xfe, 0xed, 0x00, 0x00, 0x1b, 0x8d, 0x00, 0x00, 0x00, 0x38,
++	0x00, 0x00, 0x19, 0x88, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x11,
++	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x05,
++	0x00, 0x00, 0x19, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x66, 0x72, 0x61, 0x67,
++	0x6d, 0x65, 0x6e, 0x74, 0x40, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x2f, 0x61, 0x63, 0x70,
++	0x6d, 0x5f, 0x69, 0x70, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x0c,
++	0x64, 0x69, 0x73, 0x61, 0x62, 0x6c, 0x65, 0x64, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x31, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
++	0x2f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x22,
++	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x63, 0x6c, 0x6f, 0x63,
++	0x6b, 0x2d, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x6c, 0x65, 0x72,
++	0x40, 0x31, 0x38, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x2e,
++	0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2c, 0x67, 0x73, 0x32, 0x30, 0x31,
++	0x2d, 0x63, 0x6d, 0x75, 0x2d, 0x61, 0x70, 0x6d, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x39,
++	0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x3d,
++	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x4a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x51,
++	0x6f, 0x73, 0x63, 0x63, 0x6c, 0x6b, 0x00, 0x70, 0x61, 0x64, 0x63, 0x6c,
++	0x6b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x69, 0x6c, 0x62, 0x6f, 0x78, 0x40,
++	0x31, 0x38, 0x32, 0x31, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x2e,
++	0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2c, 0x67, 0x73, 0x32, 0x30, 0x31,
++	0x2d, 0x6d, 0x62, 0x6f, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x39, 0x00, 0x00, 0x00, 0x00,
++	0x18, 0x21, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x05,
++	0x00, 0x00, 0x00, 0x51, 0x70, 0x63, 0x6c, 0x6b, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x65,
++	0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c,
++	0x00, 0x00, 0x00, 0x76, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4e,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x81, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x73, 0x72, 0x61, 0x6d,
++	0x40, 0x31, 0x38, 0x35, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x2e,
++	0x6d, 0x6d, 0x69, 0x6f, 0x2d, 0x73, 0x72, 0x61, 0x6d, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x39,
++	0x00, 0x00, 0x00, 0x00, 0x18, 0x50, 0x00, 0x00, 0x00, 0x04, 0x80, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x5d,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x74, 0x61, 0x62, 0x6c, 0x65, 0x2d, 0x6c, 0x69,
++	0x74, 0x74, 0x6c, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x2e, 0x6f, 0x70, 0x65, 0x72,
++	0x61, 0x74, 0x69, 0x6e, 0x67, 0x2d, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x73,
++	0x2d, 0x76, 0x32, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x8d, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x37, 0x33, 0x38, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x2b, 0xfc, 0xfc, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x39, 0x33, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x37, 0x6e, 0xac, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x31, 0x30, 0x39, 0x38, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x41, 0x72, 0x26, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x31, 0x31, 0x39, 0x37, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x47, 0x58, 0xc5, 0x40,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x6f, 0x70, 0x70, 0x2d, 0x74, 0x61, 0x62, 0x6c,
++	0x65, 0x2d, 0x6d, 0x69, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x2e, 0x6f, 0x70, 0x65, 0x72,
++	0x61, 0x74, 0x69, 0x6e, 0x67, 0x2d, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x73,
++	0x2d, 0x76, 0x32, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x8d, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x34, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x17, 0xd7, 0x84, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x35, 0x35, 0x33, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x20, 0xf6, 0x1c, 0x40,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x36, 0x39, 0x36, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x29, 0x7c, 0x1e, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x37, 0x39, 0x39, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x2f, 0x9f, 0xc5, 0xc0,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x39, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x36, 0x3d, 0x7f, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x31, 0x30, 0x32, 0x34, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x3d, 0x09, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x31, 0x31, 0x39, 0x37, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x47, 0x58, 0xc5, 0x40,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x6f, 0x70, 0x70, 0x2d, 0x74, 0x61, 0x62, 0x6c,
++	0x65, 0x2d, 0x62, 0x69, 0x67, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x2e, 0x6f, 0x70, 0x65, 0x72,
++	0x61, 0x74, 0x69, 0x6e, 0x67, 0x2d, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x73,
++	0x2d, 0x76, 0x32, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x8d, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x35, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x1d, 0xcd, 0x65, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x38, 0x35, 0x31, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x32, 0xb9, 0x3a, 0xc0,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x39, 0x38, 0x34, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x3a, 0xa6, 0xa6, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x31, 0x31, 0x30, 0x36, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x98, 0x00, 0x00, 0x00, 0x00, 0x41, 0xec, 0x38, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x9f,
++	0x00, 0x0f, 0x42, 0x40, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x74, 0x68, 0x65, 0x72, 0x6d, 0x61, 0x6c, 0x2d,
++	0x73, 0x65, 0x6e, 0x73, 0x6f, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, 0x2e, 0x67, 0x6f, 0x6f, 0x67,
++	0x6c, 0x65, 0x2c, 0x67, 0x73, 0x32, 0x30, 0x31, 0x2d, 0x61, 0x63, 0x70,
++	0x6d, 0x2d, 0x74, 0x68, 0x65, 0x72, 0x6d, 0x61, 0x6c, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xb0,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xc1, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x05,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x70, 0x6f, 0x77, 0x65,
++	0x72, 0x2d, 0x6d, 0x61, 0x6e, 0x61, 0x67, 0x65, 0x6d, 0x65, 0x6e, 0x74,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x16,
++	0x00, 0x00, 0x00, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2c, 0x67,
++	0x73, 0x32, 0x30, 0x31, 0x2d, 0x61, 0x63, 0x70, 0x6d, 0x2d, 0x69, 0x70,
++	0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x3d, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xd7, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xde,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x32, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x00,
++	0x2f, 0x74, 0x68, 0x65, 0x72, 0x6d, 0x61, 0x6c, 0x2d, 0x7a, 0x6f, 0x6e,
++	0x65, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x62, 0x69, 0x67, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe4,
++	0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xf2, 0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x05,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07,
++	0x00, 0x00, 0x01, 0x18, 0x72, 0x65, 0x62, 0x6f, 0x6f, 0x74, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x74, 0x72, 0x69, 0x70, 0x73, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28,
++	0x00, 0x00, 0xea, 0x60, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x01, 0x3f, 0x70, 0x61, 0x73, 0x73,
++	0x69, 0x76, 0x65, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x5d, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x28, 0x00, 0x01, 0x38, 0x80, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x07, 0xd0,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x3f,
++	0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x6f, 0x6f, 0x6c, 0x69, 0x6e, 0x67, 0x2d, 0x6d, 0x61, 0x70, 0x73,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x70, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x44,
++	0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c,
++	0x00, 0x00, 0x01, 0x49, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x00,
++	0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65,
++	0x6c, 0x2d, 0x6d, 0x69, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x03, 0xe8,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xf2,
++	0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x18,
++	0x72, 0x65, 0x62, 0x6f, 0x6f, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x74, 0x72, 0x69, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28, 0x00, 0x00, 0xea, 0x60,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x34,
++	0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x01, 0x3f, 0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x5d,
++	0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28,
++	0x00, 0x01, 0x38, 0x80, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x3f, 0x63, 0x72, 0x69, 0x74,
++	0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x63, 0x6f, 0x6f, 0x6c,
++	0x69, 0x6e, 0x67, 0x2d, 0x6d, 0x61, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x70, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00, 0x00, 0x07,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x49,
++	0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x6c, 0x69,
++	0x74, 0x74, 0x6c, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x03, 0xe8,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xf2,
++	0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x18,
++	0x72, 0x65, 0x62, 0x6f, 0x6f, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x74, 0x72, 0x69, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28, 0x00, 0x00, 0xea, 0x60,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x34,
++	0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x01, 0x3f, 0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x5d,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28,
++	0x00, 0x01, 0x38, 0x80, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x3f, 0x63, 0x72, 0x69, 0x74,
++	0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x63, 0x6f, 0x6f, 0x6c,
++	0x69, 0x6e, 0x67, 0x2d, 0x6d, 0x61, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x70, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x49,
++	0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x67, 0x33,
++	0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xf2, 0x00, 0x00, 0x00, 0xfa,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x01, 0x08,
++	0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x18, 0x72, 0x65, 0x62, 0x6f,
++	0x6f, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x74, 0x72, 0x69, 0x70,
++	0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x63, 0x72, 0x69, 0x74,
++	0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28, 0x00, 0x01, 0x38, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x34,
++	0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x09,
++	0x00, 0x00, 0x01, 0x3f, 0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65,
++	0x6c, 0x2d, 0x69, 0x73, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x03, 0xe8,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xf2,
++	0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x18,
++	0x72, 0x65, 0x62, 0x6f, 0x6f, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x74, 0x72, 0x69, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28,
++	0x00, 0x01, 0x38, 0x80, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x3f, 0x63, 0x72, 0x69, 0x74,
++	0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x74, 0x70, 0x75, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe4,
++	0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xf2, 0x00, 0x00, 0x00, 0xfa, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x05,
++	0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x07,
++	0x00, 0x00, 0x01, 0x18, 0x72, 0x65, 0x62, 0x6f, 0x6f, 0x74, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x74, 0x72, 0x69, 0x70, 0x73, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x28, 0x00, 0x01, 0x38, 0x80, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x34, 0x00, 0x00, 0x07, 0xd0,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x3f,
++	0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x61, 0x75,
++	0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xe4, 0x00, 0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xf2, 0x00, 0x00, 0x00, 0xfa,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x01, 0x08,
++	0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x01, 0x18, 0x72, 0x65, 0x62, 0x6f,
++	0x6f, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x74, 0x72, 0x69, 0x70,
++	0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x63, 0x72, 0x69, 0x74,
++	0x69, 0x63, 0x61, 0x6c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x28, 0x00, 0x01, 0x38, 0x80,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x34,
++	0x00, 0x00, 0x07, 0xd0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x09,
++	0x00, 0x00, 0x01, 0x3f, 0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74,
++	0x40, 0x33, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06,
++	0x00, 0x00, 0x00, 0x00, 0x2f, 0x63, 0x70, 0x75, 0x73, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40, 0x30, 0x30, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x39, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x09,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x6c,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x70, 0x75, 0x40, 0x30, 0x31, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x39,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x6c, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40,
++	0x30, 0x32, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x39, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58,
++	0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x6c, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40, 0x30, 0x33, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x39, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x09,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x6c,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x70, 0x75, 0x40, 0x30, 0x34, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x39,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x6c, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40,
++	0x30, 0x35, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x39, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58,
++	0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x6c, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40, 0x30, 0x36, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x39, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x0b,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x6c,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x70, 0x75, 0x40, 0x30, 0x37, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x39,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x6c, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x73, 0x79, 0x6d, 0x62, 0x6f, 0x6c,
++	0x73, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x32,
++	0x00, 0x00, 0x01, 0x7b, 0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e,
++	0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x2f, 0x63, 0x6c, 0x6f, 0x63, 0x6b, 0x2d, 0x63, 0x6f,
++	0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x6c, 0x65, 0x72, 0x40, 0x31, 0x38, 0x30,
++	0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x01, 0x89, 0x2f, 0x66, 0x72, 0x61,
++	0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f, 0x6d, 0x61, 0x69, 0x6c,
++	0x62, 0x6f, 0x78, 0x40, 0x31, 0x38, 0x32, 0x31, 0x30, 0x30, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x26,
++	0x00, 0x00, 0x01, 0x98, 0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e,
++	0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x2f, 0x73, 0x72, 0x61, 0x6d, 0x40, 0x31, 0x38, 0x35,
++	0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x29, 0x00, 0x00, 0x01, 0xa7, 0x2f, 0x66, 0x72, 0x61,
++	0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f, 0x6f, 0x70, 0x70, 0x2d,
++	0x74, 0x61, 0x62, 0x6c, 0x65, 0x2d, 0x6c, 0x69, 0x74, 0x74, 0x6c, 0x65,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x26,
++	0x00, 0x00, 0x01, 0xb3, 0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e,
++	0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x2f, 0x6f, 0x70, 0x70, 0x2d, 0x74, 0x61, 0x62, 0x6c,
++	0x65, 0x2d, 0x6d, 0x69, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x26, 0x00, 0x00, 0x01, 0xbc, 0x2f, 0x66, 0x72, 0x61,
++	0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f, 0x6f, 0x70, 0x70, 0x2d,
++	0x74, 0x61, 0x62, 0x6c, 0x65, 0x2d, 0x62, 0x69, 0x67, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x27, 0x00, 0x00, 0x01, 0xc5,
++	0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x31, 0x2f,
++	0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f,
++	0x74, 0x68, 0x65, 0x72, 0x6d, 0x61, 0x6c, 0x2d, 0x73, 0x65, 0x6e, 0x73,
++	0x6f, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x29,
++	0x00, 0x00, 0x01, 0xd3, 0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e,
++	0x74, 0x40, 0x31, 0x2f, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x2f, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d, 0x6d, 0x61,
++	0x6e, 0x61, 0x67, 0x65, 0x6d, 0x65, 0x6e, 0x74, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x01, 0xde,
++	0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x32, 0x2f,
++	0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f,
++	0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x62, 0x69, 0x67, 0x2f, 0x74, 0x72,
++	0x69, 0x70, 0x73, 0x2f, 0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x01, 0xea,
++	0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x32, 0x2f,
++	0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f,
++	0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x6d, 0x69, 0x64, 0x2f, 0x74, 0x72,
++	0x69, 0x70, 0x73, 0x2f, 0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x33, 0x00, 0x00, 0x01, 0xf6,
++	0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x32, 0x2f,
++	0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f,
++	0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x6c, 0x69, 0x74, 0x74, 0x6c, 0x65,
++	0x2f, 0x74, 0x72, 0x69, 0x70, 0x73, 0x2f, 0x70, 0x61, 0x73, 0x73, 0x69,
++	0x76, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x5f, 0x5f, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x5f, 0x66, 0x69, 0x78, 0x75,
++	0x70, 0x73, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x31, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x69, 0x6c,
++	0x62, 0x6f, 0x78, 0x40, 0x31, 0x38, 0x32, 0x31, 0x30, 0x30, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x74, 0x68, 0x65, 0x72, 0x6d, 0x61, 0x6c, 0x2d,
++	0x73, 0x65, 0x6e, 0x73, 0x6f, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xb0, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x70, 0x6f, 0x77, 0x65,
++	0x72, 0x2d, 0x6d, 0x61, 0x6e, 0x61, 0x67, 0x65, 0x6d, 0x65, 0x6e, 0x74,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xd7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xde, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74,
++	0x40, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x62, 0x69, 0x67, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x08,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x63, 0x6f, 0x6f, 0x6c,
++	0x69, 0x6e, 0x67, 0x2d, 0x6d, 0x61, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x70, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x6d, 0x69,
++	0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x6f, 0x6f, 0x6c, 0x69, 0x6e, 0x67, 0x2d, 0x6d, 0x61, 0x70, 0x73,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x70, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x44,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65,
++	0x6c, 0x2d, 0x6c, 0x69, 0x74, 0x74, 0x6c, 0x65, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x08,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x63, 0x6f, 0x6f, 0x6c,
++	0x69, 0x6e, 0x67, 0x2d, 0x6d, 0x61, 0x70, 0x73, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x6d, 0x61, 0x70, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x44, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x67, 0x33,
++	0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x69, 0x73,
++	0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x74, 0x70,
++	0x75, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x61, 0x75,
++	0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x33, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40,
++	0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x70, 0x75, 0x40, 0x30, 0x31, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4a,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40, 0x30, 0x32, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40,
++	0x30, 0x33, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x70, 0x75, 0x40, 0x30, 0x34, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4a,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40, 0x30, 0x35, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x63, 0x70, 0x75, 0x40,
++	0x30, 0x36, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x01, 0x58,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x63, 0x70, 0x75, 0x40, 0x30, 0x37, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x4a,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x01, 0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x09, 0x74, 0x61, 0x72, 0x67,
++	0x65, 0x74, 0x2d, 0x70, 0x61, 0x74, 0x68, 0x00, 0x73, 0x74, 0x61, 0x74,
++	0x75, 0x73, 0x00, 0x23, 0x61, 0x64, 0x64, 0x72, 0x65, 0x73, 0x73, 0x2d,
++	0x63, 0x65, 0x6c, 0x6c, 0x73, 0x00, 0x23, 0x73, 0x69, 0x7a, 0x65, 0x2d,
++	0x63, 0x65, 0x6c, 0x6c, 0x73, 0x00, 0x63, 0x6f, 0x6d, 0x70, 0x61, 0x74,
++	0x69, 0x62, 0x6c, 0x65, 0x00, 0x72, 0x65, 0x67, 0x00, 0x23, 0x63, 0x6c,
++	0x6f, 0x63, 0x6b, 0x2d, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x00, 0x63, 0x6c,
++	0x6f, 0x63, 0x6b, 0x73, 0x00, 0x63, 0x6c, 0x6f, 0x63, 0x6b, 0x2d, 0x6e,
++	0x61, 0x6d, 0x65, 0x73, 0x00, 0x70, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65,
++	0x00, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x72, 0x75, 0x70, 0x74, 0x2d, 0x70,
++	0x61, 0x72, 0x65, 0x6e, 0x74, 0x00, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x72,
++	0x75, 0x70, 0x74, 0x73, 0x00, 0x23, 0x6d, 0x62, 0x6f, 0x78, 0x2d, 0x63,
++	0x65, 0x6c, 0x6c, 0x73, 0x00, 0x6f, 0x70, 0x70, 0x2d, 0x73, 0x68, 0x61,
++	0x72, 0x65, 0x64, 0x00, 0x6f, 0x70, 0x70, 0x2d, 0x68, 0x7a, 0x00, 0x63,
++	0x6c, 0x6f, 0x63, 0x6b, 0x2d, 0x6c, 0x61, 0x74, 0x65, 0x6e, 0x63, 0x79,
++	0x2d, 0x6e, 0x73, 0x00, 0x73, 0x61, 0x6d, 0x73, 0x75, 0x6e, 0x67, 0x2c,
++	0x61, 0x63, 0x70, 0x6d, 0x2d, 0x69, 0x70, 0x63, 0x00, 0x23, 0x74, 0x68,
++	0x65, 0x72, 0x6d, 0x61, 0x6c, 0x2d, 0x73, 0x65, 0x6e, 0x73, 0x6f, 0x72,
++	0x2d, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x00, 0x6d, 0x62, 0x6f, 0x78, 0x65,
++	0x73, 0x00, 0x73, 0x68, 0x6d, 0x65, 0x6d, 0x00, 0x70, 0x6f, 0x6c, 0x6c,
++	0x69, 0x6e, 0x67, 0x2d, 0x64, 0x65, 0x6c, 0x61, 0x79, 0x00, 0x70, 0x6f,
++	0x6c, 0x6c, 0x69, 0x6e, 0x67, 0x2d, 0x64, 0x65, 0x6c, 0x61, 0x79, 0x2d,
++	0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00, 0x74, 0x68, 0x65, 0x72,
++	0x6d, 0x61, 0x6c, 0x2d, 0x73, 0x65, 0x6e, 0x73, 0x6f, 0x72, 0x73, 0x00,
++	0x63, 0x72, 0x69, 0x74, 0x69, 0x63, 0x61, 0x6c, 0x2d, 0x61, 0x63, 0x74,
++	0x69, 0x6f, 0x6e, 0x00, 0x74, 0x65, 0x6d, 0x70, 0x65, 0x72, 0x61, 0x74,
++	0x75, 0x72, 0x65, 0x00, 0x68, 0x79, 0x73, 0x74, 0x65, 0x72, 0x65, 0x73,
++	0x69, 0x73, 0x00, 0x74, 0x79, 0x70, 0x65, 0x00, 0x74, 0x72, 0x69, 0x70,
++	0x00, 0x63, 0x6f, 0x6f, 0x6c, 0x69, 0x6e, 0x67, 0x2d, 0x64, 0x65, 0x76,
++	0x69, 0x63, 0x65, 0x00, 0x6f, 0x70, 0x65, 0x72, 0x61, 0x74, 0x69, 0x6e,
++	0x67, 0x2d, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x73, 0x2d, 0x76, 0x32, 0x00,
++	0x23, 0x63, 0x6f, 0x6f, 0x6c, 0x69, 0x6e, 0x67, 0x2d, 0x63, 0x65, 0x6c,
++	0x6c, 0x73, 0x00, 0x67, 0x73, 0x32, 0x30, 0x31, 0x5f, 0x63, 0x6d, 0x75,
++	0x5f, 0x61, 0x70, 0x6d, 0x00, 0x67, 0x73, 0x32, 0x30, 0x31, 0x5f, 0x61,
++	0x70, 0x6d, 0x5f, 0x6d, 0x62, 0x6f, 0x78, 0x00, 0x67, 0x73, 0x32, 0x30,
++	0x31, 0x5f, 0x61, 0x70, 0x6d, 0x5f, 0x73, 0x72, 0x61, 0x6d, 0x00, 0x6c,
++	0x69, 0x74, 0x74, 0x6c, 0x65, 0x5f, 0x6f, 0x70, 0x70, 0x73, 0x00, 0x6d,
++	0x69, 0x64, 0x5f, 0x6f, 0x70, 0x70, 0x73, 0x00, 0x62, 0x69, 0x67, 0x5f,
++	0x6f, 0x70, 0x70, 0x73, 0x00, 0x67, 0x73, 0x32, 0x30, 0x31, 0x5f, 0x74,
++	0x68, 0x65, 0x72, 0x6d, 0x61, 0x6c, 0x00, 0x67, 0x73, 0x32, 0x30, 0x31,
++	0x5f, 0x61, 0x63, 0x70, 0x6d, 0x00, 0x62, 0x69, 0x67, 0x5f, 0x70, 0x61,
++	0x73, 0x73, 0x69, 0x76, 0x65, 0x00, 0x6d, 0x69, 0x64, 0x5f, 0x70, 0x61,
++	0x73, 0x73, 0x69, 0x76, 0x65, 0x00, 0x6c, 0x69, 0x74, 0x74, 0x6c, 0x65,
++	0x5f, 0x70, 0x61, 0x73, 0x73, 0x69, 0x76, 0x65, 0x00,
++};
+diff --git c/arch/arm64/kernel/pixel_earlycon.c i/arch/arm64/kernel/pixel_earlycon.c
+new file mode 100644
+index 000000000..4033eb9e7
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_earlycon.c
+@@ -0,0 +1,241 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Cheetah early framebuffer console, based on the verified RAM probe v2.
++ * Development-only: stock GS201 DT, retained ABL DPP0/DECON0, no display driver.
++ * Uses EFI earlycon's temporary-map -> early_initcall permanent-map pattern.
++ * CONFIG_PSTORE_RAM must be disabled: we own its console buffer during this test.
++ */
++#include <linux/console.h>
++#include <linux/font.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/memblock.h>
++#include <linux/pixel_handoff.h>
++#include <linux/serial_core.h>
++#include <linux/sizes.h>
++#include <asm/arch_timer.h>
++#include <asm/early_ioremap.h>
++
++#define PFB_BASE 0xfac00000UL
++#define PFB_W 1440
++#define PFB_H 3120
++#define PFB_BYTES PAGE_ALIGN(PFB_W * PFB_H * 4)
++#define PFB_DMA 0x1c0b0000UL
++#define PFB_DECON 0x1c240000UL
++#define PFB_LOG 0xfd3ff000UL
++#define PFB_LOG_SIZE SZ_128K
++#define PFB_Y 600
++#define PFB_ROWS 60
++#define PFB_COLS 82
++#define PFB_CH 32
++#define PFB_ROW_BYTES (PFB_CH * PFB_W * 4)
++
++static void *pixel_fb, *pixel_log;
++static void __iomem *pixel_decon;
++static bool pixel_active, pixel_draw;
++static unsigned int pixel_x, pixel_y;
++static u64 last_flush;
++void __init pixel_early_stage(void);
++void __init pixel_early_note(const char *s);
++
++static __ref void *pixel_map(phys_addr_t pa, size_t size, void *permanent)
++{
++	if (permanent)
++		return permanent;
++	return early_memremap_prot(pa, size, pgprot_val(pgprot_writecombine(PAGE_KERNEL)));
++}
++
++static __ref void pixel_unmap(void *p, size_t size, void *permanent)
++{
++	if (!permanent && p)
++		early_memunmap(p, size);
++}
++
++static void pixel_save(const char *s, unsigned int n)
++{
++	u32 *log = pixel_map(PFB_LOG, PFB_LOG_SIZE, pixel_log);
++	u32 used;
++
++	if (!log)
++		return;
++	used = READ_ONCE(log[2]);
++	if (used < PFB_LOG_SIZE - 12) {
++		n = min_t(unsigned int, n, PFB_LOG_SIZE - 12 - used);
++		memcpy((u8 *)log + 12 + used, s, n);
++		wmb();
++		WRITE_ONCE(log[1], used + n);
++		WRITE_ONCE(log[2], used + n);
++		wmb();
++	}
++	pixel_unmap(log, PFB_LOG_SIZE, pixel_log);
++}
++
++void __init pixel_early_stage(void)
++{
++	pixel_save("Linux setup_arch: early mappings ready\n",
++		   sizeof("Linux setup_arch: early mappings ready\n") - 1);
++}
++
++void __init pixel_early_note(const char *s)
++{
++	pixel_save(s, strlen(s));
++	pixel_save("\n", 1);
++}
++
++static void __ref pixel_flush(void)
++{
++	void __iomem *regs;
++	u32 trigger;
++	u64 start, freq = read_sysreg(cntfrq_el0);
++
++	if (!pixel_draw)
++		return;
++	/* Cap normal refreshes at ~25 Hz; RAM log still records every message. */
++	start = __arch_counter_get_cntvct();
++	if (start - last_flush < freq / 25)
++		return;
++	regs = pixel_decon ?: early_ioremap(PFB_DECON, PAGE_SIZE);
++	if (!regs)
++		return;
++	trigger = readl(regs + 0x30);
++	wmb();
++	writel(readl(regs + 0x50) | 0x3f, regs + 0x50);
++	writel(readl(regs + 0x20) | 3, regs + 0x20);
++	writel(readl(regs + 0x50) | 0x80100000, regs + 0x50);
++	writel((trigger & ~0x10U) | 1, regs + 0x30);
++	while (readl(regs + 0x50) && __arch_counter_get_cntvct() - start < freq / 10)
++		cpu_relax();
++	writel(trigger, regs + 0x30);
++	last_flush = __arch_counter_get_cntvct();
++	if (!pixel_decon)
++		early_iounmap(regs, PAGE_SIZE);
++}
++
++static void pixel_write(struct console *con, const char *s, unsigned int n)
++{
++	pixel_save(s, n);
++	if (!pixel_draw)
++		return;
++	while (n) {
++		u32 *row;
++		unsigned long offset = (PFB_Y + pixel_y * PFB_CH) * PFB_W * 4;
++		void *permanent = pixel_fb ? pixel_fb + offset : NULL;
++
++		row = pixel_map(PFB_BASE + offset, PFB_ROW_BYTES, permanent);
++		if (!row)
++			return;
++		if (!pixel_x)
++			for (unsigned int i = 0; i < PFB_CH * PFB_W; i++)
++				row[i] = 0xff101010;
++		while (n && pixel_x < PFB_COLS) {
++			unsigned char c = *s++;
++			n--;
++			if (c == '\r')
++				continue;
++			if (c == '\n') {
++				pixel_x = PFB_COLS;
++				break;
++			}
++			if (c == '\t') c = ' ';
++			for (unsigned int gy = 0; gy < 16; gy++) {
++				u8 bits = ((const u8 *)font_vga_8x16.data)[c * 16 + gy];
++				for (unsigned int gx = 0; gx < 8; gx++) {
++					u32 color = bits & (128 >> gx) ? 0xffffffff : 0xff101010;
++					for (unsigned int dy = 0; dy < 2; dy++) {
++						u32 *p = row + (gy * 2 + dy) * PFB_W + 64 + pixel_x * 16 + gx * 2;
++						p[0] = p[1] = color;
++					}
++				}
++			}
++			pixel_x++;
++		}
++		pixel_unmap(row, PFB_ROW_BYTES, permanent);
++		if (pixel_x == PFB_COLS) {
++			pixel_x = 0;
++			pixel_y = (pixel_y + 1) % PFB_ROWS;
++		}
++	}
++	pixel_flush();
++}
++
++static int __init pixel_setup(struct earlycon_device *device, const char *opt)
++{
++	void __iomem *dma, *decon;
++	u32 *log;
++	u32 base, size, ctrl, global, trigger;
++
++	/* Refuse configurations that would have two writers on the same RAM log. */
++	if (IS_ENABLED(CONFIG_PSTORE_RAM))
++		return -EINVAL;
++	memblock_reserve(PFB_BASE, PFB_BYTES);
++	memblock_mark_nomap(PFB_BASE, PFB_BYTES);
++	memblock_reserve(PFB_LOG, SZ_4M);
++	memblock_mark_nomap(PFB_LOG, SZ_4M);
++	log = pixel_map(PFB_LOG, PFB_LOG_SIZE, NULL);
++	if (!log)
++		return -ENOMEM;
++	log[1] = log[2] = 0;
++	log[0] = 0x43474244;
++	wmb();
++	pixel_unmap(log, PFB_LOG_SIZE, NULL);
++	pixel_save("PIXEL LINUX EARLYCON SETUP\n", sizeof("PIXEL LINUX EARLYCON SETUP\n") - 1);
++	dma = early_ioremap(PFB_DMA, PAGE_SIZE);
++	decon = early_ioremap(PFB_DECON, PAGE_SIZE);
++	if (!dma || !decon) {
++		if (dma) early_iounmap(dma, PAGE_SIZE);
++		if (decon) early_iounmap(decon, PAGE_SIZE);
++		return -ENOMEM;
++	}
++	base = readl(dma + 0x40);
++	size = readl(dma + 0x10);
++	ctrl = readl(dma + 8);
++	global = readl(decon + 0x20);
++	trigger = readl(decon + 0x30);
++	pixel_draw = base == PFB_BASE && size == (PFB_H << 16 | PFB_W) &&
++		!(ctrl & 7) && ((ctrl >> 8) & 63) == 0 && !readl(dma + 0x14) &&
++		!(readl(dma + 0x50) & BIT(20)) && (global & BIT(8)) &&
++		(trigger & 0x11) && !(trigger & 0x102);
++	early_iounmap(dma, PAGE_SIZE);
++	early_iounmap(decon, PAGE_SIZE);
++	device->con->write = pixel_write;
++	pixel_active = true;
++	pr_info("Pixel earlycon: fb=%08x size=%08x ctrl=%08x trigger=%08x draw=%d\n",
++		base, size, ctrl, trigger, pixel_draw);
++	return 0;
++}
++EARLYCON_DECLARE(pixelfb, pixel_setup);
++
++static int __init pixel_remap(void)
++{
++	if (!pixel_active)
++		return 0;
++	pixel_fb = ioremap_wc(PFB_BASE, PFB_BYTES);
++	pixel_log = ioremap_wc(PFB_LOG, PFB_LOG_SIZE);
++	pixel_decon = ioremap(PFB_DECON, PAGE_SIZE);
++	if (!pixel_fb || !pixel_log || !pixel_decon)
++		panic("Pixel earlycon permanent mapping failed");
++	pr_info("Pixel earlycon: permanent mappings ready\n");
++	return 0;
++}
++early_initcall(pixel_remap);
++
++/* Serialize the last console drawing operation against the DRM handoff. The
++ * reserved RAM log remains active after DRM takes ownership of the pixels. */
++int pixel_earlycon_takeover(void)
++{
++	int ret = 0;
++
++	console_lock();
++	if (!pixel_draw || !pixel_fb || !pixel_decon)
++		ret = -ENODEV;
++	else
++		pixel_draw = false;
++	console_unlock();
++	return ret;
++}
++
++void pixel_earlycon_release(void)
++{
++	console_lock();
++	pixel_draw = true;
++	console_unlock();
++}
+diff --git c/arch/arm64/kernel/pixel_gpu.c i/arch/arm64/kernel/pixel_gpu.c
+new file mode 100644
+index 000000000..c98d2d818
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_gpu.c
+@@ -0,0 +1,231 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Explicit RAM-only GPU power-domain test controls. */
++#include <linux/clk.h>
++#include <linux/libfdt.h>
++#include <linux/firmware/samsung/exynos-acpm-protocol.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/thermal.h>
++#include "pixel_gpu_overlay.h"
++
++static struct device *test_dev;
++static bool held;
++static int overlay_id;
++
++static int gpu_test_probe(struct platform_device *pdev)
++{
++	pm_runtime_enable(&pdev->dev);
++	test_dev = &pdev->dev;
++	return 0;
++}
++
++static const struct of_device_id gpu_test_match[] = {
++	{ .compatible = "google,pixel-gpu-power-test" },
++	{}
++};
++static struct platform_driver gpu_test_driver = {
++	.probe = gpu_test_probe,
++	.driver = {
++		.name = "pixel-gpu-power-test",
++		.of_match_table = gpu_test_match,
++		.suppress_bind_attrs = true,
++	},
++};
++builtin_platform_driver(gpu_test_driver);
++
++static int gpu_guard(void)
++{
++	struct thermal_zone_device *tz;
++	int temp, ret;
++
++	if (!of_machine_is_compatible("google,GS201 CHEETAH"))
++		return -ENODEV;
++	tz = thermal_zone_get_zone_by_name("pixel-g3d");
++	if (IS_ERR(tz))
++		return PTR_ERR(tz);
++	ret = thermal_zone_get_temp(tz, &temp);
++	if (ret)
++		return ret;
++	return temp >= 5000 && temp < 60000 ? 0 : -ERANGE;
++}
++
++static int domains_set(const char *val, const struct kernel_param *kp)
++{
++	static bool applied;
++	struct device_node *acpm;
++	fdt32_t clocks[4];
++	void *blob;
++	int off, ret;
++
++	if (!sysfs_streq(val, "1") || applied)
++		return -EINVAL;
++	ret = gpu_guard();
++	if (ret)
++		return ret;
++	acpm = of_find_node_by_path("/power-management");
++	if (!acpm || !acpm->phandle) {
++		of_node_put(acpm);
++		return -ENODEV;
++	}
++	clocks[0] = clocks[2] = cpu_to_fdt32(acpm->phandle);
++	clocks[1] = cpu_to_fdt32(6);
++	clocks[3] = cpu_to_fdt32(5);
++	of_node_put(acpm);
++	blob = kmemdup(pixel_gpu_overlay, sizeof(pixel_gpu_overlay), GFP_KERNEL);
++	if (!blob)
++		return -ENOMEM;
++	off = fdt_path_offset(blob, "/fragment@0/__overlay__/gpu@28000000");
++	ret = fdt_setprop_inplace(blob, off, "clocks", clocks, sizeof(clocks));
++	if (!ret)
++		ret = of_overlay_fdt_apply(blob, sizeof(pixel_gpu_overlay), &overlay_id, NULL);
++	kfree(blob);
++	if (!ret)
++		applied = true;
++	return ret;
++}
++
++static int cycle_set(const char *val, const struct kernel_param *kp)
++{
++	void __iomem *pmu, *gpu;
++	u32 state, id;
++	int ret;
++
++	if (!sysfs_streq(val, "1") || !test_dev || held)
++		return -EINVAL;
++	ret = gpu_guard();
++	if (ret)
++		return ret;
++	pmu = ioremap(0x18061e00, 0x208);
++	if (!pmu)
++		return -ENOMEM;
++	ret = pm_runtime_resume_and_get(test_dev);
++	if (ret < 0)
++		goto unmap_pmu;
++	ret = pm_runtime_put_sync_suspend(test_dev);
++	if (ret < 0)
++		goto unmap_pmu;
++	ret = readl_poll_timeout(pmu + 4, state, !(state & 1), 10, 100000);
++	if (ret)
++		goto unmap_pmu;
++	pr_info("Pixel GPU: powered off top=%u cores=%u\n",
++		readl(pmu + 4) & 1, readl(pmu + 0x204) & 1);
++	ret = pm_runtime_resume_and_get(test_dev);
++	if (ret < 0)
++		goto unmap_pmu;
++	held = true;
++	if (!(readl(pmu + 4) & readl(pmu + 0x204) & 1)) {
++		ret = -EIO;
++		goto unmap_pmu;
++	}
++	gpu = ioremap(0x28000000, 0x1000);
++	if (!gpu) {
++		ret = -ENOMEM;
++		goto unmap_pmu;
++	}
++	id = readl(gpu);
++	pr_info("Pixel GPU: restored top=%u cores=%u GPU_ID=%08x; runtime reference held\n",
++		readl(pmu + 4) & 1, readl(pmu + 0x204) & 1, id);
++	iounmap(gpu);
++	ret = id == 0xa8620004 ? 0 : -ENODEV;
++unmap_pmu:
++	iounmap(pmu);
++	return ret;
++}
++
++static int render_set(const char *val, const struct kernel_param *kp)
++{
++	static bool attempted;
++	struct device_node *np;
++	struct platform_device *pdev;
++	struct property *prop;
++	struct clk *top, *stacks;
++	int ret;
++
++	if (!sysfs_streq(val, "1") || attempted || !held)
++		return -EINVAL;
++	ret = gpu_guard();
++	if (ret)
++		return ret;
++	np = of_find_node_by_path("/gpu@28000000");
++	if (!np)
++		return -ENODEV;
++	top = of_clk_get(np, 0);
++	if (IS_ERR(top)) {
++		ret = PTR_ERR(top);
++		goto put_node;
++	}
++	stacks = of_clk_get(np, 1);
++	if (IS_ERR(stacks)) {
++		ret = PTR_ERR(stacks);
++		goto put_top;
++	}
++	/* Lowest stock tuple: G3DL2=302 MHz >= G3D=202 MHz, top first on ascent. */
++	if (clk_get_rate(top) != 151000000 || clk_get_rate(stacks) != 151000000) {
++		ret = -ERANGE;
++		goto put_clocks;
++	}
++	ret = clk_set_rate(top, 302000000);
++	if (ret || clk_get_rate(top) != 302000000) {
++		ret = ret ?: -EIO;
++		goto put_clocks;
++	}
++	ret = clk_set_rate(stacks, 202000000);
++	if (ret || clk_get_rate(stacks) != 202000000) {
++		ret = ret ?: -EIO;
++		goto put_clocks;
++	}
++	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
++	if (!prop) {
++		ret = -ENOMEM;
++		goto put_clocks;
++	}
++	prop->name = kstrdup("status", GFP_KERNEL);
++	prop->value = kstrdup("okay", GFP_KERNEL);
++	prop->length = 5;
++	if (!prop->name || !prop->value) {
++		ret = -ENOMEM;
++		goto free_prop;
++	}
++	attempted = true;
++	pr_info("Pixel GPU: binding Panthor at top=302 MHz, stacks=202 MHz\n");
++	ret = of_update_property(np, prop);
++	if (ret)
++		goto free_prop;
++	/* The live tree now owns the property; keep it until reboot. */
++	pdev = of_find_device_by_node(np);
++	if (!pdev || !device_is_bound(&pdev->dev)) {
++		ret = -ENODEV;
++	} else {
++		ret = pm_runtime_put_sync_suspend(test_dev);
++		held = false;
++		if (ret >= 0)
++			ret = 0;
++	}
++	if (pdev)
++		put_device(&pdev->dev);
++	goto put_clocks;
++free_prop:
++	kfree(prop->name);
++	kfree(prop->value);
++	kfree(prop);
++put_clocks:
++	clk_put(stacks);
++put_top:
++	clk_put(top);
++put_node:
++	of_node_put(np);
++	return ret;
++}
++
++static const struct kernel_param_ops domains_ops = { .set = domains_set };
++static const struct kernel_param_ops cycle_ops = { .set = cycle_set };
++static const struct kernel_param_ops render_ops = { .set = render_set };
++module_param_cb(render, &render_ops, NULL, 0200);
++module_param_cb(domains, &domains_ops, NULL, 0200);
++module_param_cb(cycle, &cycle_ops, NULL, 0200);
++MODULE_LICENSE("GPL");
+diff --git c/arch/arm64/kernel/pixel_gpu_overlay.h i/arch/arm64/kernel/pixel_gpu_overlay.h
+new file mode 100644
+index 000000000..0a031dac6
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_gpu_overlay.h
+@@ -0,0 +1,122 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Generated from mainline/pixel-gpu-overlay.dts */
++static const unsigned char pixel_gpu_overlay[] __aligned(8) = {
++	0xd0, 0x0d, 0xfe, 0xed, 0x00, 0x00, 0x05, 0x80, 0x00, 0x00, 0x00, 0x38,
++	0x00, 0x00, 0x04, 0x98, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x11,
++	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe8,
++	0x00, 0x00, 0x04, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x66, 0x72, 0x61, 0x67,
++	0x6d, 0x65, 0x6e, 0x74, 0x40, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d, 0x63, 0x6f,
++	0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x6c, 0x65, 0x72, 0x40, 0x31, 0x38, 0x30,
++	0x36, 0x31, 0x65, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x27, 0x67, 0x6f, 0x6f, 0x67,
++	0x6c, 0x65, 0x2c, 0x67, 0x73, 0x32, 0x30, 0x31, 0x2d, 0x67, 0x33, 0x64,
++	0x2d, 0x70, 0x6d, 0x75, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00,
++	0x18, 0x06, 0x1e, 0x00, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x00, 0x00,
++	0x27, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x27, 0xf2, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x00, 0x36, 0x70, 0x6d, 0x75, 0x00,
++	0x63, 0x6d, 0x75, 0x00, 0x73, 0x79, 0x73, 0x72, 0x65, 0x67, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x40,
++	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x6f, 0x70, 0x70, 0x2d, 0x74, 0x61, 0x62, 0x6c,
++	0x65, 0x2d, 0x67, 0x70, 0x75, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x27, 0x6f, 0x70, 0x65, 0x72,
++	0x61, 0x74, 0x69, 0x6e, 0x67, 0x2d, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x73,
++	0x2d, 0x76, 0x32, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x6f, 0x70, 0x70, 0x2d, 0x33, 0x30, 0x32, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08,
++	0x00, 0x00, 0x00, 0x5c, 0x00, 0x00, 0x00, 0x00, 0x12, 0x00, 0x27, 0x80,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x67, 0x70, 0x75, 0x40, 0x32, 0x38, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x27,
++	0x00, 0x00, 0x00, 0x27, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2c, 0x67,
++	0x73, 0x32, 0x30, 0x31, 0x2d, 0x6d, 0x61, 0x6c, 0x69, 0x00, 0x61, 0x72,
++	0x6d, 0x2c, 0x6d, 0x61, 0x6c, 0x69, 0x2d, 0x76, 0x61, 0x6c, 0x68, 0x61,
++	0x6c, 0x6c, 0x2d, 0x63, 0x73, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00,
++	0x28, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x63, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x01, 0x49, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x01, 0x4a, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x01, 0x48, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x6e, 0x6a, 0x6f, 0x62, 0x00,
++	0x6d, 0x6d, 0x75, 0x00, 0x67, 0x70, 0x75, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x7e, 0xff, 0xff, 0xff, 0xff,
++	0x00, 0x00, 0x00, 0x06, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x05,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x85,
++	0x63, 0x6f, 0x72, 0x65, 0x00, 0x73, 0x74, 0x61, 0x63, 0x6b, 0x73, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x91,
++	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x0a,
++	0x00, 0x00, 0x00, 0x9f, 0x74, 0x6f, 0x70, 0x00, 0x63, 0x6f, 0x72, 0x65,
++	0x73, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04,
++	0x00, 0x00, 0x00, 0xb2, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0xc6, 0x64, 0x69, 0x73, 0x61,
++	0x62, 0x6c, 0x65, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65, 0x6c, 0x2d, 0x67, 0x70,
++	0x75, 0x2d, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d, 0x74, 0x65, 0x73, 0x74,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x1c,
++	0x00, 0x00, 0x00, 0x27, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2c, 0x70,
++	0x69, 0x78, 0x65, 0x6c, 0x2d, 0x67, 0x70, 0x75, 0x2d, 0x70, 0x6f, 0x77,
++	0x65, 0x72, 0x2d, 0x74, 0x65, 0x73, 0x74, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x91, 0x00, 0x00, 0x00, 0x01,
++	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x73, 0x79,
++	0x6d, 0x62, 0x6f, 0x6c, 0x73, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0xcd, 0x2f, 0x66, 0x72, 0x61,
++	0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x30, 0x2f, 0x5f, 0x5f, 0x6f, 0x76,
++	0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f, 0x70, 0x6f, 0x77, 0x65,
++	0x72, 0x2d, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x6c, 0x65, 0x72,
++	0x40, 0x31, 0x38, 0x30, 0x36, 0x31, 0x65, 0x30, 0x30, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x26, 0x00, 0x00, 0x00, 0xda,
++	0x2f, 0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x30, 0x2f,
++	0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61, 0x79, 0x5f, 0x5f, 0x2f,
++	0x6f, 0x70, 0x70, 0x2d, 0x74, 0x61, 0x62, 0x6c, 0x65, 0x2d, 0x67, 0x70,
++	0x75, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
++	0x5f, 0x5f, 0x6c, 0x6f, 0x63, 0x61, 0x6c, 0x5f, 0x66, 0x69, 0x78, 0x75,
++	0x70, 0x73, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
++	0x66, 0x72, 0x61, 0x67, 0x6d, 0x65, 0x6e, 0x74, 0x40, 0x30, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x01, 0x5f, 0x5f, 0x6f, 0x76, 0x65, 0x72, 0x6c, 0x61,
++	0x79, 0x5f, 0x5f, 0x00, 0x00, 0x00, 0x00, 0x01, 0x67, 0x70, 0x75, 0x40,
++	0x32, 0x38, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x91,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xb2, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x70, 0x69, 0x78, 0x65,
++	0x6c, 0x2d, 0x67, 0x70, 0x75, 0x2d, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d,
++	0x74, 0x65, 0x73, 0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
++	0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x91, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
++	0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x09,
++	0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 0x2d, 0x70, 0x61, 0x74, 0x68, 0x00,
++	0x23, 0x61, 0x64, 0x64, 0x72, 0x65, 0x73, 0x73, 0x2d, 0x63, 0x65, 0x6c,
++	0x6c, 0x73, 0x00, 0x23, 0x73, 0x69, 0x7a, 0x65, 0x2d, 0x63, 0x65, 0x6c,
++	0x6c, 0x73, 0x00, 0x63, 0x6f, 0x6d, 0x70, 0x61, 0x74, 0x69, 0x62, 0x6c,
++	0x65, 0x00, 0x72, 0x65, 0x67, 0x00, 0x72, 0x65, 0x67, 0x2d, 0x6e, 0x61,
++	0x6d, 0x65, 0x73, 0x00, 0x23, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d, 0x64,
++	0x6f, 0x6d, 0x61, 0x69, 0x6e, 0x2d, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x00,
++	0x70, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x00, 0x6f, 0x70, 0x70, 0x2d,
++	0x68, 0x7a, 0x00, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x72, 0x75, 0x70, 0x74,
++	0x73, 0x00, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x72, 0x75, 0x70, 0x74, 0x2d,
++	0x6e, 0x61, 0x6d, 0x65, 0x73, 0x00, 0x63, 0x6c, 0x6f, 0x63, 0x6b, 0x73,
++	0x00, 0x63, 0x6c, 0x6f, 0x63, 0x6b, 0x2d, 0x6e, 0x61, 0x6d, 0x65, 0x73,
++	0x00, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d, 0x64, 0x6f, 0x6d, 0x61, 0x69,
++	0x6e, 0x73, 0x00, 0x70, 0x6f, 0x77, 0x65, 0x72, 0x2d, 0x64, 0x6f, 0x6d,
++	0x61, 0x69, 0x6e, 0x2d, 0x6e, 0x61, 0x6d, 0x65, 0x73, 0x00, 0x6f, 0x70,
++	0x65, 0x72, 0x61, 0x74, 0x69, 0x6e, 0x67, 0x2d, 0x70, 0x6f, 0x69, 0x6e,
++	0x74, 0x73, 0x2d, 0x76, 0x32, 0x00, 0x73, 0x74, 0x61, 0x74, 0x75, 0x73,
++	0x00, 0x67, 0x73, 0x32, 0x30, 0x31, 0x5f, 0x67, 0x70, 0x75, 0x5f, 0x70,
++	0x64, 0x00, 0x67, 0x73, 0x32, 0x30, 0x31, 0x5f, 0x67, 0x70, 0x75, 0x5f,
++	0x6f, 0x70, 0x70, 0x00,
++};
+diff --git c/arch/arm64/kernel/pixel_usb.c i/arch/arm64/kernel/pixel_usb.c
+new file mode 100644
+index 000000000..c9c427d87
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_usb.c
+@@ -0,0 +1,260 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* GS201 USB device mode. No persistent DT or partition changes.
++ *
++ * After fastboot, ABL leaves the USB2 PHY powered and configured. After a
++ * normal boot it is isolated in the PMU and its controller block is at reset
++ * defaults, so no gadget ever reaches the host. pixel_usb_phy_init() then
++ * brings the PHY up the way Google's GS201 driver does (google-modules/soc/gs
++ * drivers/phy/samsung, phy-exynos-usbdrd.c exynos_usbdrd_utmi_init and
++ * phy-exynos-usb3p1.c phy_exynos_usb_v3p1_enable, phy_version 0x301), ending
++ * in the state a fastboot handoff leaves (read from a working RAM boot).
++ */
++#include <linux/arm-smccc.h>
++#include <linux/delay.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kstrtox.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_platform.h>
++#include <linux/printk.h>
++
++static bool pixel_usb_bind;
++static int __init pixel_usb_arg(char *s)
++{
++	return !kstrtobool(s, &pixel_usb_bind);
++}
++__setup("pixel_usb=", pixel_usb_arg);
++
++/* Stock DT: exynos-pmu 0x18060000, pmu_offset 0x3eb0 / pmu_offset_dp 0x3eb4
++ * with pmu_mask 0 (BIT(0)); phy@11200000 is the USB PHY controller.
++ */
++#define GS201_PMU_USB		0x18063eb0UL
++#define GS201_SMC_PRIV_REG	0x82000504
++#define GS201_USBCON		0x11200000UL
++
++#define USBCON_LINK_CTRL	0x04
++#define  LINKCTRL_PIPE3_FORCE_RX_ELEC_IDLE	BIT(18)
++#define  LINKCTRL_PIPE3_FORCE_PHY_STATUS	BIT(17)
++#define  LINKCTRL_PIPE3_FORCE_EN		BIT(16)
++#define  LINKCTRL_DIS_QACT_LINKGATE		BIT(12)
++#define  LINKCTRL_DIS_QACT_ID0			BIT(11)
++#define  LINKCTRL_DIS_QACT_VBUS_VALID		BIT(10)
++#define  LINKCTRL_DIS_QACT_BVALID		BIT(9)
++#define  LINKCTRL_FORCE_QACT			BIT(8)
++#define  LINKCTRL_BUS_FILTER_BYPASS		(0xf << 4)
++#define USBCON_LINK_PORT	0x08
++#define  LINKPORT_SEL_OCD_U3			BIT(3)
++#define  LINKPORT_SEL_OCD_U2			BIT(2)
++#define USBCON_CLKRST		0x20
++#define  CLKRST_PHY20_SW_RST			BIT(13)
++#define  CLKRST_PHY20_RST_SEL			BIT(12)
++#define  CLKRST_LINK_PCLK_SEL			BIT(7)
++#define  CLKRST_PHY30_SW_RST			BIT(3)
++#define  CLKRST_PHY30_RST_SEL			BIT(2)
++#define  CLKRST_PORT_RST			BIT(1)
++#define  CLKRST_LINK_SW_RST			BIT(0)
++#define USBCON_SSP_PLL		0x30
++#define  SSP_PLL_FSEL_MASK			0x3f
++#define USBCON_COMBO_PMA_CTRL	0x48
++#define  PMA_LOW_PWR				BIT(4)
++#define USBCON_UTMI		0x50
++#define  UTMI_FORCE_VBUSVALID			BIT(5)
++#define  UTMI_FORCE_BVALID			BIT(4)
++#define  UTMI_DP_PULLDOWN			BIT(3)
++#define  UTMI_DM_PULLDOWN			BIT(2)
++#define  UTMI_FORCE_SUSPEND			BIT(1)
++#define  UTMI_FORCE_SLEEP			BIT(0)
++#define USBCON_HSP		0x54
++#define  HSP_VBUSVLDEXTSEL			BIT(13)
++#define  HSP_VBUSVLDEXT				BIT(12)
++#define  HSP_EN_UTMISUSPEND			BIT(9)
++#define  HSP_COMMONONN				BIT(8)
++#define USBCON_HSP_TUNE		0x58
++/* The HS tuning ABL programs on cheetah (from the DT hs_tune_param). */
++#define  HSP_TUNE_CHEETAH			0x736f3537
++#define USBCON_HSP_TEST		0x5c
++#define  HSP_TEST_SIDDQ				BIT(24)
++
++/* Set bit 0 of a secure PMU register (reads are open, writes go to EL3). */
++static int __init pixel_usb_pmu_set(void __iomem *va, unsigned long pa)
++{
++	struct arm_smccc_res res;
++	u32 value = readl(va);
++
++	if (value & BIT(0))
++		return 0;
++	arm_smccc_smc(GS201_SMC_PRIV_REG, pa, 1, value | BIT(0), 0, 0, 0, 0, &res);
++	if (res.a0 || !(readl(va) & BIT(0))) {
++		pr_err("Pixel USB: PMU %#lx write failed: %#lx\n", pa, res.a0);
++		return -EACCES;
++	}
++	return 0;
++}
++
++static void __init usbcon_update(void __iomem *con, u32 reg, u32 clear, u32 set)
++{
++	writel((readl(con + reg) & ~clear) | set, con + reg);
++}
++
++static int __init pixel_usb_phy_init(void)
++{
++	void __iomem *pmu, *con;
++	int ret = 0;
++
++	pmu = ioremap(GS201_PMU_USB & PAGE_MASK, PAGE_SIZE);
++	con = ioremap(GS201_USBCON, 0x200);
++	if (!pmu || !con) {
++		ret = -ENOMEM;
++		goto out;
++	}
++	if (readl(pmu + (GS201_PMU_USB & ~PAGE_MASK)) & BIT(0)) {
++		pr_info("Pixel USB: PHY already running (fastboot handoff)\n");
++		goto out;
++	}
++	pr_info("Pixel USB: PHY isolated (normal boot); bringing it up\n");
++
++	/* Link reset, as exynos_usbdrd_utmi_init starts. */
++	usbcon_update(con, USBCON_CLKRST, 0, CLKRST_LINK_SW_RST);
++	udelay(10);
++	usbcon_update(con, USBCON_CLKRST, CLKRST_LINK_SW_RST, 0);
++
++	/* Out of isolation: USB PHY and the USB/DP combo PHY. */
++	ret = pixel_usb_pmu_set(pmu + (GS201_PMU_USB & ~PAGE_MASK), GS201_PMU_USB);
++	if (!ret)
++		ret = pixel_usb_pmu_set(pmu + ((GS201_PMU_USB + 4) & ~PAGE_MASK), GS201_PMU_USB + 4);
++	if (ret)
++		goto out;
++
++	/* Q-channel workaround: no q-active from USB, then force it. */
++	usbcon_update(con, USBCON_LINK_CTRL, LINKCTRL_FORCE_QACT,
++		      LINKCTRL_DIS_QACT_ID0 | LINKCTRL_DIS_QACT_VBUS_VALID |
++		      LINKCTRL_DIS_QACT_BVALID | LINKCTRL_DIS_QACT_LINKGATE);
++	usleep_range(500, 600);
++	usbcon_update(con, USBCON_LINK_CTRL, 0, LINKCTRL_FORCE_QACT);
++
++	/* PHY POR high. */
++	usbcon_update(con, USBCON_CLKRST, 0, CLKRST_PHY20_SW_RST | CLKRST_PHY20_RST_SEL |
++		      CLKRST_PHY30_SW_RST | CLKRST_PHY30_RST_SEL);
++	usbcon_update(con, USBCON_UTMI, UTMI_FORCE_SUSPEND | UTMI_FORCE_SLEEP |
++		      UTMI_DP_PULLDOWN | UTMI_DM_PULLDOWN, 0);
++	/* ABL keeps the common block on (COMMONONN clear). It also selects
++	 * the PIPE3 clock for the link (CLKRST_LINK_PCLK_SEL), but only because
++	 * it brings up the SuperSpeed combo PHY that supplies it; here, as in
++	 * Google's HS-only path, the link keeps its default clock or it has none
++	 * ("failed to enable ep0out").
++	 */
++	usbcon_update(con, USBCON_HSP, HSP_COMMONONN, HSP_EN_UTMISUSPEND);
++	usbcon_update(con, USBCON_CLKRST, CLKRST_LINK_PCLK_SEL, 0);
++	usleep_range(100, 120);
++
++	/* VBUS is not routed to this block (is_not_vbus_pad): force valid. */
++	usbcon_update(con, USBCON_LINK_CTRL, 0, LINKCTRL_BUS_FILTER_BYPASS);
++	usbcon_update(con, USBCON_UTMI, 0, UTMI_FORCE_BVALID | UTMI_FORCE_VBUSVALID);
++	usbcon_update(con, USBCON_HSP, 0, HSP_VBUSVLDEXTSEL | HSP_VBUSVLDEXT);
++	writel(HSP_TUNE_CHEETAH, con + USBCON_HSP_TUNE);
++	/* 19.2 MHz reference clock (phy_ref_clock). */
++	usbcon_update(con, USBCON_SSP_PLL, SSP_PLL_FSEL_MASK, 0);
++
++	/* HS PHY power, then POR low; PHYCLOCK is valid 75 us later. */
++	usbcon_update(con, USBCON_HSP_TEST, HSP_TEST_SIDDQ, 0);
++	udelay(15);
++	usbcon_update(con, USBCON_CLKRST, CLKRST_PHY20_SW_RST | CLKRST_PHY30_SW_RST |
++		      CLKRST_PORT_RST, CLKRST_PHY20_RST_SEL);
++	usleep_range(75, 90);
++
++	/* Over-current from the hub port (use_io_for_ovc = 0). */
++	usbcon_update(con, USBCON_LINK_PORT, 0, LINKPORT_SEL_OCD_U3 | LINKPORT_SEL_OCD_U2);
++	/* No SuperSpeed PHY: force the PIPE3 signals, park the combo PMA. */
++	usbcon_update(con, USBCON_LINK_CTRL, LINKCTRL_PIPE3_FORCE_PHY_STATUS,
++		      LINKCTRL_PIPE3_FORCE_EN | LINKCTRL_PIPE3_FORCE_RX_ELEC_IDLE);
++	usbcon_update(con, USBCON_COMBO_PMA_CTRL, 0, PMA_LOW_PWR);
++
++	pr_info("Pixel USB: PHY up: LINK_CTRL=%08x CLKRST=%08x UTMI=%08x HSP=%08x TUNE=%08x TEST=%08x\n",
++		readl(con + USBCON_LINK_CTRL), readl(con + USBCON_CLKRST), readl(con + USBCON_UTMI),
++		readl(con + USBCON_HSP), readl(con + USBCON_HSP_TUNE), readl(con + USBCON_HSP_TEST));
++out:
++	if (pmu)
++		iounmap(pmu);
++	if (con)
++		iounmap(con);
++	return ret;
++}
++
++static struct property pixel_usb_props[] = {
++	{ .name = "compatible", .value = "snps,dwc3", .length = sizeof("snps,dwc3") },
++	{ .name = "maximum-speed", .value = "high-speed", .length = sizeof("high-speed") },
++	{ .name = "snps,dis_u2_susphy_quirk" },
++	{ .name = "snps,dis_u3_susphy_quirk" },
++	{ .name = "snps,dis_enblslpm_quirk" },
++};
++
++static int __init pixel_usb_register(void)
++{
++	static const char * const remove[] = {
++		"clocks", "clock-names", "phys", "phy-names", "usb-psy-name",
++	};
++	struct device_node *np;
++	struct property *p;
++	struct resource res;
++	int ret = -ENODEV;
++
++	if (!pixel_usb_bind || !IS_ENABLED(CONFIG_USB_DWC3))
++		return 0;
++	ret = pixel_usb_phy_init();
++	if (ret)
++		return ret;
++	np = of_find_node_by_path("/usb@11210000/dwc3");
++	if (!np)
++		return -ENODEV;
++	if (of_address_to_resource(np, 0, &res) ||
++	    res.start != 0x11210000 || resource_size(&res) != 0x10000 ||
++	    of_node_check_flag(np, OF_POPULATED))
++		goto out;
++	/* ABL leaves this PHY running. Do not bind incompatible vendor providers. */
++	for (unsigned int i = 0; i < ARRAY_SIZE(remove); i++) {
++		p = of_find_property(np, remove[i], NULL);
++		if (p && of_remove_property(np, p))
++			goto out;
++	}
++	for (unsigned int i = 0; i < ARRAY_SIZE(pixel_usb_props); i++) {
++		ret = of_update_property(np, &pixel_usb_props[i]);
++		if (ret)
++			goto out;
++	}
++	pr_info("Pixel USB: registering DWC3 with inherited PHY, USB2 peripheral\n");
++	ret = of_platform_device_create(np, NULL, NULL) ? 0 : -ENODEV;
++	pr_info("Pixel USB: platform registration result=%d\n", ret);
++out:
++	of_node_put(np);
++	return ret;
++}
++
++static int __init pixel_usb_inspect(void)
++{
++	void __iomem *regs;
++	u32 id;
++
++	if (!of_machine_is_compatible("google,GS201 CHEETAH"))
++		return 0;
++	pr_info("Pixel USB: inspecting inherited DWC3 at 11210000\n");
++	regs = ioremap(0x11210000, 0x10000);
++	if (!regs)
++		return -ENOMEM;
++	id = readl(regs + 0xc120);
++	pr_info("Pixel USB: GSNPSID=%08x\n", id);
++	if ((id >> 16) == 0x5533 || (id >> 16) == 0x3331 ||
++	    (id >> 16) == 0x3332) {
++		pr_info("Pixel USB: GCTL=%08x GSTS=%08x GHWPARAMS0=%08x\n",
++			readl(regs + 0xc110), readl(regs + 0xc118),
++			readl(regs + 0xc140));
++		pr_info("Pixel USB: PHYCFG=%08x PIPE=%08x DCTL=%08x DSTS=%08x\n",
++			readl(regs + 0xc200), readl(regs + 0xc2c0),
++			readl(regs + 0xc704), readl(regs + 0xc70c));
++	}
++	iounmap(regs);
++	if ((id >> 16) != 0x3331)
++		return -ENODEV;
++	return pixel_usb_register();
++}
++late_initcall(pixel_usb_inspect);
+diff --git c/arch/arm64/kernel/pixel_watchdog.c i/arch/arm64/kernel/pixel_watchdog.c
+new file mode 100644
+index 000000000..ea74d3165
+--- /dev/null
++++ i/arch/arm64/kernel/pixel_watchdog.c
+@@ -0,0 +1,50 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Stop inherited ABL AP watchdogs until the GS201 watchdog driver is ported.
++ * Same WTCON read/clear/write/read sequence as this phone's ABL wdt_stop().
++ * This affects only the current RAM boot, not firmware or PMIC settings.
++ */
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/printk.h>
++
++static int __init pixel_watchdog_stop(void)
++{
++	static const char * const compat[] = {
++		"google,gs201-cl0-wdt", "google,gs201-cl1-wdt",
++	};
++
++	if (!of_machine_is_compatible("google,GS201 CHEETAH"))
++		return 0;
++	for (unsigned int i = 0; i < ARRAY_SIZE(compat); i++) {
++		struct device_node *np;
++		struct resource res;
++		void __iomem *regs;
++		u32 before, after;
++		int ret;
++
++		np = of_find_compatible_node(NULL, NULL, compat[i]);
++		if (!np)
++			return -ENODEV;
++		ret = of_address_to_resource(np, 0, &res);
++		of_node_put(np);
++		if (ret || res.start != 0x10060000 + i * 0x10000 ||
++		    resource_size(&res) != 0x100)
++			return -EINVAL;
++		regs = ioremap(res.start, resource_size(&res));
++		if (!regs)
++			return -ENOMEM;
++		before = readl(regs);
++		/* WTCON enable bit 5, reset-enable bit 0. Preserve all other bits. */
++		writel(before & ~0x21U, regs);
++		after = readl(regs);
++		pr_info("Pixel WDT%u: inherited WTCON=%08x stopped=%08x count=%08x\n",
++			i, before, after, readl(regs + 8));
++		iounmap(regs);
++		if (after & 0x21)
++			return -EIO;
++	}
++	return 0;
++}
++subsys_initcall(pixel_watchdog_stop);
+diff --git c/arch/arm64/kernel/setup.c i/arch/arm64/kernel/setup.c
+index 29c6100f0..74bb08764 100644
+--- c/arch/arm64/kernel/setup.c
++++ i/arch/arm64/kernel/setup.c
+@@ -14,6 +14,7 @@
+ #include <linux/delay.h>
+ #include <linux/initrd.h>
+ #include <linux/console.h>
++#include <linux/serial_core.h>
+ #include <linux/cache.h>
+ #include <linux/screen_info.h>
+ #include <linux/init.h>
+@@ -167,20 +168,27 @@ static void __init smp_build_mpidr_hash(void)
+ 		pr_warn("Large number of MPIDR hash buckets detected\n");
+ }
+ 
++extern void pixel_early_note(const char *s);
++
+ static void __init setup_machine_fdt(phys_addr_t dt_phys)
+ {
+ 	int size = 0;
+-	void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL);
++	void *dt_virt;
+ 	const char *name;
++	pixel_early_note("FDT: before fixmap");
++	dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL);
++	pixel_early_note("FDT: after fixmap");
+ 
+ 	if (dt_virt)
+ 		memblock_reserve(dt_phys, size);
++	pixel_early_note("FDT: after memblock reserve, before scan");
+ 
+ 	/*
+ 	 * dt_virt is a fixmap address, hence __pa(dt_virt) can't be used.
+ 	 * Pass dt_phys directly.
+ 	 */
+ 	if (!early_init_dt_scan(dt_virt, dt_phys)) {
++		pixel_early_note("FDT: scan FAILED");
+ 		pr_crit("\n"
+ 			"Error: invalid device tree blob: PA=%pa, VA=%px, size=%d bytes\n"
+ 			"The dtb must be 8-byte aligned and must not exceed 2 MB in size.\n"
+@@ -195,9 +203,11 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
+ 		while (true)
+ 			cpu_relax();
+ 	}
++	pixel_early_note("FDT: scan succeeded");
+ 
+ 	/* Early fixups are done, map the FDT as read-only now */
+ 	fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
++	pixel_early_note("FDT: remapped read-only");
+ 
+ 	name = of_flat_dt_get_machine_name();
+ 	if (!name)
+@@ -205,6 +215,7 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
+ 
+ 	pr_info("Machine model: %s\n", name);
+ 	dump_stack_set_arch_desc("%s (DT)", name);
++	pixel_early_note("FDT: setup complete");
+ }
+ 
+ static void __init request_standard_resources(void)
+@@ -288,15 +299,28 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
+ 
+ 	early_fixmap_init();
+ 	early_ioremap_init();
++	{
++		extern void pixel_early_stage(void);
++		pixel_early_stage();
++	}
+ 
+ 	setup_machine_fdt(__fdt_pointer);
++	pixel_early_note("setup_arch: FDT returned");
++	pixel_early_note(boot_command_line);
+ 
+ 	/*
+ 	 * Initialise the static keys early as they may be enabled by the
+ 	 * cpufeature code and early parameters.
+ 	 */
+ 	jump_label_init();
++	pixel_early_note("setup_arch: jump labels initialized");
++	/* Cloudripper strips earlycon= when its serial console is disabled.
++	 * This target-only RAM test explicitly selects the proven screen console.
++	 */
++	if (setup_earlycon("pixelfb"))
++		pixel_early_note("setup_arch: direct Pixel earlycon FAILED");
+ 	parse_early_param();
++	pixel_early_note("setup_arch: early params parsed");
+ 
+ 	dynamic_scs_init();
+ 
+diff --git c/drivers/clk/samsung/Makefile i/drivers/clk/samsung/Makefile
+index b3c4ef4e0..52f763c1b 100644
+--- c/drivers/clk/samsung/Makefile
++++ i/drivers/clk/samsung/Makefile
+@@ -28,7 +28,7 @@ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos8895.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynos990.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynosautov9.o
+ obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-exynosautov920.o
+-obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-gs101.o
++obj-$(CONFIG_EXYNOS_ARM64_COMMON_CLK)	+= clk-gs101.o clk-gs201.o
+ obj-$(CONFIG_EXYNOS_ACPM_CLK)		+= clk-acpm.o
+ obj-$(CONFIG_S3C64XX_COMMON_CLK)	+= clk-s3c64xx.o
+ obj-$(CONFIG_S5PV210_COMMON_CLK)	+= clk-s5pv210.o clk-s5pv210-audss.o
+diff --git c/drivers/clk/samsung/clk-acpm.c i/drivers/clk/samsung/clk-acpm.c
+index 7680bc8c5..a67f82e07 100644
+--- c/drivers/clk/samsung/clk-acpm.c
++++ i/drivers/clk/samsung/clk-acpm.c
+@@ -40,6 +40,7 @@ struct acpm_clk_driver_data {
+ 		.name		= cname,		\
+ 	}
+ 
++/* GS101 and GS201 share this firmware DVFS clock ID ordering. */
+ static const struct acpm_clk_variant gs101_acpm_clks[] = {
+ 	ACPM_CLK("mif"),
+ 	ACPM_CLK("int"),
+@@ -94,6 +95,7 @@ static int acpm_clk_register(struct device *dev, struct acpm_clk *aclk,
+ 
+ 	init.name = name;
+ 	init.ops = &acpm_clk_ops;
++	init.flags = CLK_GET_RATE_NOCACHE;
+ 	aclk->hw.init = &init;
+ 
+ 	return devm_clk_hw_register(dev, &aclk->hw);
+@@ -101,6 +103,8 @@ static int acpm_clk_register(struct device *dev, struct acpm_clk *aclk,
+ 
+ static int acpm_clk_probe(struct platform_device *pdev)
+ {
++	const struct acpm_clk_driver_data *data =
++		(const void *)platform_get_device_id(pdev)->driver_data;
+ 	struct acpm_handle *acpm_handle;
+ 	struct clk_hw_onecell_data *clk_data;
+ 	struct clk_hw **hws;
+@@ -114,8 +118,8 @@ static int acpm_clk_probe(struct platform_device *pdev)
+ 		return dev_err_probe(dev, PTR_ERR(acpm_handle),
+ 				     "Failed to get acpm handle\n");
+ 
+-	count = acpm_clk_gs101.nr_clks;
+-	mbox_chan_id = acpm_clk_gs101.mbox_chan_id;
++	count = data->nr_clks;
++	mbox_chan_id = data->mbox_chan_id;
+ 
+ 	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, count),
+ 				GFP_KERNEL);
+@@ -143,7 +147,7 @@ static int acpm_clk_probe(struct platform_device *pdev)
+ 		hws[i] = &aclk->hw;
+ 
+ 		err = acpm_clk_register(dev, aclk,
+-					acpm_clk_gs101.clks[i].name);
++					data->clks[i].name);
+ 		if (err)
+ 			return dev_err_probe(dev, err,
+ 					     "Failed to register clock\n");
+@@ -154,7 +158,8 @@ static int acpm_clk_probe(struct platform_device *pdev)
+ }
+ 
+ static const struct platform_device_id acpm_clk_id[] = {
+-	{ .name = "gs101-acpm-clk" },
++	{ "gs101-acpm-clk", (kernel_ulong_t)&acpm_clk_gs101 },
++	{ "gs201-acpm-clk", (kernel_ulong_t)&acpm_clk_gs101 },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(platform, acpm_clk_id);
+diff --git c/drivers/clk/samsung/clk-gs201.c i/drivers/clk/samsung/clk-gs201.c
+new file mode 100644
+index 000000000..d69ba2803
+--- /dev/null
++++ i/drivers/clk/samsung/clk-gs201.c
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* GS201 CMU_APM subset: the ACPM mailbox's real parent and gate clocks.
++ * Register/parent data: Google's GS201 cmucal-node.c and cmucal-sfr.c.
++ * Firmware owns the ALIVE PLL. Its nominal outputs are not programmable here.
++ */
++#include <linux/clk-provider.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <dt-bindings/clock/google,gs201.h>
++
++#define APM_FUNC_MUX		0x1000
++#define APM_FUNCSRC_MUX		0x1004
++#define APM_FUNC_GATE		0x2084
++#define APM_AP_MAILBOX_GATE	0x20d4
++#define GATE_MANUAL		BIT(20)
++#define GATE_HWACG		BIT(28)
++
++struct gs201_apm {
++	spinlock_t lock;
++	struct clk_hw_onecell_data *clks;
++};
++
++static int gs201_apm_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct clk_parent_data func_parents[4] = {
++		{ .fw_name = "oscclk" }, {},
++		{ .fw_name = "padclk" }, { .fw_name = "oscclk" },
++	};
++	static const struct {
++		const char *name;
++		unsigned long rate;
++	} pll[] = {
++		{ "gs201_pll_alv_div2", 394000000 },
++		{ "gs201_pll_alv_div4", 197000000 },
++		{ "gs201_pll_alv_div16", 50000000 },
++		{ "gs201_pll_alv_div8", 99000000 },
++	};
++	const struct clk_hw *parents[4];
++	struct gs201_apm *apm;
++	struct clk_hw **hws;
++	void __iomem *base;
++	unsigned int i;
++	u32 value;
++
++	apm = devm_kzalloc(dev, sizeof(*apm), GFP_KERNEL);
++	if (!apm)
++		return -ENOMEM;
++	spin_lock_init(&apm->lock);
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++	apm->clks = devm_kzalloc(dev, struct_size(apm->clks, hws, GS201_APM_NR_CLKS),
++				GFP_KERNEL);
++	if (!apm->clks)
++		return -ENOMEM;
++	apm->clks->num = GS201_APM_NR_CLKS;
++	hws = apm->clks->hws;
++	for (i = 0; i < ARRAY_SIZE(pll); i++) {
++		hws[i] = devm_clk_hw_register_fixed_rate(dev, pll[i].name, NULL, 0,
++						       pll[i].rate);
++		if (IS_ERR(hws[i]))
++			return PTR_ERR(hws[i]);
++		parents[i] = hws[i];
++	}
++	/* Expose the inherited selection; never retune the firmware's APM bus. */
++	hws[GS201_APM_FUNCSRC] = devm_clk_hw_register_mux_parent_hws(dev,
++		"gs201_apm_funcsrc", parents, ARRAY_SIZE(parents), 0,
++		base + APM_FUNCSRC_MUX, 0, 2, CLK_MUX_READ_ONLY, &apm->lock);
++	if (IS_ERR(hws[GS201_APM_FUNCSRC]))
++		return PTR_ERR(hws[GS201_APM_FUNCSRC]);
++	func_parents[1].hw = hws[GS201_APM_FUNCSRC];
++	hws[GS201_APM_FUNC] = devm_clk_hw_register_mux_parent_data_table(dev,
++		"gs201_apm_func", func_parents, ARRAY_SIZE(func_parents), 0,
++		base + APM_FUNC_MUX, 0, 3, CLK_MUX_READ_ONLY, NULL, &apm->lock);
++	if (IS_ERR(hws[GS201_APM_FUNC]))
++		return PTR_ERR(hws[GS201_APM_FUNC]);
++
++	/* Same manual-gate setup used by the Samsung arm64 CMU core, limited to
++	 * these two verified gates. No PLL, mux, CMU option or SYSREG writes.
++	 */
++	value = readl(base + APM_FUNC_GATE);
++	writel((value | GATE_MANUAL) & ~GATE_HWACG, base + APM_FUNC_GATE);
++	value = readl(base + APM_AP_MAILBOX_GATE);
++	writel((value | GATE_MANUAL) & ~GATE_HWACG, base + APM_AP_MAILBOX_GATE);
++	hws[GS201_APM_GOUT_FUNC] = devm_clk_hw_register_gate_parent_hw(dev,
++		"gs201_apm_gout_func", hws[GS201_APM_FUNC], CLK_IS_CRITICAL,
++		base + APM_FUNC_GATE, 21, 0, &apm->lock);
++	if (IS_ERR(hws[GS201_APM_GOUT_FUNC]))
++		return PTR_ERR(hws[GS201_APM_GOUT_FUNC]);
++	hws[GS201_APM_MAILBOX_AP] = devm_clk_hw_register_gate_parent_hw(dev,
++		"gs201_apm_mailbox_ap", hws[GS201_APM_GOUT_FUNC], 0,
++		base + APM_AP_MAILBOX_GATE, 21, 0, &apm->lock);
++	if (IS_ERR(hws[GS201_APM_MAILBOX_AP]))
++		return PTR_ERR(hws[GS201_APM_MAILBOX_AP]);
++
++	dev_info(dev, "APM selectors func=%#x source=%#x; mailbox gate=%#x\n",
++		 readl(base + APM_FUNC_MUX), readl(base + APM_FUNCSRC_MUX),
++		 readl(base + APM_AP_MAILBOX_GATE));
++	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, apm->clks);
++}
++
++static const struct of_device_id gs201_cmu_match[] = {
++	{ .compatible = "google,gs201-cmu-apm" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, gs201_cmu_match);
++
++static struct platform_driver gs201_cmu_driver = {
++	.probe = gs201_apm_probe,
++	.driver = {
++		.name = "gs201-cmu",
++		.of_match_table = gs201_cmu_match,
++		.suppress_bind_attrs = true,
++	},
++};
++builtin_platform_driver(gs201_cmu_driver);
+diff --git c/drivers/clocksource/exynos_mct.c i/drivers/clocksource/exynos_mct.c
+index da09f467a..6501476e7 100644
+--- c/drivers/clocksource/exynos_mct.c
++++ i/drivers/clocksource/exynos_mct.c
+@@ -645,6 +645,15 @@ static int __init mct_init_dt(struct device_node *np, unsigned int int_type)
+ 	int nr_local;
+ 	int ret;
+ 
++	/* The GS201 vendor DT reuses this compatible, but its clock provider
++	 * and interrupt topology are not supported by this driver. The ARM
++	 * architected timer is available for the Cheetah bring-up kernel.
++	 */
++	if (of_machine_is_compatible("google,GS201")) {
++		pr_info("GS201 bring-up: skip unsupported vendor MCT; use arch timer\n");
++		return -ENODEV;
++	}
++
+ 	nr_local = of_property_count_u32_elems(np, "samsung,local-timers");
+ 	if (nr_local == 0)
+ 		return -EINVAL;
+diff --git c/drivers/firmware/samsung/exynos-acpm-dvfs.c i/drivers/firmware/samsung/exynos-acpm-dvfs.c
+index 7266312ef..1be0ca6c1 100644
+--- c/drivers/firmware/samsung/exynos-acpm-dvfs.c
++++ i/drivers/firmware/samsung/exynos-acpm-dvfs.c
+@@ -61,7 +61,7 @@ unsigned long acpm_dvfs_get_rate(struct acpm_handle *handle,
+ 	acpm_set_xfer(&xfer, cmd, ARRAY_SIZE(cmd), acpm_chan_id, true);
+ 
+ 	ret = acpm_do_xfer(handle, &xfer);
+-	if (ret)
++	if (ret || xfer.rxd[3])
+ 		return 0;
+ 
+ 	return xfer.rxd[1] * HZ_PER_KHZ;
+diff --git c/drivers/firmware/samsung/exynos-acpm-tmu.c i/drivers/firmware/samsung/exynos-acpm-tmu.c
+index c68d60b4c..8a115a4c9 100644
+--- c/drivers/firmware/samsung/exynos-acpm-tmu.c
++++ i/drivers/firmware/samsung/exynos-acpm-tmu.c
+@@ -46,7 +46,7 @@ struct acpm_tmu_rx {
+ 	u8 type;
+ 	s8 ret;
+ 	u8 tzid;
+-	s8 temp;
++	u8 temp;
+ 	u8 rsvd;
+ 	u8 data[ACPM_TMU_RX_DATA_LEN];
+ } __packed;
+diff --git c/drivers/firmware/samsung/exynos-acpm.c i/drivers/firmware/samsung/exynos-acpm.c
+index 942a2e9f0..1c3b1f13b 100644
+--- c/drivers/firmware/samsung/exynos-acpm.c
++++ i/drivers/firmware/samsung/exynos-acpm.c
+@@ -60,6 +60,7 @@ struct acpm_shmem {
+  *
+  * @id:			channel ID.
+  * @reserved:		unused fields.
++ * @type:		1 for queues; 2 for firmware-specific register/buffer transport.
+  * @rx_rear:		rear pointer of APM RX queue (TX for AP).
+  * @rx_front:		front pointer of APM RX queue (TX for AP).
+  * @rx_base:		base address of APM RX queue (TX for AP).
+@@ -74,7 +75,8 @@ struct acpm_shmem {
+  */
+ struct acpm_chan_shmem {
+ 	u32 id;
+-	u32 reserved[3];
++	u32 reserved[2];
++	u32 type;
+ 	u32 rx_rear;
+ 	u32 rx_front;
+ 	u32 rx_base;
+@@ -168,6 +170,7 @@ struct acpm_chan {
+  * @chans:	pointer to the ACPM channel parameters retrieved from SRAM.
+  * @dev:	pointer to the exynos-acpm device.
+  * @handle:	instance of acpm_handle to send to clients.
++ * @sram_size:	size of the mapped SRAM window.
+  * @num_chans:	number of channels available for this controller.
+  */
+ struct acpm_info {
+@@ -176,6 +179,7 @@ struct acpm_info {
+ 	struct acpm_chan *chans;
+ 	struct device *dev;
+ 	struct acpm_handle handle;
++	resource_size_t sram_size;
+ 	u32 num_chans;
+ };
+ 
+@@ -471,6 +475,8 @@ int acpm_do_xfer(struct acpm_handle *handle, const struct acpm_xfer *xfer)
+ 		return -EINVAL;
+ 
+ 	achan = &acpm->chans[xfer->acpm_chan_id];
++	if (!achan->chan)
++		return -EOPNOTSUPP;
+ 
+ 	if (!xfer->txd ||
+ 	    (xfer->txcnt * sizeof(*xfer->txd) > achan->mlen) ||
+@@ -540,13 +546,21 @@ void acpm_set_xfer(struct acpm_xfer *xfer, u32 *cmd, size_t cmdcnt,
+ 	}
+ }
+ 
++static bool acpm_sram_range_valid(struct acpm_info *acpm, u32 offset, u32 size)
++{
++	return !(offset & 3) && offset <= acpm->sram_size &&
++	       size <= acpm->sram_size - offset;
++}
++
+ /**
+  * acpm_chan_shmem_get_params() - get channel parameters and addresses of the
+  * TX/RX queues.
+  * @achan:	ACPM channel info.
+  * @chan_shmem:	__iomem pointer to a channel described in shared memory.
++ *
++ * Return: 0 on success, -EINVAL for invalid SRAM geometry.
+  */
+-static void acpm_chan_shmem_get_params(struct acpm_chan *achan,
++static int acpm_chan_shmem_get_params(struct acpm_chan *achan,
+ 				struct acpm_chan_shmem __iomem *chan_shmem)
+ {
+ 	void __iomem *base = achan->acpm->sram_base;
+@@ -558,6 +572,21 @@ static void acpm_chan_shmem_get_params(struct acpm_chan *achan,
+ 	achan->id = readl(&chan_shmem->id);
+ 	achan->qlen = readl(&chan_shmem->qlen);
+ 
++	if (achan->id >= achan->acpm->num_chans || achan->qlen < 2 ||
++	    achan->qlen > 1024 || !achan->mlen || achan->mlen > 256 ||
++	    (achan->mlen & 3))
++		return -EINVAL;
++
++	if (!acpm_sram_range_valid(achan->acpm, readl(&chan_shmem->rx_base),
++				   achan->qlen * achan->mlen) ||
++	    !acpm_sram_range_valid(achan->acpm, readl(&chan_shmem->tx_base),
++				   achan->qlen * achan->mlen) ||
++	    !acpm_sram_range_valid(achan->acpm, readl(&chan_shmem->rx_rear), 4) ||
++	    !acpm_sram_range_valid(achan->acpm, readl(&chan_shmem->rx_front), 4) ||
++	    !acpm_sram_range_valid(achan->acpm, readl(&chan_shmem->tx_rear), 4) ||
++	    !acpm_sram_range_valid(achan->acpm, readl(&chan_shmem->tx_front), 4))
++		return -EINVAL;
++
+ 	tx->base = base + readl(&chan_shmem->rx_base);
+ 	tx->rear = base + readl(&chan_shmem->rx_rear);
+ 	tx->front = base + readl(&chan_shmem->rx_front);
+@@ -568,6 +597,8 @@ static void acpm_chan_shmem_get_params(struct acpm_chan *achan,
+ 
+ 	dev_vdbg(achan->acpm->dev, "ID = %d poll = %d, mlen = %d, qlen = %d\n",
+ 		 achan->id, achan->poll_completion, achan->mlen, achan->qlen);
++
++	return 0;
+ }
+ 
+ /**
+@@ -627,9 +658,15 @@ static int acpm_channels_init(struct acpm_info *acpm)
+ 	struct acpm_shmem __iomem *shmem = acpm->shmem;
+ 	struct acpm_chan_shmem __iomem *chans_shmem;
+ 	struct device *dev = acpm->dev;
++	u32 table;
+ 	int i, ret;
+ 
+ 	acpm->num_chans = readl(&shmem->num_chans);
++	table = readl(&shmem->chans);
++	if (!acpm->num_chans || acpm->num_chans > 16 || (table & 3) ||
++	    table > acpm->sram_size || acpm->num_chans * sizeof(*chans_shmem) >
++	    acpm->sram_size - table)
++		return -EINVAL;
+ 	acpm->chans = devm_kcalloc(dev, acpm->num_chans, sizeof(*acpm->chans),
+ 				   GFP_KERNEL);
+ 	if (!acpm->chans)
+@@ -639,7 +676,7 @@ static int acpm_channels_init(struct acpm_info *acpm)
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "Failed to add mbox free action.\n");
+ 
+-	chans_shmem = acpm->sram_base + readl(&shmem->chans);
++	chans_shmem = acpm->sram_base + table;
+ 
+ 	for (i = 0; i < acpm->num_chans; i++) {
+ 		struct acpm_chan_shmem __iomem *chan_shmem = &chans_shmem[i];
+@@ -648,7 +685,16 @@ static int acpm_channels_init(struct acpm_info *acpm)
+ 
+ 		achan->acpm = acpm;
+ 
+-		acpm_chan_shmem_get_params(achan, chan_shmem);
++		if (readl(&chan_shmem->id) != i)
++			return -EINVAL;
++		/* Only polled ring queues are implemented. Buffer channels can
++		 * contain firmware-local addresses, not SRAM offsets.
++		 */
++		if (readl(&chan_shmem->type) != 1 || !readl(&chan_shmem->poll_completion))
++			continue;
++		ret = acpm_chan_shmem_get_params(achan, chan_shmem);
++		if (ret)
++			return ret;
+ 
+ 		ret = acpm_achan_alloc_cmds(achan);
+ 		if (ret)
+@@ -731,6 +777,9 @@ static int acpm_probe(struct platform_device *pdev)
+ 		return dev_err_probe(dev, -EINVAL,
+ 				     "Failed to get match data.\n");
+ 
++	if (match_data->initdata_base + sizeof(*acpm->shmem) > size)
++		return -EINVAL;
++	acpm->sram_size = size;
+ 	acpm->shmem = acpm->sram_base + match_data->initdata_base;
+ 	acpm->dev = dev;
+ 
+@@ -881,11 +930,21 @@ static const struct acpm_match_data acpm_gs101 = {
+ 	.acpm_clk_dev_name = "gs101-acpm-clk",
+ };
+ 
++/* GS201 uses the same AP channel descriptors and initdata offset as GS101. */
++static const struct acpm_match_data acpm_gs201 = {
++	.initdata_base = ACPM_GS101_INITDATA_BASE,
++	.acpm_clk_dev_name = "gs201-acpm-clk",
++};
++
+ static const struct of_device_id acpm_match[] = {
+ 	{
+ 		.compatible = "google,gs101-acpm-ipc",
+ 		.data = &acpm_gs101,
+ 	},
++	{
++		.compatible = "google,gs201-acpm-ipc",
++		.data = &acpm_gs201,
++	},
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, acpm_match);
+diff --git c/drivers/gpu/drm/sysfb/Kconfig i/drivers/gpu/drm/sysfb/Kconfig
+index f7e481788..e39b462f9 100644
+--- c/drivers/gpu/drm/sysfb/Kconfig
++++ i/drivers/gpu/drm/sysfb/Kconfig
+@@ -3,6 +3,15 @@
+ menu "Drivers for system framebuffers"
+ 	depends on DRM
+ 
++config DRM_PIXEL_SCANOUT
++	bool "Pixel cheetah retained-mode DMA scanout (development)"
++	depends on DRM_PIXEL_HANDOFF
++	select DRM_GEM_DMA_HELPER
++	select DRM_KMS_HELPER
++	help
++	  Native contiguous DMA buffers and real DECON frame completion on the
++	  guarded cheetah firmware handoff. No panel mode or IOMMU programming.
++
+ config DRM_SYSFB_HELPER
+ 	tristate
+ 	depends on DRM
+@@ -86,4 +95,21 @@ config DRM_VESADRM
+ 	  by the firmware or bootloader before the kernel boots. Scanout
+ 	  buffer, size, and display format must be provided via VBE interfaces.
+ 
++config DRM_PIXEL_HANDOFF
++	bool "Pixel 7 Pro retained boot framebuffer (bring-up only)"
++	depends on DRM=y && ARM64 && MMU
++	select DRM_GEM_SHMEM_HELPER
++	select DRM_KMS_HELPER
++	select DRM_SYSFB_HELPER
++	help
++	  Explicitly gated by pixel_drm=1 and verified cheetah handoff state.
++	  Fixed-mode CPU-copy scanout, no clocks, panel setup or power management.
++
++config DRM_PIXEL_HANDOFF_TIMING
++	bool "Pixel retained-display timing diagnostics"
++	depends on DRM_PIXEL_HANDOFF && DEBUG_FS
++	help
++	  Record copy and refresh-wait durations in DRM debugfs pixel_timing.
++	  Diagnostic only; does not change panel modes or hardware sequencing.
++
+ endmenu
+diff --git c/drivers/gpu/drm/sysfb/Makefile i/drivers/gpu/drm/sysfb/Makefile
+index 85c9087ab..22697ab3f 100644
+--- c/drivers/gpu/drm/sysfb/Makefile
++++ i/drivers/gpu/drm/sysfb/Makefile
+@@ -1,4 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_DRM_PIXEL_SCANOUT) += pixel_scanout.o
+ 
+ drm_sysfb_helper-y := \
+ 	drm_sysfb.o \
+@@ -11,3 +12,5 @@ obj-$(CONFIG_DRM_EFIDRM)	+= efidrm.o
+ obj-$(CONFIG_DRM_OFDRM)		+= ofdrm.o
+ obj-$(CONFIG_DRM_SIMPLEDRM)	+= simpledrm.o
+ obj-$(CONFIG_DRM_VESADRM)	+= vesadrm.o
++
++obj-$(CONFIG_DRM_PIXEL_HANDOFF)	+= pixel_handoff.o
+diff --git c/drivers/gpu/drm/sysfb/pixel_bandwidth.h i/drivers/gpu/drm/sysfb/pixel_bandwidth.h
+new file mode 100644
+index 000000000..5ac46350f
+--- /dev/null
++++ i/drivers/gpu/drm/sysfb/pixel_bandwidth.h
+@@ -0,0 +1,118 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Validated cheetah display bandwidth floor via CCF and ACPM firmware DVFS.
++ * The stock mif_int_map pairs 1352 MHz MIF with 200 MHz INT. The retained
++ * 120 Hz GPU/display path underruns at the 421 MHz boot MIF rate.
++ * This narrow handoff consumer precedes a full interconnect/devfreq policy.
++ */
++#ifndef PIXEL_BANDWIDTH_H
++#define PIXEL_BANDWIDTH_H
++
++#include <linux/clk.h>
++
++struct pixel_bandwidth {
++	struct clk *mif, *interconnect;
++	unsigned long saved_rate;
++	bool active;
++};
++
++static void pixel_clk_put(void *clk)
++{
++	clk_put(clk);
++}
++
++/* Resource discovery only; atomic TEST_ONLY must not change hardware rates. */
++static int bandwidth_get(struct device *dev, struct pixel_bandwidth *bw)
++{
++	struct of_phandle_args args = { .args_count = 1 };
++	struct device_node *np;
++	const __be32 *map;
++	struct clk *mif, *interconnect;
++	bool found = false;
++	int length, ret;
++
++	if (bw->mif)
++		return 0;
++	np = of_find_node_by_path("/exynos_devfreq/devfreq_mif@17000010");
++	if (!np)
++		return -ENODEV;
++	map = of_get_property(np, "mif_int_map", &length);
++	if (map && !(length % 8))
++		for (unsigned int i = 0; i < length / 4; i += 2)
++			if (be32_to_cpu(map[i]) == 1352000 && be32_to_cpu(map[i + 1]) == 200000)
++				found = true;
++	of_node_put(np);
++	if (!found)
++		return -ENODEV;
++	args.np = of_find_node_by_path("/power-management");
++	if (!args.np)
++		return -ENODEV;
++	args.args[0] = 0;
++	mif = of_clk_get_from_provider(&args);
++	args.args[0] = 1;
++	interconnect = of_clk_get_from_provider(&args);
++	of_node_put(args.np);
++	if (IS_ERR(mif) || IS_ERR(interconnect)) {
++		ret = IS_ERR(mif) ? PTR_ERR(mif) : PTR_ERR(interconnect);
++		if (!IS_ERR(mif))
++			clk_put(mif);
++		if (!IS_ERR(interconnect))
++			clk_put(interconnect);
++		return ret;
++	}
++	/* Only the measured boot baseline and its stock-DT dependency pair. */
++	if (clk_get_rate(mif) != 421000000 || clk_get_rate(interconnect) != 200000000) {
++		clk_put(mif);
++		clk_put(interconnect);
++		return -ENODEV;
++	}
++	ret = devm_add_action_or_reset(dev, pixel_clk_put, mif);
++	if (ret) {
++		clk_put(interconnect);
++		return ret;
++	}
++	ret = devm_add_action_or_reset(dev, pixel_clk_put, interconnect);
++	if (ret)
++		return ret;
++	bw->mif = mif;
++	bw->interconnect = interconnect;
++	bw->saved_rate = 421000000;
++	return 0;
++}
++
++static int bandwidth_release(struct pixel_bandwidth *bw)
++{
++	int ret;
++
++	if (!bw->active)
++		return 0;
++	ret = clk_set_rate(bw->mif, bw->saved_rate);
++	if (ret || clk_get_rate(bw->mif) != bw->saved_rate)
++		return ret ?: -EIO;
++	clk_rate_exclusive_put(bw->mif);
++	bw->active = false;
++	return 0;
++}
++
++static int bandwidth_acquire(struct pixel_bandwidth *bw)
++{
++	int ret;
++
++	if (!bw->mif)
++		return -ENODEV;
++	if (bw->active)
++		return clk_get_rate(bw->mif) == 1352000000 ? 0 : -EIO;
++	if (clk_get_rate(bw->mif) != bw->saved_rate ||
++	    clk_get_rate(bw->interconnect) != 200000000)
++		return -EBUSY;
++	ret = clk_rate_exclusive_get(bw->mif);
++	if (ret)
++		return ret;
++	bw->active = true;
++	ret = clk_set_rate(bw->mif, 1352000000);
++	if (!ret && clk_get_rate(bw->mif) != 1352000000)
++		ret = -EIO;
++	if (ret)
++		bandwidth_release(bw);
++	return ret;
++}
++#endif
+diff --git c/drivers/gpu/drm/sysfb/pixel_handoff.c i/drivers/gpu/drm/sysfb/pixel_handoff.c
+new file mode 100644
+index 000000000..a7696e540
+--- /dev/null
++++ i/drivers/gpu/drm/sysfb/pixel_handoff.c
+@@ -0,0 +1,413 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Development-only cheetah retained-display bridge. Based on simpledrm's
++ * sysfb helpers. No DMA address, DSI, clock, regulator or firmware programming.
++ * ABL's verified DECON refresh sequence is the only hardware update operation.
++ */
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/ktime.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/pixel_handoff.h>
++#include <linux/platform_device.h>
++#include <drm/drm_atomic.h>
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_atomic_state_helper.h>
++#include <drm/drm_damage_helper.h>
++#include <drm/drm_debugfs.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_gem_atomic_helper.h>
++#include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_gem_shmem_helper.h>
++#include <drm/drm_managed.h>
++#include <drm/drm_modeset_helper.h>
++#include <drm/drm_modeset_helper_vtables.h>
++#include <drm/drm_probe_helper.h>
++#include <drm/drm_print.h>
++#include "drm_sysfb_helper.h"
++
++#define PIXEL_FB 0xfac00000UL
++#define PIXEL_DMA 0x1c0b0000UL
++#define PIXEL_DECON 0x1c240000UL
++#define PIXEL_W 1440
++#define PIXEL_H 3120
++#define PIXEL_PITCH (PIXEL_W * 4)
++#define PIXEL_SIZE PAGE_ALIGN(PIXEL_PITCH * PIXEL_H)
++
++struct pixel_device {
++	struct drm_sysfb_device sysfb;
++	struct drm_plane plane;
++	struct drm_crtc crtc;
++	struct drm_encoder encoder;
++	struct drm_connector connector;
++	void __iomem *decon;
++	unsigned int commits, timeouts;
++	spinlock_t timing_lock;
++	u64 updates, copy_ns, refresh_ns, copy_max_ns, refresh_max_ns;
++	u64 copy_busy, refresh_busy, idle_wait_ns, idle_timeouts;
++	u64 local_wc_updates, local_cached_updates, imported_updates;
++};
++
++/* Diagnostic A/B controls, RAM-only. */
++static bool pixel_wait_idle = true;
++module_param_named(wait_idle, pixel_wait_idle, bool, 0644);
++MODULE_PARM_DESC(wait_idle, "Wait for retained DECON frame completion before overwriting its buffer");
++static bool pixel_legacy_bgra;
++module_param_named(legacy_bgra, pixel_legacy_bgra, bool, 0644);
++MODULE_PARM_DESC(legacy_bgra, "Reproduce the old channel rotation for retained-display color diagnosis");
++
++static int pixel_timing_show(struct seq_file *m, void *unused)
++{
++	struct drm_debugfs_entry *entry = m->private;
++	struct pixel_device *p = container_of(to_drm_sysfb_device(entry->dev),
++					    struct pixel_device, sysfb);
++	u64 updates, copy, refresh, copy_max, refresh_max;
++	u64 copy_busy, refresh_busy, idle_wait, idle_timeouts;
++	u64 local_wc, local_cached, imported;
++
++	spin_lock(&p->timing_lock);
++	updates = p->updates;
++	copy = p->copy_ns;
++	refresh = p->refresh_ns;
++	copy_max = p->copy_max_ns;
++	refresh_max = p->refresh_max_ns;
++	copy_busy = p->copy_busy;
++	refresh_busy = p->refresh_busy;
++	idle_wait = p->idle_wait_ns;
++	idle_timeouts = p->idle_timeouts;
++	local_wc = p->local_wc_updates;
++	local_cached = p->local_cached_updates;
++	imported = p->imported_updates;
++	spin_unlock(&p->timing_lock);
++	seq_puts(m, "Retained-buffer diagnostics; completion is not hardware vblank.\n");
++	seq_printf(m, "updates %llu\ncopy_total_ns %llu\nrefresh_total_ns %llu\n",
++		   updates, copy, refresh);
++	seq_printf(m, "copy_max_ns %llu\nrefresh_max_ns %llu\n", copy_max, refresh_max);
++	seq_printf(m, "copy_started_busy %llu\nrefresh_returned_busy %llu\n",
++		   copy_busy, refresh_busy);
++	seq_printf(m, "idle_wait_total_ns %llu\nidle_timeouts %llu\nwait_idle %u\n",
++		   idle_wait, idle_timeouts, READ_ONCE(pixel_wait_idle));
++	seq_printf(m, "legacy_bgra %u\n", READ_ONCE(pixel_legacy_bgra));
++	seq_printf(m, "local_wc_updates %llu\nlocal_cached_updates %llu\nimported_updates %llu\n",
++		   local_wc, local_cached, imported);
++	return 0;
++}
++static bool pixel_enabled;
++static int __init pixel_option(char *s)
++{
++	return !kstrtobool(s, &pixel_enabled);
++}
++__setup("pixel_drm=", pixel_option);
++
++/* Preserve the ABL byte layout used by the original photographed RAM probe:
++ * 0xff181818 is gray. Rotating XRGB into DRM BGRA made black appear blue on
++ * this retained path. Do not infer its byte order solely from a vendor name.
++ * Force the high alpha byte opaque regardless of userspace's X channel.
++ */
++static void pixel_blit(struct iosys_map *dst, const unsigned int *dst_pitch,
++		       const struct iosys_map *src, const struct drm_framebuffer *fb,
++		       const struct drm_rect *clip, struct drm_format_conv_state *state)
++{
++	unsigned int width = drm_rect_width(clip), height = drm_rect_height(clip);
++	__le32 *row = drm_format_conv_state_reserve(state, width * 4, GFP_KERNEL);
++	bool legacy = READ_ONCE(pixel_legacy_bgra);
++
++	if (!row)
++		return;
++	for (unsigned int y = 0; y < height; y++) {
++		iosys_map_memcpy_from(row, src, (clip->y1 + y) * fb->pitches[0] + clip->x1 * 4, width * 4);
++		for (unsigned int x = 0; x < width; x++) {
++			u32 v = le32_to_cpu(row[x]);
++
++			if (legacy)
++				v = ((v & 0xff) << 24) | ((v & 0xff00) << 8) |
++				    ((v & 0xff0000) >> 8) | 0xff;
++			else
++				v |= 0xff000000;
++			row[x] = cpu_to_le32(v);
++		}
++		iosys_map_memcpy_to(dst, y * dst_pitch[0], row, width * 4);
++	}
++}
++
++static int pixel_begin_fb_access(struct drm_plane *plane, struct drm_plane_state *state)
++{
++	int ret = drm_gem_begin_shadow_fb_access(plane, state);
++
++	if (!ret && state->fb)
++		to_drm_sysfb_plane_state(state)->blit_to_crtc = pixel_blit;
++	return ret;
++}
++
++static void pixel_refresh(struct drm_device *dev)
++{
++	struct pixel_device *p = container_of(to_drm_sysfb_device(dev), struct pixel_device, sysfb);
++	void __iomem *r = p->decon;
++	u32 before = readl(r + 4), trigger = readl(r + 0x30), update;
++	int ret;
++
++	wmb();
++	writel(readl(r + 0x50) | 0x3f, r + 0x50);
++	writel(readl(r + 0x20) | 3, r + 0x20);
++	writel(readl(r + 0x50) | 0x80100000, r + 0x50);
++	writel((trigger & ~0x10U) | 1, r + 0x30);
++	ret = readl_poll_timeout(r + 0x50, update, !update, 50, 100000);
++	writel(trigger, r + 0x30);
++	p->commits++;
++	if (ret)
++		p->timeouts++;
++	if (p->commits <= 8 || ret)
++		dev_info_ratelimited(dev->dev, "handoff commit=%u frame=%u->%u update=%08x timeouts=%u\n",
++			p->commits, before, readl(r + 4), update, p->timeouts);
++}
++
++/* cal_9845 GLOBAL_CON bit 5 is idle, not merely shadow-register latched.
++ * The retained command-mode trigger must remain masked while we write.
++ * A timeout skips the write instead of modifying an active scanout buffer.
++ */
++static bool pixel_prepare_copy(struct pixel_device *p)
++{
++	u32 status;
++	u64 start, elapsed;
++	int ret;
++
++	if (!READ_ONCE(pixel_wait_idle))
++		return true;
++	start = ktime_get_ns();
++	if (!(readl(p->decon + 0x30) & BIT(4)))
++		ret = -EBUSY;
++	else
++		ret = readl_poll_timeout(p->decon + 0x20, status,
++					status & BIT(5), 50, 100000);
++	elapsed = ktime_get_ns() - start;
++	spin_lock(&p->timing_lock);
++	p->idle_wait_ns += elapsed;
++	p->idle_timeouts += !!ret;
++	spin_unlock(&p->timing_lock);
++	if (ret)
++		dev_err_ratelimited(p->sysfb.dev.dev, "retained display not idle; skipping buffer write\n");
++	return !ret;
++}
++
++static void pixel_update(struct drm_plane *plane, struct drm_atomic_commit *state)
++{
++	struct pixel_device *p = container_of(to_drm_sysfb_device(plane->dev),
++					    struct pixel_device, sysfb);
++	u64 start = 0, copied = 0, end;
++	bool copy_busy, refresh_busy;
++
++	if (!pixel_prepare_copy(p))
++		return;
++	copy_busy = !(readl(p->decon + 0x20) & BIT(5));
++	if (IS_ENABLED(CONFIG_DRM_PIXEL_HANDOFF_TIMING))
++		start = ktime_get_ns();
++	drm_sysfb_plane_helper_atomic_update(plane, state);
++	if (IS_ENABLED(CONFIG_DRM_PIXEL_HANDOFF_TIMING))
++		copied = ktime_get_ns();
++	pixel_refresh(plane->dev);
++	refresh_busy = !(readl(p->decon + 0x20) & BIT(5));
++	if (IS_ENABLED(CONFIG_DRM_PIXEL_HANDOFF_TIMING)) {
++		end = ktime_get_ns();
++		spin_lock(&p->timing_lock);
++		p->updates++;
++		{
++			struct drm_plane_state *ps = drm_atomic_get_new_plane_state(state, plane);
++			struct drm_gem_object *obj = drm_gem_fb_get_obj(ps->fb, 0);
++
++			if (drm_gem_is_imported(obj))
++				p->imported_updates++;
++			else if (to_drm_gem_shmem_obj(obj)->map_wc)
++				p->local_wc_updates++;
++			else
++				p->local_cached_updates++;
++		}
++		p->copy_busy += copy_busy;
++		p->refresh_busy += refresh_busy;
++		p->copy_ns += copied - start;
++		p->refresh_ns += end - copied;
++		p->copy_max_ns = max(p->copy_max_ns, copied - start);
++		p->refresh_max_ns = max(p->refresh_max_ns, end - copied);
++		spin_unlock(&p->timing_lock);
++	}
++}
++static void pixel_disable(struct drm_plane *plane, struct drm_atomic_commit *state)
++{
++	struct pixel_device *p = container_of(to_drm_sysfb_device(plane->dev),
++					    struct pixel_device, sysfb);
++
++	if (!pixel_prepare_copy(p))
++		return;
++	drm_sysfb_plane_helper_atomic_disable(plane, state);
++	pixel_refresh(plane->dev);
++}
++static const struct drm_plane_helper_funcs pixel_plane_helpers = {
++	.begin_fb_access = pixel_begin_fb_access,
++	.end_fb_access = drm_gem_end_shadow_fb_access,
++	.atomic_check = drm_sysfb_plane_helper_atomic_check,
++	.atomic_update = pixel_update,
++	.atomic_disable = pixel_disable,
++};
++static const struct drm_plane_funcs pixel_plane_funcs = {
++	DRM_SYSFB_PLANE_FUNCS,
++	.destroy = drm_plane_cleanup,
++};
++static const struct drm_crtc_helper_funcs pixel_crtc_helpers = {
++	DRM_SYSFB_CRTC_HELPER_FUNCS,
++};
++static const struct drm_crtc_funcs pixel_crtc_funcs = {
++	DRM_SYSFB_CRTC_FUNCS,
++	.destroy = drm_crtc_cleanup,
++};
++static const struct drm_encoder_funcs pixel_encoder_funcs = {
++	.destroy = drm_encoder_cleanup,
++};
++static const struct drm_connector_helper_funcs pixel_connector_helpers = {
++	DRM_SYSFB_CONNECTOR_HELPER_FUNCS,
++};
++static const struct drm_connector_funcs pixel_connector_funcs = {
++	DRM_SYSFB_CONNECTOR_FUNCS,
++	.destroy = drm_connector_cleanup,
++};
++static const struct drm_mode_config_funcs pixel_mode_funcs = {
++	DRM_SYSFB_MODE_CONFIG_FUNCS,
++};
++static const u64 pixel_modifiers[] = { DRM_SYSFB_PLANE_FORMAT_MODIFIERS };
++static const u32 pixel_formats[] = { DRM_FORMAT_XRGB8888 };
++DEFINE_DRM_GEM_FOPS(pixel_fops);
++
++static struct drm_gem_object *pixel_gem_create_object(struct drm_device *dev,
++						    size_t size)
++{
++	struct drm_gem_shmem_object *shmem;
++
++	shmem = kzalloc(sizeof(*shmem), GFP_KERNEL);
++	if (!shmem)
++		return ERR_PTR(-ENOMEM);
++	/* kmsro exports our dumb buffers to the non-coherent GPU. They remain
++	 * locally owned GEM objects, so imported-buffer CPU-access helpers do
++	 * not synchronize them. Use the standard shmem WC mapping for both
++	 * kernel vmap and userspace mmap instead of retaining stale CPU lines.
++	 * The shmem helper initializes and owns the rest of this object.
++	 */
++	shmem->map_wc = true;
++	return &shmem->base;
++}
++
++static struct drm_driver pixel_driver = {
++	DRM_GEM_SHMEM_DRIVER_OPS,
++	.gem_create_object = pixel_gem_create_object,
++	.name = "pixel-handoff",
++	.desc = "Pixel retained framebuffer (development)",
++	.major = 0, .minor = 1,
++	.driver_features = DRIVER_ATOMIC | DRIVER_GEM | DRIVER_MODESET,
++	.fops = &pixel_fops,
++};
++
++static int pixel_probe(struct platform_device *pdev)
++{
++	struct pixel_device *p;
++	struct drm_device *dev;
++	struct drm_sysfb_device *s;
++	void __iomem *dma, *fb;
++	u32 ctrl, trigger;
++	int ret;
++
++	p = devm_drm_dev_alloc(&pdev->dev, &pixel_driver, struct pixel_device, sysfb.dev);
++	if (IS_ERR(p))
++		return PTR_ERR(p);
++	s = &p->sysfb;
++	dev = &s->dev;
++	platform_set_drvdata(pdev, p);
++	spin_lock_init(&p->timing_lock);
++	if (IS_ENABLED(CONFIG_DRM_PIXEL_HANDOFF_TIMING))
++		drm_debugfs_add_file(dev, "pixel_timing", pixel_timing_show, NULL);
++	dma = devm_ioremap(&pdev->dev, PIXEL_DMA, PAGE_SIZE);
++	p->decon = devm_ioremap(&pdev->dev, PIXEL_DECON, PAGE_SIZE);
++	if (!dma || !p->decon)
++		return -ENOMEM;
++	ctrl = readl(dma + 8);
++	trigger = readl(p->decon + 0x30);
++	if (readl(dma + 0x40) != PIXEL_FB ||
++	    readl(dma + 0x440) != PIXEL_FB || readl(dma + 0x408) != ctrl ||
++	    readl(dma + 0x410) != (PIXEL_H << 16 | PIXEL_W) ||
++	    readl(dma + 0x10) != (PIXEL_H << 16 | PIXEL_W) ||
++	    (ctrl & 7) || ((ctrl >> 8) & 63) != 0 || readl(dma + 0x14) ||
++	    (readl(dma + 0x50) & BIT(20)) || !(readl(p->decon + 0x20) & BIT(8)) ||
++	    !(trigger & 0x11) || (trigger & 0x102)) {
++		dev_err(&pdev->dev, "retained display guard mismatch; refusing takeover\n");
++		return -ENODEV;
++	}
++	fb = devm_ioremap_wc(&pdev->dev, PIXEL_FB, PIXEL_SIZE);
++	if (!fb)
++		return -ENOMEM;
++	iosys_map_set_vaddr_iomem(&s->fb_addr, fb);
++	s->fb_mode = drm_sysfb_mode(PIXEL_W, PIXEL_H, 0, 0);
++	s->fb_format = drm_format_info(DRM_FORMAT_ARGB8888);
++	s->fb_pitch = PIXEL_PITCH;
++	ret = drmm_mode_config_init(dev);
++	if (ret)
++		return ret;
++	dev->mode_config.min_width = dev->mode_config.max_width = PIXEL_W;
++	dev->mode_config.min_height = dev->mode_config.max_height = PIXEL_H;
++	dev->mode_config.preferred_depth = 24;
++	dev->mode_config.funcs = &pixel_mode_funcs;
++	ret = drm_universal_plane_init(dev, &p->plane, 0, &pixel_plane_funcs,
++				      pixel_formats, ARRAY_SIZE(pixel_formats), pixel_modifiers,
++				      DRM_PLANE_TYPE_PRIMARY, NULL);
++	if (ret)
++		return ret;
++	drm_plane_helper_add(&p->plane, &pixel_plane_helpers);
++	drm_plane_enable_fb_damage_clips(&p->plane);
++	ret = drm_crtc_init_with_planes(dev, &p->crtc, &p->plane, NULL, &pixel_crtc_funcs, NULL);
++	if (ret)
++		return ret;
++	drm_crtc_helper_add(&p->crtc, &pixel_crtc_helpers);
++	ret = drm_encoder_init(dev, &p->encoder, &pixel_encoder_funcs, DRM_MODE_ENCODER_NONE, NULL);
++	if (ret)
++		return ret;
++	p->encoder.possible_crtcs = drm_crtc_mask(&p->crtc);
++	ret = drm_connector_init(dev, &p->connector, &pixel_connector_funcs, DRM_MODE_CONNECTOR_DSI);
++	if (ret)
++		return ret;
++	drm_connector_helper_add(&p->connector, &pixel_connector_helpers);
++	ret = drm_connector_attach_encoder(&p->connector, &p->encoder);
++	if (ret)
++		return ret;
++	drm_mode_config_reset(dev);
++	ret = pixel_earlycon_takeover();
++	if (ret)
++		return ret;
++	ret = drm_dev_register(dev, 0);
++	if (ret)
++		pixel_earlycon_release();
++	else
++		drm_info(dev, "1440x3120 retained scanout; earlycon now RAM-log only\n");
++	return ret;
++}
++static struct platform_driver pixel_platform_driver = {
++	.probe = pixel_probe,
++	.driver.name = "pixel-handoff",
++};
++static int __init pixel_init(void)
++{
++	struct platform_device *pdev;
++	int ret;
++
++	if (IS_ENABLED(CONFIG_DRM_PIXEL_SCANOUT) || !pixel_enabled ||
++	    !of_machine_is_compatible("google,GS201 CHEETAH"))
++		return 0;
++	ret = platform_driver_register(&pixel_platform_driver);
++	if (ret)
++		return ret;
++	pdev = platform_device_register_simple("pixel-handoff", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		platform_driver_unregister(&pixel_platform_driver);
++		return PTR_ERR(pdev);
++	}
++	return 0;
++}
++module_init(pixel_init);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Pixel retained framebuffer development driver");
+diff --git c/drivers/gpu/drm/sysfb/pixel_panel.h i/drivers/gpu/drm/sysfb/pixel_panel.h
+new file mode 100644
+index 000000000..9d27e54ac
+--- /dev/null
++++ i/drivers/gpu/drm/sysfb/pixel_panel.h
+@@ -0,0 +1,281 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Retained DSIM0/S6E3HC4 refresh control, exclusively owned by pixel-scanout.
++ * This is a bounded handoff driver, not general DSIM power/PHY support.
++ * Source: Google display 0137241105270acf53c329e899ea9c4b6b1c8e66,
++ * s6e3hc4_set_panel_feat(), dsim_calc_underrun(), dsim_reg_set_cmd_ctrl().
++ */
++#ifndef PIXEL_PANEL_H
++#define PIXEL_PANEL_H
++
++struct pixel_panel {
++	void __iomem *dsi;
++	u32 timer, te0, underrun;
++	unsigned int refresh;
++	bool validated;
++	bool blanked;
++};
++
++static int panel_read(struct pixel_panel *panel, u8 command, unsigned int length, u8 *result)
++{
++	void __iomem *dsi = panel->dsi;
++	u8 data[16] = { 0 };
++	u32 value, header, count, type;
++	int ret;
++
++	if (!length || length > sizeof(data))
++		return -EINVAL;
++	/* Never consume a pre-existing response belonging to another owner. */
++	if (!(readl(dsi + 0x68) & BIT(12)))
++		return -EBUSY;
++	ret = readl_poll_timeout(dsi + 0x68, value,
++		(value & (BIT(10) | BIT(8))) == (BIT(10) | BIT(8)), 50, 50000);
++	if (ret)
++		return ret;
++	writel(BIT(18) | BIT(28), dsi + 0x50);
++	/* Set maximum return packet size, followed by DCS_READ with BTA. */
++	writel((length << 8) | 0x37, dsi + 0x58);
++	writel(BIT(24) | (command << 8) | 0x06, dsi + 0x58);
++	ret = readl_poll_timeout(dsi + 0x50, value, value & BIT(18), 50, 100000);
++	if (ret) {
++		pr_err("pixel-dsi: read %02x timeout irq=%08x fifo=%08x status=%08x\n",
++			command, value, readl(dsi + 0x68), readl(dsi + 0x8c));
++		return ret;
++	}
++	if (readl(dsi + 0x68) & BIT(12))
++		return -ENODATA;
++	header = readl(dsi + 0x60);
++	type = header & 0x3f;
++	if (type == 0x21 || type == 0x22) {
++		count = type == 0x21 ? 1 : 2;
++		data[0] = header >> 8;
++		data[1] = header >> 16;
++	} else if (type == 0x1c) {
++		count = (header >> 8) & 0xffff;
++		if (!count || count > sizeof(data))
++			return -EMSGSIZE;
++		for (unsigned int i = 0; i < count; i++) {
++			if (!(i % 4)) {
++				if (readl(dsi + 0x68) & BIT(12))
++					return -ENODATA;
++				value = readl(dsi + 0x60);
++			}
++			data[i] = value >> (8 * (i % 4));
++		}
++	} else {
++		pr_err("pixel-dsi: read %02x unexpected response %08x\n", command, header);
++		return -EPROTO;
++	}
++	if (!(readl(dsi + 0x68) & BIT(12))) {
++		/* The vendor host drains trailers with a bounded loop. */
++		for (unsigned int i = 0; i < 4 && !(readl(dsi + 0x68) & BIT(12)); i++)
++			pr_info("pixel-dsi: RX trailer %08x\n", readl(dsi + 0x60));
++		if (!(readl(dsi + 0x68) & BIT(12)))
++			return -EOVERFLOW;
++	}
++	writel(BIT(18) | BIT(28), dsi + 0x50);
++	pr_info("pixel-dsi: DCS %02x response=%08x bytes=%u data=%*ph\n",
++		command, header, count, count, data);
++	if (count != length)
++		return -EMSGSIZE;
++	memcpy(result, data, count);
++	return 0;
++}
++
++static void panel_queue(struct pixel_panel *panel, const u8 *data, unsigned int length)
++{
++	void __iomem *dsi = panel->dsi;
++	u32 payload;
++
++	if (length == 2) {
++		writel((data[1] << 16) | (data[0] << 8) | 0x15, dsi + 0x58);
++		return;
++	}
++	for (unsigned int i = 0; i < length; i += 4) {
++		payload = 0;
++		for (unsigned int j = 0; j < 4 && i + j < length; j++)
++			payload |= (u32)data[i + j] << (8 * j);
++		writel(payload, dsi + 0x5c);
++	}
++	writel((length << 8) | 0x39, dsi + 0x58);
++}
++#define PANEL_CMD(...) do { \
++	const u8 bytes[] = { __VA_ARGS__ }; \
++	panel_queue(panel, bytes, ARRAY_SIZE(bytes)); \
++} while (0)
++
++
++static int panel_flush(struct pixel_panel *panel)
++{
++	void __iomem *dsi = panel->dsi;
++	u32 state;
++	int ret;
++
++	writel(BIT(28) | BIT(29), dsi + 0x50);
++	writel(BIT(16) | BIT(17), dsi + 0x80);
++	ret = readl_poll_timeout(dsi + 0x68, state,
++		(state & 0x500) == 0x500, 50, 100000);
++	writel(0, dsi + 0x80);
++	return ret;
++}
++
++/* DCS display-off retains panel timing/DSC state. This is not sleep-in or
++ * rail power-off. The caller owns commit ordering and has stopped DMA.
++ */
++static int panel_blank(struct pixel_panel *panel, bool blank)
++{
++	void __iomem *dsi = panel->dsi;
++	u32 state;
++	u8 power;
++	int ret;
++
++	if (!panel->validated)
++		return -EINVAL;
++	if (blank == panel->blanked)
++		return 0;
++	if (readl(dsi + 0x80))
++		return -EBUSY;
++	ret = readl_poll_timeout(dsi + 0x68, state,
++		(state & 0x500) == 0x500, 50, 50000);
++	if (ret)
++		return ret;
++	/* One-byte DCS short write, no parameter. */
++	writel(BIT(16), dsi + 0x80);
++	writel(((blank ? 0x28 : 0x29) << 8) | 0x05, dsi + 0x58);
++	ret = panel_flush(panel);
++	if (ret)
++		return ret;
++	msleep(20);
++	ret = panel_read(panel, 0x0a, 1, &power);
++	if (ret)
++		return ret;
++	if (!!(power & BIT(2)) == blank)
++		return -EIO;
++	panel->blanked = blank;
++	pr_info("pixel-panel: display %s power=%02x\n", blank ? "off" : "on", power);
++	return 0;
++}
++
++static int panel_key(struct pixel_panel *panel, bool unlock)
++{
++	writel(BIT(16), panel->dsi + 0x80);
++	PANEL_CMD(0xf0, unlock ? 0x5a : 0xa5, unlock ? 0x5a : 0xa5);
++	return panel_flush(panel);
++}
++
++/* Called only with DECON idle and its trigger masked, under commit ordering. */
++static int panel_refresh(struct pixel_panel *panel, unsigned int refresh)
++{
++	void __iomem *dsi = panel->dsi;
++	bool fast = refresh == 120;
++	u32 state;
++	int ret;
++
++	if (!panel->validated || (refresh != 60 && refresh != 120))
++		return -EINVAL;
++	if (refresh == panel->refresh)
++		return 0;
++	if (readl(dsi + 0x80))
++		return -EBUSY;
++	ret = readl_poll_timeout(dsi + 0x68, state,
++		(state & 0x500) == 0x500, 50, 50000);
++	if (ret)
++		return ret;
++	/* Full correlated non-HBM, HS, manual-refresh group; do not split. */
++	writel(BIT(16), dsi + 0x80);
++	PANEL_CMD(0xf0, 0x5a, 0x5a);
++	PANEL_CMD(0xb9, fast ? 0x51 : 0x04);
++	PANEL_CMD(0xbd, 0x21, fast ? 0x01 : 0x81, 0x83, 0x03, 0x03);
++	PANEL_CMD(0xb0, 0x00, 0x1e, 0xbd);
++	PANEL_CMD(0xbd, 0x00, 0x00, 0x00, 0x02, 0x00, 0x06, 0x00, 0x16);
++	PANEL_CMD(0xbd, 0x21);
++	PANEL_CMD(0x60, fast ? 0x00 : 0x01);
++	PANEL_CMD(0xf7, 0x0f);
++	PANEL_CMD(0xf0, 0xa5, 0xa5);
++	ret = panel_flush(panel);
++	if (ret) {
++		/* A partial transaction is not a known mode; force later recovery. */
++		panel->refresh = 0;
++		return ret;
++	}
++	/* Vendor timing formula, validated 1346 MHz PLL, four lanes, DSC 3:1.
++	 * max_frame=7,900,825ns, min_transfer=6,708,231ns => 1004 LP units.
++	 * Restore the exact firmware values for the original 60 Hz mode.
++	 */
++	writel(fast ? 1004 : panel->underrun, dsi + 0x34);
++	writel(fast ? 28 : panel->te0, dsi + 0x84);
++	writel(fast ? 0x1a031e1f : panel->timer, dsi + 0x88);
++	panel->refresh = refresh;
++	return 0;
++}
++
++static int panel_validate(struct device *dev, struct pixel_panel *panel)
++{
++	struct device_node *np;
++	struct resource res;
++	void __iomem *phy;
++	bool valid;
++	u8 data[16];
++	int ret, lock_ret;
++	static const u8 te[] = { 0, 4, 0, 0, 0x0c, 0x42, 0, 0x1b,
++				0x0c, 0x42, 0, 0x1b, 0x0c, 0x42, 0, 0x1b };
++	static const u8 bd[] = { 0x21, 0x81, 0x83, 3, 3 };
++
++	np = of_find_node_by_path("/drmdsim@0x1C2C0000");
++	if (!np)
++		return -ENODEV;
++	valid = !of_address_to_resource(np, 0, &res) && res.start == 0x1c2c0000 &&
++		resource_size(&res) == 0x300;
++	valid = valid && !of_address_to_resource(np, 1, &res) &&
++		res.start == 0x1c2e0100 && resource_size(&res) == 0x700;
++	of_node_put(np);
++	if (!valid)
++		return -ENODEV;
++	panel->dsi = devm_ioremap(dev, 0x1c2c0000, PAGE_SIZE);
++	phy = ioremap(0x1c2e0100, 0x100);
++	if (!phy || !panel->dsi) {
++		if (phy)
++			iounmap(phy);
++		return -ENOMEM;
++	}
++	valid = (readl(phy) & 0x173f) == 0x1202 &&
++		(readl(phy + 4) & 0xffff) == 0x1355 &&
++		(readl(phy + 8) & 0x3ff) == 0xdb;
++	iounmap(phy);
++	if (!valid || readl(panel->dsi) != 0x02060000 ||
++	    readl(panel->dsi + 0x4c) != 0x04887cff || readl(panel->dsi + 0x80))
++		return -ENODEV;
++	panel->timer = readl(panel->dsi + 0x88);
++	panel->te0 = readl(panel->dsi + 0x84);
++	panel->underrun = readl(panel->dsi + 0x34);
++	if (panel->timer != 0x33eb3b26 || panel->te0 != 86 || panel->underrun != 7945)
++		return -ENODEV;
++	ret = panel_read(panel, 0xda, 1, data);
++	if (ret || data[0] != 0x0a)
++		return ret ?: -ENODEV;
++	ret = panel_read(panel, 0xdb, 1, data);
++	if (ret || data[0] != 0x80)
++		return ret ?: -ENODEV;
++	ret = panel_read(panel, 0xdc, 1, data);
++	if (ret || data[0] != 0x06)
++		return ret ?: -ENODEV;
++	ret = panel_read(panel, 0x54, 1, data);
++	if (ret || data[0] != 0x20)
++		return ret ?: -ENODEV;
++	ret = panel_key(panel, true);
++	if (!ret)
++		ret = panel_read(panel, 0xb9, sizeof(te), data);
++	if (!ret && memcmp(data, te, sizeof(te)))
++		ret = -ENODEV;
++	if (!ret)
++		ret = panel_read(panel, 0xbd, sizeof(bd), data);
++	if (!ret && memcmp(data, bd, sizeof(bd)))
++		ret = -ENODEV;
++	lock_ret = panel_key(panel, false);
++	if (ret || lock_ret)
++		return ret ?: lock_ret;
++	panel->refresh = 60;
++	panel->validated = true;
++	return 0;
++}
++#undef PANEL_CMD
++#endif
+diff --git c/drivers/gpu/drm/sysfb/pixel_scanout.c i/drivers/gpu/drm/sysfb/pixel_scanout.c
+new file mode 100644
+index 000000000..b9b053a7c
+--- /dev/null
++++ i/drivers/gpu/drm/sysfb/pixel_scanout.c
+@@ -0,0 +1,581 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Cheetah retained-mode native DMA scanout. Standard GEM DMA allocation/import
++ * and atomic fences; real DECON frame-done IRQ completion. DSI/DSC/panel mode,
++ * clocks and disabled SysMMU state remain owned by the firmware handoff.
++ * Optional validated S6E3HC4 control owns 60/120 Hz refresh transitions.
++ */
++#include <linux/completion.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/pixel_handoff.h>
++#include <linux/platform_device.h>
++#include <drm/drm_atomic.h>
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_debugfs.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_fb_dma_helper.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_gem_dma_helper.h>
++#include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_managed.h>
++#include <drm/drm_modeset_helper.h>
++#include <drm/drm_probe_helper.h>
++#include <drm/drm_print.h>
++#include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_vblank.h>
++#include "drm_sysfb_helper.h"
++#include "pixel_panel.h"
++#include "pixel_bandwidth.h"
++
++static bool panel120;
++module_param(panel120, bool, 0444);
++
++#define ORIGINAL_FB 0xfac00000U
++#define WIDTH 1440
++#define HEIGHT 3120
++#define PITCH (WIDTH * 4)
++#define FRAME_START BIT(12)
++#define FRAME_DONE BIT(13)
++#define FRAME_MASK (FRAME_START | FRAME_DONE)
++
++struct pixel_scanout {
++	struct drm_device drm;
++	struct drm_simple_display_pipe pipe;
++	struct drm_connector connector;
++	struct drm_display_mode mode, fast_mode;
++	struct pixel_panel panel;
++	struct pixel_bandwidth bandwidth;
++	void __iomem *decon, *dma;
++	struct completion done;
++	struct drm_pending_vblank_event *pending_event;
++	u32 pending_dma;
++	struct drm_framebuffer *held, *failed_fb;
++	int irq_start, irq_done;
++	bool running, faulted, event_armed;
++	atomic64_t starts, dones, flips, failures, start_events, late_events, underruns;
++};
++
++static struct pixel_scanout *to_pixel(struct drm_device *drm)
++{
++	return container_of(drm, struct pixel_scanout, drm);
++}
++
++/* Own the event independently of crtc->state: userspace can queue the next
++ * atomic state as soon as this event is delivered. The current DMA buffer and
++ * the old buffer remain pinned until frame-done, irrespective of event timing.
++ */
++static void pixel_pending_event(struct pixel_scanout *p, bool at_start)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&p->drm.event_lock, flags);
++	if (p->pending_event) {
++		WRITE_ONCE(p->event_armed, false);
++		drm_crtc_send_vblank_event(&p->pipe.crtc, p->pending_event);
++		p->pending_event = NULL;
++		atomic64_inc(at_start ? &p->start_events : &p->late_events);
++	}
++	spin_unlock_irqrestore(&p->drm.event_lock, flags);
++}
++
++static irqreturn_t pixel_irq(int irq, void *data)
++{
++	struct pixel_scanout *p = data;
++	u32 bit = irq == p->irq_start ? FRAME_START : FRAME_DONE;
++
++	if (!(readl(p->decon + 0x70) & bit))
++		return IRQ_NONE;
++	writel(bit, p->decon + 0x70);
++	readl(p->decon + 0x70);
++	if (bit == FRAME_START) {
++		atomic64_inc(&p->starts);
++		if (panel120 && READ_ONCE(p->running)) {
++			drm_crtc_handle_vblank(&p->pipe.crtc);
++			/* Require hardware to have latched the submitted buffer. */
++			if (READ_ONCE(p->event_armed) &&
++			    readl(p->dma + 0x440) == READ_ONCE(p->pending_dma))
++				pixel_pending_event(p, true);
++		}
++	} else {
++		atomic64_inc(&p->dones);
++		if (!panel120 && READ_ONCE(p->running))
++			drm_crtc_handle_vblank(&p->pipe.crtc);
++		complete(&p->done);
++	}
++	return IRQ_HANDLED;
++}
++
++/* Caller keeps both old and new GEM objects alive until completion and idle.
++ * This command-mode handoff sends frames on demand. Its frame-done counter is
++ * real hardware completion, not a continuous TE or optical-refresh counter.
++ */
++static int pixel_transfer(struct pixel_scanout *p, u32 address)
++{
++	u32 trigger = readl(p->decon + 0x30), status;
++	int ret;
++
++	if (!(trigger & BIT(4))) {
++		ret = -EBUSY;
++		goto failed;
++	}
++	ret = readl_poll_timeout(p->decon + 0x20, status, status & BIT(5), 50, 100000);
++	if (ret)
++		goto failed;
++	synchronize_irq(p->irq_start);
++	synchronize_irq(p->irq_done);
++	reinit_completion(&p->done);
++	if (panel120)
++		writel(BIT(19), p->panel.dsi + 0x50);
++	/* Publish completed CPU writes before the DMA address and trigger. */
++	wmb();
++	writel(address, p->dma + 0x40);
++	writel(readl(p->decon + 0x50) | 0x3f, p->decon + 0x50);
++	writel(readl(p->decon + 0x20) | 3, p->decon + 0x20);
++	writel(readl(p->decon + 0x50) | 0x80100000, p->decon + 0x50);
++	/* Ignore any stale start IRQ before this new transfer is armed. */
++	WRITE_ONCE(p->event_armed, panel120 && p->pending_event);
++	writel((trigger & ~BIT(4)) | 1, p->decon + 0x30);
++	ret = wait_for_completion_timeout(&p->done, msecs_to_jiffies(100)) ? 0 : -ETIMEDOUT;
++	writel(trigger, p->decon + 0x30);
++	if (!ret)
++		ret = readl_poll_timeout(p->decon + 0x20, status, status & BIT(5), 50, 100000);
++	if (!ret && panel120 && (readl(p->panel.dsi + 0x50) & BIT(19))) {
++		atomic64_inc(&p->underruns);
++		ret = -EPIPE;
++	}
++	if (!ret && readl(p->dma + 0x440) != address)
++		ret = -EIO;
++failed:
++	if (ret) {
++		p->faulted = true;
++		atomic64_inc(&p->failures);
++		drm_err(&p->drm, "DMA scanout failed %d address=%08x shadow=%08x; buffers retained\n",
++			ret, address, readl(p->dma + 0x440));
++	} else {
++		atomic64_inc(&p->flips);
++	}
++	return ret;
++}
++
++static void pixel_send_event(struct drm_crtc *crtc)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&crtc->dev->event_lock, flags);
++	if (crtc->state->event) {
++		drm_crtc_send_vblank_event(crtc, crtc->state->event);
++		crtc->state->event = NULL;
++	}
++	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
++}
++
++static int pixel_check(struct drm_simple_display_pipe *pipe,
++		       struct drm_plane_state *ps, struct drm_crtc_state *cs)
++{
++	struct pixel_scanout *p = to_pixel(pipe->crtc.dev);
++	struct drm_framebuffer *fb = ps->fb;
++	struct drm_gem_dma_object *obj;
++	int ret;
++
++	if (p->faulted)
++		return -EIO;
++	if (!fb)
++		return 0;
++	if (panel120 && drm_mode_vrefresh(&cs->mode) == 120) {
++		ret = bandwidth_get(p->drm.dev, &p->bandwidth);
++		if (ret)
++			return ret;
++	}
++	if (fb->width != WIDTH || fb->height != HEIGHT || fb->pitches[0] != PITCH ||
++	    fb->offsets[0] || fb->modifier != DRM_FORMAT_MOD_LINEAR ||
++	    ps->src_x || ps->src_y || ps->src_w != WIDTH << 16 || ps->src_h != HEIGHT << 16)
++		return -EINVAL;
++	obj = drm_fb_dma_get_gem_obj(fb, 0);
++	if (!obj || obj->base.size < PITCH * HEIGHT ||
++	    upper_32_bits(obj->dma_addr + PITCH * HEIGHT - 1))
++		return -EINVAL;
++	return 0;
++}
++
++static void pixel_update(struct drm_simple_display_pipe *pipe, struct drm_plane_state *old)
++{
++	struct pixel_scanout *p = to_pixel(pipe->crtc.dev);
++	struct drm_framebuffer *fb = pipe->plane.state->fb;
++	struct drm_gem_dma_object *obj;
++	unsigned long flags;
++
++	if (!fb || p->faulted)
++		goto event;
++	obj = drm_fb_dma_get_gem_obj(fb, 0);
++	drm_framebuffer_get(fb);
++	if (panel120) {
++		spin_lock_irqsave(&p->drm.event_lock, flags);
++		WRITE_ONCE(p->event_armed, false);
++		p->pending_event = pipe->crtc.state->event;
++		pipe->crtc.state->event = NULL;
++		p->pending_dma = lower_32_bits(obj->dma_addr);
++		spin_unlock_irqrestore(&p->drm.event_lock, flags);
++	}
++	if (pixel_transfer(p, lower_32_bits(obj->dma_addr))) {
++		/* Fail closed: reject later commits and pin every potentially active
++		 * buffer until a confirmed restore or the end of this RAM boot.
++		 */
++		p->failed_fb = fb;
++	} else {
++		if (p->held)
++			drm_framebuffer_put(p->held);
++		p->held = fb;
++	}
++	if (panel120) {
++		/* A missed start or failed transfer must still release its waiter.
++		 * Never access the live CRTC state after sending an early event.
++		 */
++		pixel_pending_event(p, false);
++		return;
++	}
++event:
++	/* Successful updates reach here only after real frame-done and idle.
++	 * On a logged hardware failure release the commit waiter, while extra
++	 * references prevent hardware from accessing a freed buffer.
++	 */
++	pixel_send_event(&pipe->crtc);
++}
++
++static int pixel_enable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	/* IRQs stay enabled for transfer completion while the device is bound. */
++	return 0;
++}
++
++static void pixel_enable(struct drm_simple_display_pipe *pipe,
++			 struct drm_crtc_state *cs, struct drm_plane_state *ps)
++{
++	struct pixel_scanout *p = to_pixel(pipe->crtc.dev);
++
++	if (panel120 &&
++	    ((drm_mode_vrefresh(&cs->mode) == 120 && bandwidth_acquire(&p->bandwidth)) ||
++	     panel_refresh(&p->panel, drm_mode_vrefresh(&cs->mode)) ||
++	     panel_blank(&p->panel, false))) {
++		p->faulted = true;
++		atomic64_inc(&p->failures);
++		drm_err(&p->drm, "panel/bandwidth mode change failed; rejecting further transfers\n");
++		return;
++	}
++	drm_crtc_vblank_on(&pipe->crtc);
++	if (drm_crtc_vblank_get(&pipe->crtc))
++		drm_warn(&p->drm, "failed to enable completion counting\n");
++	WRITE_ONCE(p->running, true);
++}
++
++static void pixel_disable(struct drm_simple_display_pipe *pipe)
++{
++	struct pixel_scanout *p = to_pixel(pipe->crtc.dev);
++	int ret;
++
++	if (panel120) {
++		u32 status;
++
++		/* Keep the compositor's final (CRT black) image in panel GRAM.
++		 * Do not flash the boot console by restoring ORIGINAL_FB here.
++		 * Hold the last DMA buffer across DPMS until a new transfer replaces
++		 * it; the hardware shadow still refers to that allocation.
++		 */
++		ret = (readl(p->decon + 0x30) & BIT(4)) ?
++			readl_poll_timeout(p->decon + 0x20, status,
++					   status & BIT(5), 50, 100000) : -EBUSY;
++	} else {
++		ret = pixel_transfer(p, ORIGINAL_FB);
++	}
++	if (!ret && !panel120) {
++		if (p->held)
++			drm_framebuffer_put(p->held);
++		if (p->failed_fb)
++			drm_framebuffer_put(p->failed_fb);
++		p->held = NULL;
++		p->failed_fb = NULL;
++	}
++	if (panel120 && (ret || panel_refresh(&p->panel, 60) ||
++			 bandwidth_release(&p->bandwidth) || panel_blank(&p->panel, true))) {
++		p->faulted = true;
++		atomic64_inc(&p->failures);
++		drm_err(&p->drm, "panel/bandwidth restore failed\n");
++	}
++	pixel_send_event(&pipe->crtc);
++	if (!p->running)
++		return;
++	WRITE_ONCE(p->running, false);
++	drm_crtc_vblank_put(&pipe->crtc);
++	drm_crtc_vblank_off(&pipe->crtc);
++}
++
++static enum drm_mode_status pixel_mode_valid(struct drm_simple_display_pipe *pipe,
++					    const struct drm_display_mode *mode)
++{
++	struct pixel_scanout *p = to_pixel(pipe->crtc.dev);
++
++	return drm_mode_equal(mode, &p->mode) ||
++		(panel120 && drm_mode_equal(mode, &p->fast_mode)) ? MODE_OK : MODE_BAD;
++}
++
++static const struct drm_simple_display_pipe_funcs pixel_pipe_funcs = {
++	.mode_valid = pixel_mode_valid,
++	.check = pixel_check,
++	.update = pixel_update,
++	.enable = pixel_enable,
++	.disable = pixel_disable,
++	.enable_vblank = pixel_enable_vblank,
++};
++
++static int pixel_get_modes(struct drm_connector *connector)
++{
++	struct pixel_scanout *p = to_pixel(connector->dev);
++	struct drm_display_mode *mode = drm_mode_duplicate(connector->dev, &p->mode);
++
++	if (!mode)
++		return 0;
++	mode->type |= DRM_MODE_TYPE_DRIVER;
++	if (!panel120)
++		mode->type |= DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++	if (!panel120)
++		return 1;
++	mode = drm_mode_duplicate(connector->dev, &p->fast_mode);
++	if (!mode)
++		return 1;
++	mode->type |= DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++	return 2;
++}
++
++static const struct drm_connector_helper_funcs pixel_connector_helpers = {
++	.get_modes = pixel_get_modes,
++};
++static const struct drm_connector_funcs pixel_connector_funcs = {
++	DRM_SYSFB_CONNECTOR_FUNCS,
++	.destroy = drm_connector_cleanup,
++};
++static const struct drm_mode_config_funcs pixel_mode_funcs = {
++	.fb_create = drm_gem_fb_create,
++	.atomic_check = drm_atomic_helper_check,
++	.atomic_commit = drm_atomic_helper_commit,
++};
++
++static void pixel_commit_tail(struct drm_atomic_commit *state)
++{
++	struct drm_device *dev = state->dev;
++
++	drm_atomic_helper_commit_modeset_disables(dev, state);
++	drm_atomic_helper_commit_modeset_enables(dev, state);
++	drm_atomic_helper_commit_planes(dev, state, DRM_PLANE_COMMIT_ACTIVE_ONLY);
++	drm_atomic_helper_commit_hw_done(state);
++	/* Command-mode transfer is already complete. No further vblank is
++	 * promised while the panel is idle; wait for our delivered flip event.
++	 */
++	drm_atomic_helper_wait_for_flip_done(dev, state);
++	drm_atomic_helper_cleanup_planes(dev, state);
++}
++
++static const struct drm_mode_config_helper_funcs pixel_mode_helpers = {
++	/* Turn completion accounting on before the initial plane update. */
++	.atomic_commit_tail = pixel_commit_tail,
++};
++static const u32 pixel_formats[] = { DRM_FORMAT_XRGB8888 };
++static const u64 pixel_modifiers[] = { DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_INVALID };
++DEFINE_DRM_GEM_DMA_FOPS(pixel_fops);
++static const struct drm_driver pixel_driver = {
++	DRM_GEM_DMA_DRIVER_OPS,
++	/* Preserve the Mesa kmsro device match from the validated userspace. */
++	.name = "pixel-handoff",
++	.desc = "Pixel native DMA scanout (retained panel mode)",
++	.major = 0, .minor = 2,
++	.driver_features = DRIVER_ATOMIC | DRIVER_GEM | DRIVER_MODESET,
++	.fops = &pixel_fops,
++};
++
++static int pixel_stats(struct seq_file *m, void *unused)
++{
++	struct drm_debugfs_entry *entry = m->private;
++	struct pixel_scanout *p = to_pixel(entry->dev);
++
++	seq_puts(m, "Native DMA scanout; on-demand frame IRQs, not continuous panel TE.\n");
++	seq_printf(m, "starts %lld\ndones %lld\ncompleted_transfers %lld\nfailures %lld\n",
++		   atomic64_read(&p->starts), atomic64_read(&p->dones),
++		   atomic64_read(&p->flips), atomic64_read(&p->failures));
++	seq_printf(m, "cpu_pixel_copy_bytes 0\nactive_dma %08x\nfaulted %u\n",
++		   readl(p->dma + 0x440), p->faulted);
++	seq_printf(m, "panel_blanked %u\n", p->panel.blanked);
++	seq_printf(m, "panel_refresh_hz %u\nstart_events %lld\nlate_events %lld\n",
++		   p->panel.refresh, atomic64_read(&p->start_events), atomic64_read(&p->late_events));
++	seq_printf(m, "bandwidth_active %u\nmif_rate_hz %lu\ndsi_underruns %lld\n",
++		   p->bandwidth.active, p->bandwidth.mif ? clk_get_rate(p->bandwidth.mif) : 0,
++		   atomic64_read(&p->underruns));
++	return 0;
++}
++
++static void pixel_irq_off(void *data)
++{
++	struct pixel_scanout *p = data;
++
++	writel(FRAME_MASK, p->decon + 0x60);
++	readl(p->decon + 0x60);
++}
++
++static int pixel_probe(struct platform_device *pdev)
++{
++	struct pixel_scanout *p;
++	struct device_node *np;
++	struct resource res;
++	void __iomem *pmu, *mmu;
++	u32 cells[6];
++	bool valid;
++	int ret;
++
++	pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
++	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++	p = devm_drm_dev_alloc(&pdev->dev, &pixel_driver, struct pixel_scanout, drm);
++	if (IS_ERR(p))
++		return PTR_ERR(p);
++	platform_set_drvdata(pdev, p);
++	init_completion(&p->done);
++	pmu = devm_ioremap(&pdev->dev, 0x18062000, PAGE_SIZE);
++	if (!pmu || !(readl(pmu + 0x204) & 1) || !(readl(pmu + 0x284) & 1))
++		return -ENODEV;
++	mmu = devm_ioremap(&pdev->dev, 0x1c100000, 0x10000);
++	if (!mmu || readl(mmu + 0x34) != 0x80200001 ||
++	    readl(mmu + 0x874) != 0xe0a1 || readl(mmu) ||
++	    readl(mmu + 0x8000) || readl(mmu + 0x800c))
++		return -ENODEV;
++	p->decon = devm_ioremap(&pdev->dev, 0x1c240000, PAGE_SIZE);
++	p->dma = devm_ioremap(&pdev->dev, 0x1c0b0000, PAGE_SIZE);
++	if (!p->decon || !p->dma)
++		return -ENOMEM;
++	if (readl(p->decon + 0x60) != FRAME_MASK ||
++	    !(readl(p->decon + 0x20) & BIT(8)) ||
++	    (readl(p->decon + 0x30) & 0x11) != 0x10 ||
++	    readl(p->dma + 0x40) != ORIGINAL_FB || readl(p->dma + 0x440) != ORIGINAL_FB ||
++	    readl(p->dma + 0x408) != 0xff400000 || readl(p->dma + 0x410) != 0x0c3005a0 ||
++	    readl(p->dma + 0x414) || readl(p->dma + 0x450))
++		return -ENODEV;
++	np = of_find_node_by_path("/drmdecon@0x1C240000");
++	if (!np)
++		return -ENODEV;
++	valid = !of_address_to_resource(np, 0, &res) && res.start == 0x1c240000 &&
++		resource_size(&res) == 0x6000 &&
++		!of_property_read_u32_array(np, "interrupts", cells, 6) &&
++		!cells[0] && cells[1] == 241 && cells[2] == 4 &&
++		!cells[3] && cells[4] == 240 && cells[5] == 4;
++	p->irq_start = of_irq_get_byname(np, "frame_start");
++	p->irq_done = of_irq_get_byname(np, "frame_done");
++	of_node_put(np);
++	if (!valid || p->irq_start <= 0 || p->irq_done <= 0)
++		return -ENODEV;
++	ret = drmm_mode_config_init(&p->drm);
++	if (ret)
++		return ret;
++	p->mode = drm_sysfb_mode(WIDTH, HEIGHT, 71, 155);
++	if (panel120) {
++		p->mode = (struct drm_display_mode) {
++			.clock = 298620,
++			.hdisplay = WIDTH, .hsync_start = 1520,
++			.hsync_end = 1544, .htotal = 1580,
++			.vdisplay = HEIGHT, .vsync_start = 3132,
++			.vsync_end = 3136, .vtotal = 3150,
++			.width_mm = 71, .height_mm = 155,
++		};
++		p->fast_mode = p->mode;
++		p->fast_mode.clock = 597240;
++		drm_mode_set_name(&p->fast_mode);
++	}
++	drm_mode_set_name(&p->mode);
++	p->drm.mode_config.min_width = p->drm.mode_config.max_width = WIDTH;
++	p->drm.mode_config.min_height = p->drm.mode_config.max_height = HEIGHT;
++	p->drm.mode_config.preferred_depth = 24;
++	p->drm.mode_config.funcs = &pixel_mode_funcs;
++	p->drm.mode_config.helper_private = &pixel_mode_helpers;
++	ret = drm_connector_init(&p->drm, &p->connector, &pixel_connector_funcs,
++				 DRM_MODE_CONNECTOR_DSI);
++	if (ret)
++		return ret;
++	drm_connector_helper_add(&p->connector, &pixel_connector_helpers);
++	ret = drm_simple_display_pipe_init(&p->drm, &p->pipe, &pixel_pipe_funcs,
++		pixel_formats, ARRAY_SIZE(pixel_formats), pixel_modifiers, &p->connector);
++	if (ret)
++		return ret;
++	ret = drm_vblank_init(&p->drm, 1);
++	if (ret)
++		return ret;
++	drm_mode_config_reset(&p->drm);
++	ret = pixel_earlycon_takeover();
++	if (ret)
++		return ret;
++	if (panel120) {
++		ret = panel_validate(&pdev->dev, &p->panel);
++		if (ret) {
++			drm_err(&p->drm, "panel/DSIM baseline rejected: %d\n", ret);
++			goto release_console;
++		}
++	}
++	ret = devm_request_irq(&pdev->dev, p->irq_start, pixel_irq, 0, "pixel-decon-start", p);
++	if (ret)
++		goto release_console;
++	ret = devm_request_irq(&pdev->dev, p->irq_done, pixel_irq, 0, "pixel-decon-done", p);
++	if (ret)
++		goto release_console;
++	ret = devm_add_action_or_reset(&pdev->dev, pixel_irq_off, p);
++	if (ret)
++		goto release_console;
++	writel(FRAME_MASK, p->decon + 0x70);
++	writel(FRAME_MASK | BIT(0), p->decon + 0x60);
++	drm_debugfs_add_file(&p->drm, "pixel_scanout", pixel_stats, NULL);
++	ret = drm_dev_register(&p->drm, 0);
++	if (ret)
++		goto release_console;
++	drm_info(&p->drm, "native DMA scanout, hardware frame completion, panel120=%u\n", panel120);
++	return 0;
++release_console:
++	pixel_irq_off(p);
++	pixel_earlycon_release();
++	return ret;
++}
++
++static void pixel_shutdown(struct platform_device *pdev)
++{
++	struct pixel_scanout *p = platform_get_drvdata(pdev);
++
++	drm_atomic_helper_shutdown(&p->drm);
++	pixel_irq_off(p);
++}
++static struct platform_driver pixel_platform_driver = {
++	.probe = pixel_probe,
++	.shutdown = pixel_shutdown,
++	.driver.name = "pixel-scanout",
++	.driver.suppress_bind_attrs = true,
++};
++static int __init pixel_init(void)
++{
++	struct platform_device *pdev;
++	int ret;
++
++	if (!of_machine_is_compatible("google,GS201 CHEETAH"))
++		return -ENODEV;
++	ret = platform_driver_register(&pixel_platform_driver);
++	if (ret)
++		return ret;
++	pdev = platform_device_register_simple("pixel-scanout", -1, NULL, 0);
++	if (IS_ERR(pdev)) {
++		platform_driver_unregister(&pixel_platform_driver);
++		return PTR_ERR(pdev);
++	}
++	return 0;
++}
++module_init(pixel_init);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Pixel native DMA scanout with retained panel mode");
+diff --git c/drivers/mailbox/exynos-mailbox.c i/drivers/mailbox/exynos-mailbox.c
+index ff75c1c76..99c282837 100644
+--- c/drivers/mailbox/exynos-mailbox.c
++++ i/drivers/mailbox/exynos-mailbox.c
+@@ -132,6 +132,10 @@ static const struct of_device_id exynos_mbox_match[] = {
+ 		.compatible = "google,gs101-mbox",
+ 		.data = &exynos_gs101_mbox_data
+ 	},
++	{
++		.compatible = "google,gs201-mbox",
++		.data = &exynos_gs101_mbox_data
++	},
+ 	{
+ 		.compatible = "samsung,exynos850-mbox",
+ 		.data = &exynos850_mbox_data
+diff --git c/drivers/pmdomain/samsung/Kconfig i/drivers/pmdomain/samsung/Kconfig
+index 0debfe36b..3ec50bf89 100644
+--- c/drivers/pmdomain/samsung/Kconfig
++++ i/drivers/pmdomain/samsung/Kconfig
+@@ -5,4 +5,13 @@ config EXYNOS_PM_DOMAINS
+ 	bool "Exynos PM domains" if COMPILE_TEST
+ 	depends on (ARCH_EXYNOS && PM_GENERIC_DOMAINS) || COMPILE_TEST
+ 
++config GS201_G3D_PM_DOMAINS
++	bool "Google GS201 GPU power domains"
++	depends on ARCH_EXYNOS && PM_GENERIC_DOMAINS
++	help
++	  Support the GS201 GPU top and embedded core power domains. PMU writes
++	  use the secure monitor interface. The top domain retains its clock
++	  and system registers across power collapse. This does not implement
++	  CPU power domains or other GS201 peripherals.
++
+ endif
+diff --git c/drivers/pmdomain/samsung/Makefile i/drivers/pmdomain/samsung/Makefile
+index 397aa5908..d57af5771 100644
+--- c/drivers/pmdomain/samsung/Makefile
++++ i/drivers/pmdomain/samsung/Makefile
+@@ -1,2 +1,3 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-$(CONFIG_EXYNOS_PM_DOMAINS)		+= exynos-pm-domains.o
++obj-$(CONFIG_GS201_G3D_PM_DOMAINS) += gs201-g3d-pd.o
+diff --git c/drivers/pmdomain/samsung/gs201-g3d-pd.c i/drivers/pmdomain/samsung/gs201-g3d-pd.c
+new file mode 100644
+index 000000000..03f71f34e
+--- /dev/null
++++ i/drivers/pmdomain/samsung/gs201-g3d-pd.c
+@@ -0,0 +1,262 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* GS201 GPU domains: firmware-mediated PMU writes and CMU/TZPC retention. */
++#include <linux/arm-smccc.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_domain.h>
++
++#define GS201_PMU_BASE 0x18061e00
++#define GS201_SMC_PRIV_REG 0x82000504
++#define GS201_SMC_PD_CONTEXT 0x82000410
++#define GS201_G3D_TZPC 0x27f10204
++
++struct gs201_g3d;
++struct gs201_domain {
++	struct generic_pm_domain genpd;
++	struct gs201_g3d *ctrl;
++	u32 offset;
++};
++
++/* Ordered SAVE_RESTORE entries from Google's flexpmu_cal_local_gs201.h. */
++static const struct {
++	u8 region;
++	u16 offset;
++} gs201_g3d_saved_regs[] = {
++	{ 0, 0x1800 },
++	{ 0, 0x1804 },
++	{ 0, 0x1808 },
++	{ 0, 0x180c },
++	{ 0, 0x1810 },
++	{ 0, 0x1814 },
++	{ 0, 0x1000 },
++	{ 0, 0x1004 },
++	{ 0, 0x1008 },
++	{ 0, 0x0004 },
++	{ 0, 0x0008 },
++	{ 0, 0x0104 },
++	{ 0, 0x0144 },
++	{ 0, 0x0108 },
++	{ 0, 0x0148 },
++	{ 0, 0x010c },
++	{ 0, 0x014c },
++	{ 0, 0x0100 },
++	{ 0, 0x0140 },
++	{ 0, 0x0600 },
++	{ 0, 0x0610 },
++	{ 0, 0x0620 },
++	{ 0, 0x0630 },
++	{ 0, 0x0640 },
++	{ 0, 0x0650 },
++	{ 0, 0x302c },
++	{ 0, 0x3030 },
++	{ 0, 0x3034 },
++	{ 0, 0x3038 },
++	{ 0, 0x303c },
++	{ 0, 0x3040 },
++	{ 0, 0x3044 },
++	{ 0, 0x3048 },
++	{ 0, 0x304c },
++	{ 0, 0x3050 },
++	{ 0, 0x3054 },
++	{ 0, 0x3058 },
++	{ 0, 0x305c },
++	{ 0, 0x3060 },
++	{ 0, 0x3064 },
++	{ 0, 0x3068 },
++	{ 0, 0x306c },
++	{ 0, 0x3070 },
++	{ 0, 0x3074 },
++	{ 0, 0x0800 },
++	{ 0, 0x0804 },
++	{ 1, 0x0104 },
++	{ 1, 0x0108 },
++};
++
++struct gs201_g3d {
++	struct device *dev;
++	void __iomem *pmu;
++	void __iomem *regs[2];
++	struct gs201_domain pd[2];
++	struct generic_pm_domain *domains[2];
++	struct genpd_onecell_data data;
++	u32 saved[ARRAY_SIZE(gs201_g3d_saved_regs)];
++	bool saved_valid;
++	bool protection_enabled;
++};
++
++static int gs201_pd_context(bool restore)
++{
++	struct arm_smccc_res res;
++
++	arm_smccc_smc(GS201_SMC_PD_CONTEXT, restore, GS201_G3D_TZPC,
++		      2, 0, 0, 0, 0, &res);
++	if (res.a0)
++		pr_err("GS201 GPU: secure context %s failed: %#lx\n",
++		       restore ? "restore" : "save", res.a0);
++	return res.a0 ? -EIO : 0;
++}
++
++static int gs201_gpu_protection(struct gs201_g3d *ctrl, bool enable)
++{
++	struct arm_smccc_res res;
++
++	if (ctrl->protection_enabled == enable)
++		return 0;
++	/* Google's GS201 GPU power callback: SMC_PROTECTION_SET, PROT_G3D. */
++	arm_smccc_smc(0x82002010, 0, 12, enable, 0, 0, 0, 0, &res);
++	if (res.a0) {
++		dev_err(ctrl->dev, "GPU security configuration failed: %#lx\n", res.a0);
++		return -EACCES;
++	}
++	ctrl->protection_enabled = enable;
++	return 0;
++}
++
++static int gs201_pd_set(struct gs201_domain *pd, bool on)
++{
++	struct gs201_g3d *ctrl = pd->ctrl;
++	struct arm_smccc_res res;
++	u32 value = readl(ctrl->pmu + pd->offset);
++	int ret;
++
++	value = (value & ~BIT(0)) | on;
++	arm_smccc_smc(GS201_SMC_PRIV_REG, GS201_PMU_BASE + pd->offset,
++		      1, value, 0, 0, 0, 0, &res);
++	if (res.a0)
++		return dev_err_probe(ctrl->dev, -EACCES, "Secure PMU write failed: %#lx\n",
++				     res.a0);
++	ret = readl_poll_timeout(ctrl->pmu + pd->offset + 4, value,
++				!!(value & BIT(0)) == on, 10, 100000);
++	if (ret)
++		dev_err(ctrl->dev, "%s transition to %u timed out\n", pd->genpd.name, on);
++	return ret;
++}
++
++static int gs201_pd_on(struct generic_pm_domain *genpd)
++{
++	struct gs201_domain *pd = container_of(genpd, struct gs201_domain, genpd);
++	struct gs201_g3d *ctrl = pd->ctrl;
++	unsigned int i;
++	int ret;
++
++	ret = gs201_pd_set(pd, true);
++	if (ret)
++		return ret;
++	if (pd->offset)
++		return gs201_gpu_protection(ctrl, true);
++	ret = gs201_pd_context(true);
++	if (ret)
++		return ret;
++	if (ctrl->saved_valid) {
++		for (i = 0; i < ARRAY_SIZE(gs201_g3d_saved_regs); i++)
++			writel(ctrl->saved[i], ctrl->regs[gs201_g3d_saved_regs[i].region] +
++			       gs201_g3d_saved_regs[i].offset);
++		ctrl->saved_valid = false;
++	}
++	dev_dbg(ctrl->dev, "GPU top domain restored\n");
++	return 0;
++}
++
++static int gs201_pd_off(struct generic_pm_domain *genpd)
++{
++	struct gs201_domain *pd = container_of(genpd, struct gs201_domain, genpd);
++	struct gs201_g3d *ctrl = pd->ctrl;
++	unsigned int i;
++	u32 option;
++	int ret;
++
++	if (!pd->offset) {
++		ret = gs201_gpu_protection(ctrl, false);
++		if (ret)
++			return ret;
++		for (i = 0; i < ARRAY_SIZE(gs201_g3d_saved_regs); i++)
++			ctrl->saved[i] = readl(ctrl->regs[gs201_g3d_saved_regs[i].region] +
++					      gs201_g3d_saved_regs[i].offset);
++		ctrl->saved_valid = true;
++		ret = gs201_pd_context(false);
++		if (ret)
++			return ret;
++		option = readl(ctrl->regs[0] + 0x800);
++		writel(option & ~BIT(24), ctrl->regs[0] + 0x800);
++	}
++	ret = gs201_pd_set(pd, false);
++	if (!ret)
++		dev_dbg(ctrl->dev, "%s powered off\n", genpd->name);
++	return ret;
++}
++
++static int gs201_g3d_probe(struct platform_device *pdev)
++{
++	static const char * const names[] = { "gs201-g3d-top", "gs201-g3d-cores" };
++	struct device *dev = &pdev->dev;
++	struct gs201_g3d *ctrl;
++	struct resource *res;
++	unsigned int i;
++	int ret;
++
++	ctrl = devm_kzalloc(dev, sizeof(*ctrl), GFP_KERNEL);
++	if (!ctrl)
++		return -ENOMEM;
++	ctrl->dev = dev;
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res || res->start != GS201_PMU_BASE || resource_size(res) != 0x208)
++		return -EINVAL;
++	ctrl->pmu = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(ctrl->pmu))
++		return PTR_ERR(ctrl->pmu);
++	for (i = 0; i < 2; i++) {
++		ctrl->regs[i] = devm_platform_ioremap_resource(pdev, i + 1);
++		if (IS_ERR(ctrl->regs[i]))
++			return PTR_ERR(ctrl->regs[i]);
++	}
++	for (i = 0; i < 2; i++) {
++		struct gs201_domain *pd = &ctrl->pd[i];
++
++		pd->ctrl = ctrl;
++		pd->offset = i * 0x200;
++		pd->genpd.name = names[i];
++		pd->genpd.power_on = gs201_pd_on;
++		pd->genpd.power_off = gs201_pd_off;
++		ctrl->domains[i] = &pd->genpd;
++		ret = pm_genpd_init(&pd->genpd, NULL,
++				    !(readl(ctrl->pmu + pd->offset + 4) & BIT(0)));
++		if (ret)
++			goto remove_domains;
++	}
++	ret = pm_genpd_add_subdomain(ctrl->domains[0], ctrl->domains[1]);
++	if (ret)
++		goto remove_domains;
++	ctrl->data.domains = ctrl->domains;
++	ctrl->data.num_domains = ARRAY_SIZE(ctrl->domains);
++	ret = of_genpd_add_provider_onecell(dev->of_node, &ctrl->data);
++	if (ret) {
++		pm_genpd_remove_subdomain(ctrl->domains[0], ctrl->domains[1]);
++		goto remove_domains;
++	}
++	dev_info(dev, "GPU domains registered: top=%u cores=%u\n",
++		 readl(ctrl->pmu + 4) & 1, readl(ctrl->pmu + 0x204) & 1);
++	return 0;
++remove_domains:
++	while (i--)
++		pm_genpd_remove(ctrl->domains[i]);
++	return ret;
++}
++
++static const struct of_device_id gs201_g3d_match[] = {
++	{ .compatible = "google,gs201-g3d-pmu" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, gs201_g3d_match);
++
++static struct platform_driver gs201_g3d_driver = {
++	.probe = gs201_g3d_probe,
++	.driver = {
++		.name = "gs201-g3d-pd",
++		.of_match_table = gs201_g3d_match,
++		.suppress_bind_attrs = true,
++	},
++};
++builtin_platform_driver(gs201_g3d_driver);
+diff --git c/drivers/thermal/samsung/Kconfig i/drivers/thermal/samsung/Kconfig
+index e1e8035d2..7b8567a81 100644
+--- c/drivers/thermal/samsung/Kconfig
++++ i/drivers/thermal/samsung/Kconfig
+@@ -10,3 +10,12 @@ config EXYNOS_THERMAL
+ 	  the TMU, reports temperature and handles cooling action if defined.
+ 	  This driver uses the Exynos core thermal APIs and TMU configuration
+ 	  data from the supported SoCs.
++
++config GS201_ACPM_THERMAL
++	tristate "Google GS201 ACPM thermal sensors"
++	depends on THERMAL_OF && EXYNOS_ACPM_PROTOCOL
++	help
++	  Report GS201 firmware-owned temperature sensors using ACPM polling.
++	  Firmware must already have initialized the sensors. This driver does
++	  not configure hardware thresholds or interrupts. Thermal zones and
++	  software trip actions must be described by the board device tree.
+diff --git c/drivers/thermal/samsung/Makefile i/drivers/thermal/samsung/Makefile
+index f13940715..6c87388f4 100644
+--- c/drivers/thermal/samsung/Makefile
++++ i/drivers/thermal/samsung/Makefile
+@@ -4,3 +4,4 @@
+ #
+ obj-$(CONFIG_EXYNOS_THERMAL)			+= exynos_thermal.o
+ exynos_thermal-y				:= exynos_tmu.o
++obj-$(CONFIG_GS201_ACPM_THERMAL) += gs201_acpm_thermal.o
+diff --git c/drivers/thermal/samsung/gs201_acpm_thermal.c i/drivers/thermal/samsung/gs201_acpm_thermal.c
+new file mode 100644
+index 000000000..67edeb17c
+--- /dev/null
++++ i/drivers/thermal/samsung/gs201_acpm_thermal.c
+@@ -0,0 +1,79 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* GS201 firmware-owned temperature sensors, polled through ACPM. */
++#include <linux/err.h>
++#include <linux/firmware/samsung/exynos-acpm-protocol.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/thermal.h>
++
++#define GS201_TMU_CHANNEL 9
++#define GS201_TMU_ZONES 7
++
++struct gs201_sensor {
++	struct acpm_handle *handle;
++	u8 id;
++};
++
++static int gs201_get_temp(struct thermal_zone_device *tz, int *temp)
++{
++	struct gs201_sensor *sensor = thermal_zone_device_priv(tz);
++	int celsius, ret;
++
++	ret = sensor->handle->ops->tmu.read_temp(sensor->handle,
++					      GS201_TMU_CHANNEL, sensor->id, &celsius);
++	if (ret)
++		return ret;
++	*temp = celsius * 1000;
++	return 0;
++}
++
++static const struct thermal_zone_device_ops gs201_thermal_ops = {
++	.get_temp = gs201_get_temp,
++};
++
++static int gs201_thermal_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct acpm_handle *handle;
++	struct gs201_sensor *sensors;
++	struct thermal_zone_device *tz;
++	int i, ret;
++
++	handle = devm_acpm_get_by_phandle(dev);
++	if (IS_ERR(handle))
++		return dev_err_probe(dev, PTR_ERR(handle), "ACPM is not ready\n");
++	sensors = devm_kcalloc(dev, GS201_TMU_ZONES, sizeof(*sensors), GFP_KERNEL);
++	if (!sensors)
++		return -ENOMEM;
++	for (i = 0; i < GS201_TMU_ZONES; i++) {
++		sensors[i].handle = handle;
++		sensors[i].id = i;
++		tz = devm_thermal_of_zone_register(dev, i, &sensors[i], &gs201_thermal_ops);
++		if (IS_ERR(tz)) {
++			ret = PTR_ERR(tz);
++			if (ret == -ENODEV)
++				continue;
++			return dev_err_probe(dev, ret, "Cannot register sensor %d\n", i);
++		}
++	}
++	dev_info(dev, "ACPM temperature sensors registered; firmware configuration retained\n");
++	return 0;
++}
++
++static const struct of_device_id gs201_thermal_match[] = {
++	{ .compatible = "google,gs201-acpm-thermal" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, gs201_thermal_match);
++
++static struct platform_driver gs201_thermal_driver = {
++	.probe = gs201_thermal_probe,
++	.driver = {
++		.name = "gs201-acpm-thermal",
++		.of_match_table = gs201_thermal_match,
++	},
++};
++module_platform_driver(gs201_thermal_driver);
++MODULE_DESCRIPTION("GS201 ACPM temperature sensor driver");
++MODULE_LICENSE("GPL");
+diff --git c/include/dt-bindings/clock/google,gs201.h i/include/dt-bindings/clock/google,gs201.h
+new file mode 100644
+index 000000000..237a0d6ee
+--- /dev/null
++++ i/include/dt-bindings/clock/google,gs201.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
++#ifndef _DT_BINDINGS_CLOCK_GOOGLE_GS201_H
++#define _DT_BINDINGS_CLOCK_GOOGLE_GS201_H
++
++/* CMU_APM: initial mailbox path. IDs are local to this clock controller. */
++#define GS201_APM_PLL_DIV2	0
++#define GS201_APM_PLL_DIV4	1
++#define GS201_APM_PLL_DIV16	2
++#define GS201_APM_PLL_DIV8	3
++#define GS201_APM_FUNCSRC	4
++#define GS201_APM_FUNC		5
++#define GS201_APM_GOUT_FUNC	6
++#define GS201_APM_MAILBOX_AP	7
++#define GS201_APM_NR_CLKS	8
++
++#endif
+diff --git c/include/linux/pixel_handoff.h i/include/linux/pixel_handoff.h
+new file mode 100644
+index 000000000..4143b9641
+--- /dev/null
++++ i/include/linux/pixel_handoff.h
+@@ -0,0 +1,6 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_PIXEL_HANDOFF_H
++#define _LINUX_PIXEL_HANDOFF_H
++int pixel_earlycon_takeover(void);
++void pixel_earlycon_release(void);
++#endif
+diff --git c/init/main.c i/init/main.c
+index c05e63b8e..7ebb88fc3 100644
+--- c/init/main.c
++++ i/init/main.c
+@@ -365,17 +365,24 @@ static int __init warn_bootconfig(char *str)
+ 
+ static void __init setup_boot_config(void)
+ {
+-	const char *msg, *data;
++	const char *msg, *data, *initrd_data;
+ 	int pos, ret, offs;
+-	size_t size;
++	size_t size, initrd_size = 0;
+ 	bool from_embedded = false;
+ 
+-	/* Cut out the bootconfig data even if we have no bootconfig option */
+-	data = get_boot_config_from_initrd(&size);
+-	/* If there is no bootconfig in initrd, try embedded one. */
+-	if (!data) {
+-		data = xbc_get_embedded_bootconfig(&size);
++	/* Always strip an initrd trailer so it is not unpacked as files. */
++	initrd_data = get_boot_config_from_initrd(&initrd_size);
++	/*
++	 * Pixel vendor_boot carries androidboot.* bootconfig. Using that
++	 * instead of the embed would drop kernel { rdinit = "/ourinit" }.
++	 * Vendor ramdisk also overwrites /init, so PID 1 must be rdinit.
++	 */
++	data = xbc_get_embedded_bootconfig(&size);
++	if (data) {
+ 		from_embedded = true;
++	} else {
++		data = initrd_data;
++		size = initrd_size;
+ 	}
+ 
+ 	bootconfig_found = bootconfig_cmdline_requested(boot_command_line, &offs);
+diff --git c/usr/Kconfig i/usr/Kconfig
+index 9279a2893..ae5613295 100644
+--- c/usr/Kconfig
++++ i/usr/Kconfig
+@@ -24,7 +24,7 @@ config INITRAMFS_SOURCE
+ 
+ config INITRAMFS_FORCE
+ 	bool "Ignore the initramfs passed by the bootloader"
+-	depends on CMDLINE_EXTEND || CMDLINE_FORCE
++	depends on INITRAMFS_SOURCE != ""
+ 	help
+ 	  This option causes the kernel to ignore the initramfs image
+ 	  (or initrd image) passed to it by the bootloader. This is

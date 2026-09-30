@@ -20,13 +20,15 @@ NotificationShade 1.0 NotificationShade.qml
 TouchTextField 1.0 TouchTextField.qml
 KeyboardDismiss 1.0 KeyboardDismiss.qml
 VolumeOsd 1.0 VolumeOsd.qml
+PowerMenu 1.0 PowerMenu.qml
 RotateButton 1.0 RotateButton.qml
 AmbientDisplay 1.0 AmbientDisplay.qml
 VolumeGroupSlider 1.0 VolumeGroupSlider.qml
 QuickToggle 1.0 QuickToggle.qml
-StatsStatus 1.0 StatsStatus.qml
 NotificationGroups 1.0 NotificationGroups.qml
 NotificationToast 1.0 NotificationToast.qml
 singleton WeatherIcons 1.0 WeatherIcon.qml
 CrtPhases 1.0 CrtPhases.qml
 CrtPower 1.0 CrtPower.qml
+IncomingCall 1.0 IncomingCall.qml
+Avatar 1.0 Avatar.qml

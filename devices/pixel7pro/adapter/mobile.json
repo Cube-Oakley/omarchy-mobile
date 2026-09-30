@@ -1,7 +1,9 @@
 {
   "scale": 3,
+  "displayMode": "1440x3120@120",
   "keyboardHeight": 280,
   "keyboardLandscapeHeight": 200,
   "workspaceCount": 8,
-  "terminalShortcut": "SUPER + Q"
+  "terminalShortcut": "SUPER + Q",
+  "panelLux": 0
 }

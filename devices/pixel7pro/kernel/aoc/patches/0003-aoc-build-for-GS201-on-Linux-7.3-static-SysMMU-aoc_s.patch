@@ -1,0 +1,970 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 23:19:04 -0700
+Subject: [PATCH 3/7] aoc: build for GS201 on Linux 7.3: static SysMMU
+ (aoc_sysmmu.c) instead of samsung-iommu, no physical dma-buf heaps, vendor
+ header stand-ins, API fixes
+
+---
+ aoc/Kbuild                                    |   6 +
+ aoc/aoc.c                                     | 274 ++++--------------
+ aoc/aoc_channel_dev.c                         |  10 +-
+ aoc/aoc_char_dev.c                            |   4 +-
+ aoc/aoc_sysmmu.c                              | 216 ++++++++++++++
+ aoc/aoc_sysmmu.h                              |  18 ++
+ aoc/mailbox-wc.c                              |   7 +-
+ stubs/README                                  |   4 +
+ .../include/linux/platform_data/sscoredump.h  |  24 ++
+ stubs/include/soc/google/acpm_ipc_ctrl.h      |  20 ++
+ stubs/include/soc/google/debug-snapshot.h     |  11 +
+ stubs/include/soc/google/exynos-cpupm.h       |  11 +
+ stubs/include/soc/google/exynos-pmu-if.h      |  14 +
+ 13 files changed, 393 insertions(+), 226 deletions(-)
+ create mode 100644 aoc/Kbuild
+ create mode 100644 aoc/aoc_sysmmu.c
+ create mode 100644 aoc/aoc_sysmmu.h
+ create mode 100644 stubs/README
+ create mode 100644 stubs/include/linux/platform_data/sscoredump.h
+ create mode 100644 stubs/include/soc/google/acpm_ipc_ctrl.h
+ create mode 100644 stubs/include/soc/google/debug-snapshot.h
+ create mode 100644 stubs/include/soc/google/exynos-cpupm.h
+ create mode 100644 stubs/include/soc/google/exynos-pmu-if.h
+
+diff --git a/aoc/Kbuild b/aoc/Kbuild
+new file mode 100644
+index 0000000..f3fc63e
+--- /dev/null
++++ b/aoc/Kbuild
+@@ -0,0 +1,6 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Google's AOC driver (android-gs-pantah-5.10-android14) for the Pixel 7 Pro (GS201).
++ccflags-y += -I$(src) -I$(src)/../aoc-ipc -I$(src)/../stubs/include \
++	-I$(src)/../gsa/include -DCONFIG_SOC_GS201=1
++obj-m += aoc_core.o mailbox-wc.o aoc_char_dev.o aoc_channel_dev.o aoc_control_dev.o
++aoc_core-y := aoc.o aoc_sysmmu.o ../aoc-ipc/aoc_ipc_core.o aoc_firmware.o
+diff --git a/aoc/aoc.c b/aoc/aoc.c
+index 3a366f9..c0295be 100644
+--- a/aoc/aoc.c
++++ b/aoc/aoc.c
+@@ -43,6 +43,7 @@
+ #include <linux/timer.h>
+ #include <linux/uaccess.h>
+ #include <linux/uio.h>
++#include <linux/vmalloc.h>
+ #include <linux/wait.h>
+ #include <linux/workqueue.h>
+ #include <linux/mutex.h>
+@@ -57,9 +58,9 @@
+ #include <soc/google/exynos-itmon.h>
+ #endif
+ 
+-#include "ion_physical_heap.h"
+ 
+ #include "aoc_firmware.h"
++#include "aoc_sysmmu.h"
+ #include "aoc_ipc_core.h"
+ #include "aoc_ramdump_regions.h"
+ 
+@@ -154,7 +155,7 @@ struct aoc_prvdata {
+ 	atomic_t aoc_process_active;
+ 
+ 	struct device *dev;
+-	struct iommu_domain *domain;
++	struct aoc_sysmmu *sysmmu;
+ 	void *ipc_base;
+ 
+ 	void *sram_virt;
+@@ -234,7 +235,6 @@ static void sscd_release(struct device *dev);
+ static struct sscd_info sscd_info;
+ static struct sscd_platform_data sscd_pdata;
+ static struct platform_device sscd_dev = { .name = "aoc",
+-					   .driver_override = SSCD_NAME,
+ 					   .id = -1,
+ 					   .dev = {
+ 						   .platform_data = &sscd_pdata,
+@@ -263,9 +263,9 @@ const static struct dev_pm_ops aoc_core_pm_ops = {
+ 	.resume = aoc_core_resume,
+ };
+ 
+-static int aoc_bus_match(struct device *dev, struct device_driver *drv);
++static int aoc_bus_match(struct device *dev, const struct device_driver *drv);
+ static int aoc_bus_probe(struct device *dev);
+-static int aoc_bus_remove(struct device *dev);
++static void aoc_bus_remove(struct device *dev);
+ 
+ static struct bus_type aoc_bus_type = {
+ 	.name = "aoc",
+@@ -1559,18 +1559,8 @@ static int aoc_watchdog_restart(struct aoc_prvdata *prvdata)
+ 	 */
+ 	writel(prvdata->aoc_s2mpu_saved_value, prvdata->aoc_s2mpu_virt + AOC_S2MPU_CTRL0);
+ 
+-	/* Restore SysMMU settings by briefly setting AoC to runtime active. Since SysMMU is a
+-	 * supplier to AoC, it will be set to runtime active as a side effect. */
+-	rc = pm_runtime_set_active(prvdata->dev);
+-	if (rc < 0) {
+-		dev_err(prvdata->dev, "sysmmu restore failed: pm_runtime_resume rc = %d\n", rc);
+-		return rc;
+-	}
+-	rc = pm_runtime_set_suspended(prvdata->dev);
+-	if (rc < 0) {
+-		dev_err(prvdata->dev, "sysmmu restore failed: pm_runtime_suspend rc = %d\n", rc);
+-		return rc;
+-	}
++	/* The block reset lost the SysMMU's registers; program them again. */
++	aoc_sysmmu_enable(prvdata->sysmmu);
+ 
+ 	rc = start_firmware_load(prvdata->dev);
+ 	if (rc) {
+@@ -1797,7 +1787,7 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
+ 		dev_err(dev, "Reset request rejected, option disabled via persist options");
+ 	} else {
+ 		disable_irq_nosync(prvdata->watchdog_irq);
+-		strlcpy(prvdata->ap_reset_reason, reason_str, AP_RESET_REASON_LENGTH);
++		strscpy(prvdata->ap_reset_reason, reason_str, AP_RESET_REASON_LENGTH);
+ 		prvdata->ap_triggered_reset = true;
+ 		schedule_work(&prvdata->watchdog_work);
+ 	}
+@@ -1839,7 +1829,7 @@ static struct attribute *aoc_attrs[] = {
+ ATTRIBUTE_GROUPS(aoc);
+ 
+ static int aoc_platform_probe(struct platform_device *dev);
+-static int aoc_platform_remove(struct platform_device *dev);
++static void aoc_platform_remove(struct platform_device *dev);
+ static void aoc_platform_shutdown(struct platform_device *dev);
+ 
+ static const struct of_device_id aoc_match[] = {
+@@ -1861,9 +1851,9 @@ static struct platform_driver aoc_driver = {
+ 		},
+ };
+ 
+-static int aoc_bus_match(struct device *dev, struct device_driver *drv)
++static int aoc_bus_match(struct device *dev, const struct device_driver *drv)
+ {
+-	struct aoc_driver *driver = AOC_DRIVER(drv);
++	struct aoc_driver *driver = AOC_DRIVER((struct device_driver *)drv);
+ 
+ 	const char *device_name = dev_name(dev);
+ 	bool driver_matches_by_name = (driver->service_names != NULL);
+@@ -1903,18 +1893,15 @@ static int aoc_bus_probe(struct device *dev)
+ 	return driver->probe(the_dev);
+ }
+ 
+-static int aoc_bus_remove(struct device *dev)
++static void aoc_bus_remove(struct device *dev)
+ {
+ 	struct aoc_service_dev *aoc_dev = AOC_DEVICE(dev);
+ 	struct aoc_driver *drv = AOC_DRIVER(dev->driver);
+-	int ret = -EINVAL;
+ 
+ 	pr_notice("bus remove %s\n", dev_name(dev));
+ 
+ 	if (drv->remove)
+-		ret = drv->remove(aoc_dev);
+-
+-	return ret;
++		drv->remove(aoc_dev);
+ }
+ 
+ int aoc_driver_register(struct aoc_driver *driver)
+@@ -2047,20 +2034,6 @@ static void signal_aoc(struct mbox_chan *channel)
+ #endif
+ }
+ 
+-static int aoc_iommu_fault_handler(struct iommu_fault *fault, void *token)
+-{
+-	struct device *dev = token;
+-
+-	dev_err(dev, "aoc iommu fault: fault->type = %u\n", fault->type);
+-	dev_err(dev, "fault->event: reason = %u, flags = %#010x, addr = %#010llx\n",
+-		fault->event.reason, fault->event.flags, fault->event.addr);
+-	dev_err(dev, "fault->prm: flags = %#010x, addr = %#010llx\n",
+-		fault->prm.flags, fault->prm.addr);
+-
+-	/* Tell the IOMMU driver that the fault is non-fatal. */
+-	return -EAGAIN;
+-}
+-
+ #define SSMT_BYPASS_VALUE	0x80000000U
+ #define SSMT_NS_READ_PID(n)	(0x4000 + 4 * (n))
+ #define SSMT_NS_WRITE_PID(n)	(0x4200 + 4 * (n))
+@@ -2094,98 +2067,43 @@ static inline void aoc_configure_ssmt( struct platform_device *pdev
+     __attribute__((unused))) { }
+ #endif
+ 
++/*
++ * Pixel 7 Pro port: the GS201 windows (the same as the firmware header's
++ * IOMMU table), written into a static SysMMU table (aoc_sysmmu.c) instead of
++ * an IOMMU domain.
++ */
++static const struct {
++	u32 iova;
++	phys_addr_t pa;
++	size_t size;
++	const char *what;
++} aoc_gs201_windows[] = {
++	{ 0x9E000000, 0x18200000, SZ_2M, "mailboxes" },
++	{ 0x9E200000, 0x17C00000, SZ_1M, "gsa mailbox" },
++	{ 0x9E300000, 0x40000000, SZ_1M, "modem" },
++	{ 0x9B000000, 0x97000000, SZ_4M, "xhci_dma carveout" },
++	{ 0x9E500000, 0x11200000, SZ_1M, "usb" },
++};
++
+ static void aoc_configure_sysmmu(struct aoc_prvdata *p)
+ {
+-#ifndef AOC_JUNO
+-	struct iommu_domain *domain = p->domain;
+ 	struct device *dev = p->dev;
+-	int rc;
+-
+-	rc = iommu_register_device_fault_handler(dev, aoc_iommu_fault_handler, dev);
+-	if (rc)
+-		dev_err(dev, "iommu_register_device_fault_handler failed: rc = %d\n", rc);
++	int i;
+ 
+ 	/* Map in the AoC carveout */
+-	if (iommu_map(domain, 0x98000000, p->dram_resource.start, p->dram_size,
+-		      IOMMU_READ | IOMMU_WRITE))
++	if (aoc_sysmmu_map(p->sysmmu, 0x98000000, p->dram_resource.start, p->dram_size))
+ 		dev_err(dev, "mapping carveout failed\n");
+-
+-#if IS_ENABLED(CONFIG_SOC_GS201)
+-	/* Use a 1MB mapping instead of individual mailboxes for now */
+-	/* TODO: Turn the mailbox address ranges into dtb entries */
+-	if (iommu_map(domain, 0x9E000000, 0x18200000, SZ_2M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping mailboxes failed\n");
+-
+-	/* Map in GSA mailbox */
+-	if (iommu_map(domain, 0x9E200000, 0x17C00000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping gsa mailbox failed\n");
+-
+-	/* Map in modem registers */
+-	if (iommu_map(domain, 0x9E300000, 0x40000000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping modem failed\n");
+-
+-	/* Map in BLK_TPU */
+-	/* if (iommu_map(domain, 0x9E600000, 0x1CE00000, SZ_2M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping mailboxes failed\n"); */
+-
+-	/* Map in the xhci_dma carveout */
+-	if (iommu_map(domain, 0x9B000000, 0x97000000, SZ_4M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping xhci_dma carveout failed\n");
+-
+-	/* Map in USB for low power audio */
+-	if (iommu_map(domain, 0x9E500000, 0x11200000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping usb failed\n");
+-#else
+-	/* Map in the xhci_dma carveout */
+-	if (iommu_map(domain, 0x9B000000, 0x97000000, SZ_4M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping xhci_dma carveout failed\n");
+-
+-	/* Use a 1MB mapping instead of individual mailboxes for now */
+-	/* TODO: Turn the mailbox address ranges into dtb entries */
+-	if (iommu_map(domain, 0x9E000000, 0x17600000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping mailboxes failed\n");
+-
+-	/* Map in GSA mailbox */
+-	if (iommu_map(domain, 0x9E100000, 0x17C00000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping gsa mailbox failed\n");
+-
+-	/* Map in USB for low power audio */
+-	if (iommu_map(domain, 0x9E200000, 0x11100000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping usb failed\n");
+-
+-	/* Map in modem registers */
+-	if (iommu_map(domain, 0x9E300000, 0x40000000, SZ_1M,
+-		      IOMMU_READ | IOMMU_WRITE))
+-		dev_err(dev, "mapping modem failed\n");
+-#endif
+-#endif
++	for (i = 0; i < ARRAY_SIZE(aoc_gs201_windows); i++)
++		if (aoc_sysmmu_map(p->sysmmu, aoc_gs201_windows[i].iova, aoc_gs201_windows[i].pa,
++				   aoc_gs201_windows[i].size))
++			dev_err(dev, "mapping %s failed\n", aoc_gs201_windows[i].what);
++	aoc_sysmmu_enable(p->sysmmu);
+ }
+ 
+ static void aoc_clear_sysmmu(struct aoc_prvdata *p)
+ {
+-#ifndef AOC_JUNO
+-	struct iommu_domain *domain = p->domain;
+-
+-	/* Memory carveout */
+-	iommu_unmap(domain, 0x98000000, p->dram_size);
+-	iommu_unmap(domain, 0x9B000000, SZ_4M);
+-
+-	/* Device registers */
+-	iommu_unmap(domain, 0x9E000000, SZ_1M);
+-	iommu_unmap(domain, 0x9E100000, SZ_1M);
+-	iommu_unmap(domain, 0x9E200000, SZ_1M);
+-	iommu_unmap(domain, 0x9E300000, SZ_1M);
+-#endif
++	aoc_sysmmu_disable(p->sysmmu);
++	aoc_sysmmu_clear(p->sysmmu);
+ }
+ 
+ static void aoc_monitor_online(struct work_struct *work)
+@@ -2472,58 +2390,6 @@ void aoc_remove_map_handler(struct aoc_service_dev *dev)
+ }
+ EXPORT_SYMBOL_GPL(aoc_remove_map_handler);
+ 
+-static void aoc_pheap_alloc_cb(struct samsung_dma_buffer *buffer, void *ctx)
+-{
+-	struct device *dev = ctx;
+-	struct aoc_prvdata *prvdata = dev_get_drvdata(dev);
+-	struct sg_table *sg = &buffer->sg_table;
+-	phys_addr_t phys;
+-	size_t size;
+-
+-	if (sg->nents != 1) {
+-		dev_warn(dev, "Unable to map sg_table with %d ents\n",
+-			 sg->nents);
+-		return;
+-	}
+-
+-	phys = sg_phys(&sg->sgl[0]);
+-	phys = aoc_dram_translate_to_aoc(prvdata, phys);
+-	size = sg->sgl[0].length;
+-
+-	mutex_lock(&aoc_service_lock);
+-	if (prvdata->map_handler) {
+-		prvdata->map_handler((u64)buffer->priv, phys, size, true,
+-				     prvdata->map_handler_ctx);
+-	}
+-	mutex_unlock(&aoc_service_lock);
+-}
+-
+-static void aoc_pheap_free_cb(struct samsung_dma_buffer *buffer, void *ctx)
+-{
+-	struct device *dev = ctx;
+-	struct aoc_prvdata *prvdata = dev_get_drvdata(dev);
+-	struct sg_table *sg = &buffer->sg_table;
+-	phys_addr_t phys;
+-	size_t size;
+-
+-	if (sg->nents != 1) {
+-		dev_warn(dev, "Unable to map sg_table with %d ents\n",
+-			 sg->nents);
+-		return;
+-	}
+-
+-	phys = sg_phys(&sg->sgl[0]);
+-	phys = aoc_dram_translate_to_aoc(prvdata, phys);
+-	size = sg->sgl[0].length;
+-
+-	mutex_lock(&aoc_service_lock);
+-	if (prvdata->map_handler) {
+-		prvdata->map_handler((u64)buffer->priv, phys, size, false,
+-				     prvdata->map_handler_ctx);
+-	}
+-	mutex_unlock(&aoc_service_lock);
+-}
+-
+ #ifdef AOC_JUNO
+ static irqreturn_t aoc_int_handler(int irq, void *dev)
+ {
+@@ -2791,10 +2657,14 @@ static struct dma_heap *aoc_create_dma_buf_heap(struct aoc_prvdata *prvdata, con
+ 	size_t align = SZ_16K;
+ 	struct dma_heap *heap;
+ 
+-	heap = ion_physical_heap_create(base, size, align, name, aoc_pheap_alloc_cb,
+-					aoc_pheap_free_cb, dev);
+-	if (IS_ERR(heap))
+-		dev_err(dev, "heap \"%s\" creation failure: %ld\n", name, PTR_ERR(heap));
++	/*
++	 * Pixel 7 Pro port: the heaps (userspace allocators for the Android
++	 * HAL, on Samsung's dma-heap framework) are not created. Their bases
++	 * are still laid out and passed to the firmware.
++	 */
++	heap = NULL;
++	dev_dbg(dev, "heap %s at %pa (%zu bytes, align %zu) not created\n",
++		name, &base, size, align);
+ 
+ 	return heap;
+ }
+@@ -2838,38 +2708,14 @@ static int aoc_open(struct inode *inode, struct file *file)
+ 
+ static long aoc_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ {
+-	struct dma_buf *dmabuf;
+ 	struct aoc_prvdata *prvdata = file->private_data;
+-	struct samsung_dma_buffer *dma_heap_buf;
+ 	long ret = -EINVAL;
+ 
+ 	switch (cmd) {
+ 	case AOC_IOCTL_ION_FD_TO_HANDLE:
+-	{
+-		struct aoc_ion_handle handle;
+-
+-		BUILD_BUG_ON(sizeof(struct aoc_ion_handle) !=
+-			     _IOC_SIZE(AOC_IOCTL_ION_FD_TO_HANDLE));
+-
+-		if (copy_from_user(&handle, (struct aoc_ion_handle *)arg, _IOC_SIZE(cmd)))
+-			break;
+-
+-		dmabuf = dma_buf_get(handle.fd);
+-		if (IS_ERR(dmabuf)) {
+-			pr_err("fd is not an ion buffer\n");
+-			ret = PTR_ERR(dmabuf);
+-			break;
+-		}
+-
+-		dma_heap_buf = dmabuf->priv;
+-		handle.handle = (u64)dma_heap_buf->priv;
+-
+-		dma_buf_put(dmabuf);
+-
+-		if (!copy_to_user((struct aoc_ion_handle *)arg, &handle, _IOC_SIZE(cmd)))
+-			ret = 0;
+-	}
+-	break;
++		/* No physical heaps in this port (see aoc_create_dma_buf_heap). */
++		ret = -ENOTTY;
++		break;
+ 
+ 	case AOC_IOCTL_DISABLE_MM:
+ 	{
+@@ -2989,7 +2835,7 @@ static const struct file_operations aoc_fops = {
+ 	.owner = THIS_MODULE,
+ };
+ 
+-static char *aoc_devnode(struct device *dev, umode_t *mode)
++static char *aoc_devnode(const struct device *dev, umode_t *mode)
+ {
+ 	if (!mode || !dev)
+ 		return NULL;
+@@ -3020,7 +2866,7 @@ static int init_chardev(struct aoc_prvdata *prvdata)
+ 
+ 	aoc_major = MAJOR(prvdata->aoc_devt);
+ 
+-	prvdata->_class = class_create(THIS_MODULE, AOC_CHARDEV_NAME);
++	prvdata->_class = class_create(AOC_CHARDEV_NAME);
+ 	if (!prvdata->_class) {
+ 		pr_err("failed to create aoc_class\n");
+ 		rc = -ENXIO;
+@@ -3072,9 +2918,9 @@ static void aoc_cleanup_resources(struct platform_device *pdev)
+ 		aoc_take_offline(prvdata);
+ 		free_mailbox_channels(prvdata);
+ 
+-		if (prvdata->domain) {
++		if (prvdata->sysmmu) {
+ 			aoc_clear_sysmmu(prvdata);
+-			prvdata->domain = NULL;
++			prvdata->sysmmu = NULL;
+ 		}
+ 
+ #ifdef AOC_JUNO
+@@ -3310,6 +3156,7 @@ static int aoc_platform_probe(struct platform_device *pdev)
+ 		goto err_watchdog_sysmmu_irq;
+ 	}
+ 	prvdata->sysmmu_secure_irq = ret;
++	prvdata->sysmmu = aoc_sysmmu_create(dev, sysmmu_node);
+ 	of_node_put(sysmmu_node);
+ #endif
+ 
+@@ -3370,9 +3217,9 @@ static int aoc_platform_probe(struct platform_device *pdev)
+ 	 * latter is problematic if AoC is in monitor mode and BLK_AOC is off. */
+ 	pm_runtime_set_suspended(dev);
+ 
+-	prvdata->domain = iommu_get_domain_for_dev(dev);
+-	if (!prvdata->domain) {
+-		pr_err("failed to find iommu domain\n");
++	if (IS_ERR(prvdata->sysmmu)) {
++		pr_err("failed to set up the AOC SysMMU: %ld\n", PTR_ERR(prvdata->sysmmu));
++		prvdata->sysmmu = NULL;
+ 		rc = -EIO;
+ 		goto err_find_iommu;
+ 	}
+@@ -3486,7 +3333,7 @@ err_platform_not_null:
+ 	return rc;
+ }
+ 
+-static int aoc_platform_remove(struct platform_device *pdev)
++static void aoc_platform_remove(struct platform_device *pdev)
+ {
+ 	struct aoc_prvdata *prvdata;
+ 	int i;
+@@ -3507,7 +3354,6 @@ static int aoc_platform_remove(struct platform_device *pdev)
+ 	platform_set_drvdata(pdev, NULL);
+ 	aoc_platform_device = NULL;
+ 
+-	return 0;
+ }
+ 
+ static void sscd_release(struct device *dev)
+diff --git a/aoc/aoc_channel_dev.c b/aoc/aoc_channel_dev.c
+index 7da42a1..08027ab 100644
+--- a/aoc/aoc_channel_dev.c
++++ b/aoc/aoc_channel_dev.c
+@@ -352,7 +352,7 @@ static struct aocc_device_entry *aocc_device_entry_for_inode(struct inode *inode
+ 	return NULL;
+ }
+ 
+-static char *aocc_devnode(struct device *dev, umode_t *mode)
++static char *aocc_devnode(const struct device *dev, umode_t *mode)
+ {
+ 	if (!mode || !dev)
+ 		return NULL;
+@@ -763,9 +763,6 @@ static int aocc_probe(struct aoc_service_dev *dev)
+ {
+ 	struct chan_prvdata *prvdata;
+ 	int ret = 0;
+-	struct sched_param param = {
+-		.sched_priority = 10,
+-	};
+ 
+ 	pr_notice("probe service with name %s\n", dev_name(&dev->dev));
+ 
+@@ -780,7 +777,8 @@ static int aocc_probe(struct aoc_service_dev *dev)
+ 		prvdata->user_wakelock = wakeup_source_register(&dev->dev, dev_name(&dev->dev));
+ 		dev->prvdata = prvdata;
+ 		prvdata->demux_task =  kthread_run(&aocc_demux_kthread, dev, dev_name(&dev->dev));
+-		sched_setscheduler(prvdata->demux_task, SCHED_FIFO, &param);
++		if (!IS_ERR(prvdata->demux_task))
++			sched_set_fifo_low(prvdata->demux_task);
+ 		if (IS_ERR(prvdata->demux_task))
+ 			ret = PTR_ERR(prvdata->demux_task);
+ 	}
+@@ -896,7 +894,7 @@ static int __init aocc_init(void)
+ 
+ 	aocc_major_dev = MKDEV(aocc_major, 0);
+ 
+-	aocc_class = class_create(THIS_MODULE, AOCC_CHARDEV_NAME);
++	aocc_class = class_create(AOCC_CHARDEV_NAME);
+ 	if (!aocc_class) {
+ 		pr_err("Failed to create class\n");
+ 		goto fail;
+diff --git a/aoc/aoc_char_dev.c b/aoc/aoc_char_dev.c
+index 4649885..977cb35 100644
+--- a/aoc/aoc_char_dev.c
++++ b/aoc/aoc_char_dev.c
+@@ -92,7 +92,7 @@ static struct acd_device_entry *acd_device_entry_for_inode(struct inode *inode)
+ 	return NULL;
+ }
+ 
+-static char *acd_devnode(struct device *dev, umode_t *mode)
++static char *acd_devnode(const struct device *dev, umode_t *mode)
+ {
+ 	if (!mode || !dev)
+ 		return NULL;
+@@ -341,7 +341,7 @@ static int __init acd_init(void)
+ 
+ 	acd_major_dev = MKDEV(acd_major, 0);
+ 
+-	acd_class = class_create(THIS_MODULE, ACD_CHARDEV_NAME);
++	acd_class = class_create(ACD_CHARDEV_NAME);
+ 	if (!acd_class) {
+ 		pr_err("Failed to create class\n");
+ 		goto fail;
+diff --git a/aoc/aoc_sysmmu.c b/aoc/aoc_sysmmu.c
+new file mode 100644
+index 0000000..cc580cd
+--- /dev/null
++++ b/aoc/aoc_sysmmu.c
+@@ -0,0 +1,216 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Static SysMMU v8 setup for the AOC on the Pixel 7 Pro (GS201).
++ *
++ * The AOC's SysMMU (the "iommus" phandle of the AOC node) translates a few
++ * fixed windows of AOC-view addresses: the carveout, the xHCI pool and some
++ * device windows, the same list as the firmware header's IOMMU table. Google's
++ * driver maps them through the samsung-iommu IOMMU driver, which does not
++ * build against this kernel's IOMMU core. Every window is 1 MB aligned, so a
++ * single first-level table of 1 MB section entries is enough, programmed
++ * directly here.
++ *
++ * Register offsets, the table format and the enable sequence follow
++ * samsung-iommu (samsung-iommu.[ch] in Google's GS201 kernel): VM register
++ * set (capability VCR), VID 0, fault stall mode, the node's QoS and TLB
++ * properties. Faults on the non-secure interrupt are logged and cleared,
++ * which lets the stalled access continue as a fault.
++ */
++#include <linux/bitops.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/sizes.h>
++#include <linux/slab.h>
++
++#include "aoc_sysmmu.h"
++
++#define REG_MMU_CTRL		0x000
++#define REG_MMU_CFG		0x004
++#define REG_MMU_VERSION		0x034
++#define REG_MMU_INT_STATUS	0x060
++#define REG_MMU_INT_CLEAR	0x064
++#define REG_MMU_CAPA1_V7	0x874
++#define REG_MMU_TLB_CFG(n)	(0x2000 + (n) * 0x20 + 0x4)
++#define REG_MMU_TLB_MATCH_CFG(n) (0x2000 + (n) * 0x20 + 0x8)
++#define REG_MMU_TLB_MATCH_ID(n)	(0x2000 + (n) * 0x20 + 0x14)
++/* VM register set, VID 0 */
++#define REG_VM_CTRL		0x8000
++#define REG_VM_FLPT_BASE	0x800c
++#define REG_VM_ALL_INV		0x8010
++#define REG_VM_FAULT_VA		0x1000
++#define REG_VM_FAULT_TRANS_INFO	0x1004
++
++#define CTRL_MMU_ENABLE		BIT(0)
++#define CTRL_MMU_BLOCK		BIT(1)
++#define CTRL_VID_ENABLE		BIT(0)
++#define CTRL_FAULT_STALL_MODE	BIT(3)
++#define CFG_QOS_OVRRIDE		BIT(11)
++#define CFG_QOS(n)		(((n) & 0xfU) << 7)
++#define CAPA1_VCR_ENABLED(r)	(((r) >> 14) & 1)
++#define CAPA1_NO_BLOCK_MODE(r)	(((r) >> 15) & 1)
++#define CAPA1_NUM_TLB(r)	(((r) >> 4) & 0xff)
++#define MMU_RAW_VER(r)		(((r) >> 17) & 0x7fff)
++#define TLB_CFG_MASK(r)		((r) & (GENMASK(7, 5) | GENMASK(3, 2) | GENMASK(1, 1)))
++#define TLB_MATCH_CFG_MASK(r)	((r) & (GENMASK(31, 16) | GENMASK(9, 8)))
++
++#define SECT_ORDER		20
++#define SECT_SIZE		(1UL << SECT_ORDER)
++#define SECT_FLAG		2
++#define PG_ENT_SHIFT		4
++#define NUM_LV1ENTRIES		65536
++#define LV1TABLE_SIZE		(NUM_LV1ENTRIES * sizeof(u32))
++#define MAX_TLB_PROPS		8
++
++struct tlb_config {
++	u32 index, cfg, match_cfg, match_id;
++};
++
++struct aoc_sysmmu {
++	struct device *dev;
++	void __iomem *base;
++	u32 *table;
++	dma_addr_t table_dma;
++	bool no_block;
++	int qos;
++	u32 default_tlb;
++	struct tlb_config tlb[MAX_TLB_PROPS];
++	int ntlb;
++};
++
++static irqreturn_t aoc_sysmmu_irq(int irq, void *data)
++{
++	struct aoc_sysmmu *s = data;
++	u32 status = readl_relaxed(s->base + REG_MMU_INT_STATUS);
++
++	if (!status)
++		return IRQ_NONE;
++	dev_err_ratelimited(s->dev,
++			    "AOC SysMMU fault: status %#x va %#x info %#x\n", status,
++			    readl_relaxed(s->base + REG_VM_FAULT_VA),
++			    readl_relaxed(s->base + REG_VM_FAULT_TRANS_INFO));
++	writel(status, s->base + REG_MMU_INT_CLEAR);
++	return IRQ_HANDLED;
++}
++
++struct aoc_sysmmu *aoc_sysmmu_create(struct device *dev, struct device_node *np)
++{
++	struct aoc_sysmmu *s;
++	struct resource res;
++	u32 capa1, qos;
++	int irq, n, ret;
++
++	s = devm_kzalloc(dev, sizeof(*s), GFP_KERNEL);
++	if (!s)
++		return ERR_PTR(-ENOMEM);
++	s->dev = dev;
++	ret = of_address_to_resource(np, 0, &res);
++	if (ret)
++		return ERR_PTR(ret);
++	s->base = devm_ioremap(dev, res.start, resource_size(&res));
++	if (!s->base)
++		return ERR_PTR(-ENOMEM);
++
++	capa1 = readl_relaxed(s->base + REG_MMU_CAPA1_V7);
++	if (!CAPA1_VCR_ENABLED(capa1)) {
++		dev_err(dev, "AOC SysMMU without VM registers (capa1 %#x)\n", capa1);
++		return ERR_PTR(-ENODEV);
++	}
++	s->no_block = CAPA1_NO_BLOCK_MODE(capa1);
++	s->qos = of_property_read_u32(np, "qos", &qos) ? -1 : (int)qos;
++	if (of_property_read_u32(np, "sysmmu,default_tlb", &s->default_tlb))
++		s->default_tlb = ~0U;
++	n = of_property_count_u32_elems(np, "sysmmu,tlb_property");
++	if (n > 0) {
++		s->ntlb = min_t(int, n / 4, MAX_TLB_PROPS);
++		of_property_read_u32_array(np, "sysmmu,tlb_property", (u32 *)s->tlb, s->ntlb * 4);
++		for (n = 0; n < s->ntlb; n++)
++			if (s->tlb[n].index >= CAPA1_NUM_TLB(capa1))
++				s->tlb[n].index = ~0U;
++	}
++
++	/* A first-level table, naturally aligned by the coherent allocator. */
++	s->table = dmam_alloc_coherent(dev, LV1TABLE_SIZE, &s->table_dma, GFP_KERNEL);
++	if (!s->table)
++		return ERR_PTR(-ENOMEM);
++
++	irq = of_irq_get(np, 0);
++	if (irq > 0) {
++		ret = devm_request_irq(dev, irq, aoc_sysmmu_irq, 0, "aoc-sysmmu", s);
++		if (ret)
++			dev_warn(dev, "AOC SysMMU fault irq %d: %d\n", irq, ret);
++	}
++	dev_info(dev, "AOC SysMMU %pa version %#x, table at %pad\n", &res.start,
++		 MMU_RAW_VER(readl_relaxed(s->base + REG_MMU_VERSION)), &s->table_dma);
++	return s;
++}
++
++int aoc_sysmmu_map(struct aoc_sysmmu *s, u32 iova, phys_addr_t pa, size_t size)
++{
++	size_t off;
++
++	if (!IS_ALIGNED(iova | pa | size, SECT_SIZE))
++		return -EINVAL;
++	for (off = 0; off < size; off += SECT_SIZE)
++		s->table[(iova + off) >> SECT_ORDER] =
++			(u32)((pa + off) >> PG_ENT_SHIFT) | SECT_FLAG;
++	wmb();
++	return 0;
++}
++
++void aoc_sysmmu_clear(struct aoc_sysmmu *s)
++{
++	memset(s->table, 0, LV1TABLE_SIZE);
++	wmb();
++}
++
++/* __sysmmu_enable() and __sysmmu_enable_vid() for VID 0. */
++void aoc_sysmmu_enable(struct aoc_sysmmu *s)
++{
++	u32 ctrl = readl_relaxed(s->base + REG_MMU_CTRL);
++	u32 cfg;
++	int i;
++
++	if (!s->no_block)
++		writel_relaxed(ctrl | CTRL_MMU_BLOCK, s->base + REG_MMU_CTRL);
++
++	cfg = readl_relaxed(s->base + REG_MMU_CFG);
++	if (s->qos >= 0) {
++		cfg &= ~CFG_QOS(0xf);
++		cfg |= CFG_QOS_OVRRIDE | CFG_QOS((u32)s->qos);
++	}
++	if (s->default_tlb != ~0U)
++		writel_relaxed(TLB_CFG_MASK(s->default_tlb), s->base + REG_MMU_TLB_CFG(0));
++	for (i = 0; i < s->ntlb; i++) {
++		if (s->tlb[i].index == ~0U)
++			continue;
++		writel_relaxed(TLB_CFG_MASK(s->tlb[i].cfg), s->base + REG_MMU_TLB_CFG(s->tlb[i].index));
++		writel_relaxed(TLB_MATCH_CFG_MASK(s->tlb[i].match_cfg),
++			       s->base + REG_MMU_TLB_MATCH_CFG(s->tlb[i].index));
++		writel_relaxed(s->tlb[i].match_id, s->base + REG_MMU_TLB_MATCH_ID(s->tlb[i].index));
++	}
++	writel_relaxed(cfg, s->base + REG_MMU_CFG);
++
++	writel_relaxed((u32)(s->table_dma / SZ_4K), s->base + REG_VM_FLPT_BASE);
++	writel(1, s->base + REG_VM_ALL_INV);
++	writel(readl_relaxed(s->base + REG_VM_CTRL) | CTRL_FAULT_STALL_MODE | CTRL_VID_ENABLE,
++	       s->base + REG_VM_CTRL);
++
++	writel(ctrl | CTRL_MMU_ENABLE, s->base + REG_MMU_CTRL);
++}
++
++/* __sysmmu_disable() */
++void aoc_sysmmu_disable(struct aoc_sysmmu *s)
++{
++	u32 ctrl;
++
++	if (s->no_block) {
++		writel(1, s->base + REG_VM_ALL_INV);
++		return;
++	}
++	ctrl = readl_relaxed(s->base + REG_MMU_CTRL) & ~CTRL_MMU_ENABLE;
++	writel(ctrl | CTRL_MMU_BLOCK, s->base + REG_MMU_CTRL);
++}
+diff --git a/aoc/aoc_sysmmu.h b/aoc/aoc_sysmmu.h
+new file mode 100644
+index 0000000..e2e993f
+--- /dev/null
++++ b/aoc/aoc_sysmmu.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Static SysMMU v8 setup for the AOC (see aoc_sysmmu.c). */
++#ifndef _AOC_SYSMMU_H
++#define _AOC_SYSMMU_H
++
++#include <linux/device.h>
++#include <linux/of.h>
++#include <linux/types.h>
++
++struct aoc_sysmmu;
++
++struct aoc_sysmmu *aoc_sysmmu_create(struct device *dev, struct device_node *np);
++int aoc_sysmmu_map(struct aoc_sysmmu *s, u32 iova, phys_addr_t pa, size_t size);
++void aoc_sysmmu_clear(struct aoc_sysmmu *s);
++void aoc_sysmmu_enable(struct aoc_sysmmu *s);
++void aoc_sysmmu_disable(struct aoc_sysmmu *s);
++
++#endif
+diff --git a/aoc/mailbox-wc.c b/aoc/mailbox-wc.c
+index 5c17a64..bfda0ce 100644
+--- a/aoc/mailbox-wc.c
++++ b/aoc/mailbox-wc.c
+@@ -39,7 +39,7 @@
+ #define DT_NON_WAKE_CHANNEL_KEY "wc-mbox-non-wake-channels"
+ 
+ static int wc_mbox_probe(struct platform_device *dev);
+-static int wc_mbox_remove(struct platform_device *dev);
++static void wc_mbox_remove(struct platform_device *dev);
+ static int wc_mbox_suspend(struct platform_device *dev, pm_message_t state);
+ static int wc_mbox_resume(struct platform_device *dev);
+ 
+@@ -369,13 +369,13 @@ static int wc_mbox_probe(struct platform_device *pdev)
+ 	return 0;
+ }
+ 
+-static int wc_mbox_remove(struct platform_device *pdev)
++static void wc_mbox_remove(struct platform_device *pdev)
+ {
+ 	struct wc_mbox_prvdata *prvdata = platform_get_drvdata(pdev);
+ 	struct device *dev = &(pdev->dev);
+ 
+ 	if (!prvdata)
+-		return -EINVAL;
++		return;
+ 
+ 	dev_dbg(dev, "removing mailbox\n");
+ 
+@@ -385,7 +385,6 @@ static int wc_mbox_remove(struct platform_device *pdev)
+ 
+ 	devm_iounmap(dev, prvdata->base);
+ 
+-	return 0;
+ }
+ 
+ /* Module functions */
+diff --git a/stubs/README b/stubs/README
+new file mode 100644
+index 0000000..b6446fc
+--- /dev/null
++++ b/stubs/README
+@@ -0,0 +1,4 @@
++Minimal stand-ins for Google vendor headers used by the AOC driver, written for
++the Pixel 7 Pro port. Each provides only what aoc.c uses, as a safe no-op:
++no coredump provider, no ACPM reset channel, no SICD veto (the kernel does not
++enter SICD), and PMU reads that fail instead of touching hardware.
+diff --git a/stubs/include/linux/platform_data/sscoredump.h b/stubs/include/linux/platform_data/sscoredump.h
+new file mode 100644
+index 0000000..19e2973
+--- /dev/null
++++ b/stubs/include/linux/platform_data/sscoredump.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Stand-in: no subsystem coredump provider; sscd_report stays NULL. */
++#ifndef _PIXEL_STUB_SSCOREDUMP_H
++#define _PIXEL_STUB_SSCOREDUMP_H
++#include <linux/platform_device.h>
++#include <linux/types.h>
++
++#define SSCD_NAME		"sscoredump"
++#define SSCD_FLAGS_ELFARM32HDR	0x0001
++#define SSCD_FLAGS_ELFARM64HDR	0x0002
++
++struct sscd_segment {
++	void *addr;
++	u64 size;
++	u64 flags;
++	void *paddr;
++	void *vaddr;
++};
++
++struct sscd_platform_data {
++	int (*sscd_report)(struct platform_device *pdev, struct sscd_segment *segs,
++			   u16 nsegs, u64 flags, const char *crash_info);
++};
++#endif
+diff --git a/stubs/include/soc/google/acpm_ipc_ctrl.h b/stubs/include/soc/google/acpm_ipc_ctrl.h
+new file mode 100644
+index 0000000..03849ae
+--- /dev/null
++++ b/stubs/include/soc/google/acpm_ipc_ctrl.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Stand-in: no ACPM channel for the AOC reset callback (aoc.c treats this as non-fatal). */
++#ifndef _PIXEL_STUB_ACPM_IPC_CTRL_H
++#define _PIXEL_STUB_ACPM_IPC_CTRL_H
++#include <linux/errno.h>
++#include <linux/of.h>
++
++typedef void (*ipc_callback)(unsigned int *cmd, unsigned int size);
++
++static inline int acpm_ipc_request_channel(struct device_node *np, ipc_callback handler,
++					   unsigned int *id, unsigned int *size)
++{
++	return -ENODEV;
++}
++
++static inline int acpm_ipc_release_channel(struct device_node *np, unsigned int channel_id)
++{
++	return 0;
++}
++#endif
+diff --git a/stubs/include/soc/google/debug-snapshot.h b/stubs/include/soc/google/debug-snapshot.h
+new file mode 100644
+index 0000000..13f2da0
+--- /dev/null
++++ b/stubs/include/soc/google/debug-snapshot.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Stand-in: no debug-snapshot; an emergency reboot request is only logged. */
++#ifndef _PIXEL_STUB_DEBUG_SNAPSHOT_H
++#define _PIXEL_STUB_DEBUG_SNAPSHOT_H
++#include <linux/printk.h>
++
++static inline void dbg_snapshot_emergency_reboot(const char *str)
++{
++	pr_emerg("aoc: emergency reboot requested (%s); not rebooting\n", str);
++}
++#endif
+diff --git a/stubs/include/soc/google/exynos-cpupm.h b/stubs/include/soc/google/exynos-cpupm.h
+new file mode 100644
+index 0000000..66225ec
+--- /dev/null
++++ b/stubs/include/soc/google/exynos-cpupm.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Stand-in: this kernel never enters SICD, so there is nothing to veto. */
++#ifndef _PIXEL_STUB_EXYNOS_CPUPM_H
++#define _PIXEL_STUB_EXYNOS_CPUPM_H
++
++#define POWERMODE_TYPE_CLUSTER	0
++#define POWERMODE_TYPE_SYSTEM	1
++
++static inline void disable_power_mode(int cpu, int type) { }
++static inline void enable_power_mode(int cpu, int type) { }
++#endif
+diff --git a/stubs/include/soc/google/exynos-pmu-if.h b/stubs/include/soc/google/exynos-pmu-if.h
+new file mode 100644
+index 0000000..1237910
+--- /dev/null
++++ b/stubs/include/soc/google/exynos-pmu-if.h
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Stand-in: aoc.c reads PMU custom in/out registers only for diagnostics
++ * after a reset timeout; report them as unavailable rather than touch the PMU.
++ */
++#ifndef _PIXEL_STUB_EXYNOS_PMU_IF_H
++#define _PIXEL_STUB_EXYNOS_PMU_IF_H
++#include <linux/errno.h>
++
++static inline int exynos_pmu_read(unsigned int offset, unsigned int *val)
++{
++	*val = 0;
++	return -ENODEV;
++}
++#endif

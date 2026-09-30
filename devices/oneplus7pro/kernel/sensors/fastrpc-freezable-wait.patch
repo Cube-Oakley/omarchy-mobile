@@ -1,0 +1,29 @@
+misc: fastrpc: let the freezer park a waiting invoke
+
+An invoke interrupted by the freezer returns -ERESTARTSYS and is restarted
+after thaw as a new message. hexagonrpcd's listener is always blocked in
+one, so every system suspend sent the sensor DSP a second copy of its
+pending call, and the DSP crashed 6 ms after tasks restarted
+(EX:sensor_process:0x1:frpc_dsp:0x6c). With TASK_FREEZABLE the freezer
+freezes the sleeping caller in place, and a completion that arrives
+meanwhile is kept for the thaw.
+
+--- a/drivers/misc/fastrpc.c
++++ b/drivers/misc/fastrpc.c
+@@ -1182,7 +1182,15 @@
+ 		if (!wait_for_completion_timeout(&ctx->work, 10 * HZ))
+ 			err = -ETIMEDOUT;
+ 	} else {
+-		err = wait_for_completion_interruptible(&ctx->work);
++		/*
++		 * Freezable, so that system suspend parks a waiting caller
++		 * instead of interrupting it. An interrupted invoke is
++		 * restarted as a second message for the same call, and the
++		 * sensor DSP crashes on it (EX:sensor_process:frpc_dsp) as
++		 * soon as tasks are thawed.
++		 */
++		err = wait_for_completion_state(&ctx->work,
++						TASK_INTERRUPTIBLE | TASK_FREEZABLE);
+ 	}
+ 
+ 	if (err)

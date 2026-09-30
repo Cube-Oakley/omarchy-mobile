@@ -12,6 +12,7 @@ AppearancePage 1.0 AppearancePage.qml
 ThemeInstaller 1.0 ThemeInstaller.qml
 CoverFlowPicker 1.0 CoverFlowPicker.qml
 MenuOverlay 1.0 MenuOverlay.qml
+ChoicePicker 1.0 ChoicePicker.qml
 ImagePreloader 1.0 ImagePreloader.qml
 SpeedGauge 1.0 SpeedGauge.qml
 SpeedTestView 1.0 SpeedTestView.qml
@@ -22,3 +23,5 @@ BluetoothPage 1.0 BluetoothPage.qml
 DisplayPage 1.0 DisplayPage.qml
 StoragePage 1.0 StoragePage.qml
 AppsPage 1.0 AppsPage.qml
+WeatherPage 1.0 WeatherPage.qml
+Avatar 1.0 Avatar.qml

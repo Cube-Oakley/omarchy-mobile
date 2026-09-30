@@ -1,0 +1,60 @@
+--- a/drivers/firmware/samsung/exynos-acpm.c
++++ b/drivers/firmware/samsung/exynos-acpm.c
+@@ -195,6 +195,45 @@
+ 
+ #define client_to_acpm_chan(c) container_of(c, struct acpm_chan, cl)
+ #define handle_to_acpm_info(h) container_of(h, struct acpm_info, handle)
++
++/**
++ * exynos_acpm_is_idle() - Nonblocking snapshot for last-CPU system idle.
++ * @handle: Reference to the initialized controller.
++ *
++ * The caller must have interrupts disabled and ensure every other CPU is
++ * idle, so no new host transfer can race this snapshot. Firmware can still
++ * advance its queue pointers. Never wait for a response here: its host task
++ * may itself be suspended. Unknown channel-0 layout prevents system idle.
++ */
++bool exynos_acpm_is_idle(struct acpm_handle *handle)
++{
++	struct acpm_info *acpm = handle_to_acpm_info(handle);
++	unsigned int i;
++
++	if (!irqs_disabled() || !acpm->num_chans || !acpm->chans[0].chan)
++		return false;
++	for (i = 0; i < acpm->num_chans; i++) {
++		struct acpm_chan *achan = &acpm->chans[i];
++		u32 tx_front, rx_front;
++
++		if (!achan->chan)
++			continue;
++		if (mutex_is_locked(&achan->tx_lock) || mutex_is_locked(&achan->rx_lock) ||
++		    !bitmap_empty(achan->bitmap_seqnum, ACPM_SEQNUM_MAX - 1))
++			return false;
++		tx_front = readl(achan->tx.front);
++		rx_front = readl(achan->rx.front);
++		if (tx_front != readl(achan->tx.rear) || rx_front != readl(achan->rx.rear))
++			return false;
++		/* Google's is_acpm_ipc_flushed() additionally pairs the front
++		 * indices of channel 0's request and response rings.
++		 */
++		if (!i && tx_front != rx_front)
++			return false;
++	}
++	return true;
++}
++EXPORT_SYMBOL_GPL(exynos_acpm_is_idle);
+ 
+ /**
+  * acpm_get_saved_rx() - get the response if it was already saved.
+--- a/include/linux/firmware/samsung/exynos-acpm-protocol.h
++++ b/include/linux/firmware/samsung/exynos-acpm-protocol.h
+@@ -67,6 +67,9 @@
+ 
+ struct device;
+ 
++/* Last-CPU idle only: IRQs disabled, every other host CPU idle. */
++bool exynos_acpm_is_idle(struct acpm_handle *handle);
++
+ struct acpm_handle *devm_acpm_get_by_node(struct device *dev,
+ 					  struct device_node *np);
+ struct acpm_handle *devm_acpm_get_by_phandle(struct device *dev);

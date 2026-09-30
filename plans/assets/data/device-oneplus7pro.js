@@ -30,8 +30,9 @@ HW.oneplus7pro = {
               + "Each boot marks slot B successful, so ABL's retry counter no longer runs out into the "
               + "\"boot image destroyed\" screen.", ref: "devices/oneplus7pro/docs/microphone-20260922.md" },
         { n: "Hexagon ADSP (audio DSP)", s: "ok",
-          note: "ADSP firmware loads and runs; it carries the audio path today.",
-          ref: "devices/oneplus7pro/docs/audio-bringup-20260918.md" },
+          note: "ADSP firmware loads and runs; it carries the audio path and, through vendored q6voice modules, "
+              + "the VoLTE call vocoder.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "Hexagon NPU (cDSP / AI engine)", s: "no",
           note: "Not mainlined for SM8150. Anything we run locally today has to fall back to CPU or GPU.",
           ref: "devices/oneplus7pro/docs/pathway.md" },
@@ -43,9 +44,10 @@ HW.oneplus7pro = {
               + "iio-sensor-proxy on top.",
           ref: "devices/oneplus7pro/docs/sensors-20260924.md" },
         { n: "s2idle suspend / resume", s: "partial", cap: "suspend",
-          note: "Repeated suspend cycles pass with touch, Wi-Fi, modem and charging recovering cleanly. The SoC "
-              + "never reaches its deepest states (AOSD/CXSD/DDR residency stays zero).",
-          ref: "devices/oneplus7pro/docs/deeper-suspend-20260917.md" },
+          note: "Sleeps 10 s after the screen goes dark, off the charger; calls and texts wake it, and the modem "
+              + "and sensor DSP now survive (MSS vote and FastRPC fixes). The SoC never reaches its deepest "
+              + "states, and the drain is not measured yet.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Deepest idle power states", s: "no", cap: "deepsleep",
           note: "CX/MX/MMCX/MSS sleep votes still held; one isolated MSS release wedged modem resume.",
           ref: "devices/oneplus7pro/docs/mss-handoff-test-20260917.md" },
@@ -68,12 +70,15 @@ HW.oneplus7pro = {
         { n: "Battery gauge (TI bq27541)", s: "ok", cap: "battery",
           note: "Standard power_supply class: capacity, voltage, current and temperature, live while unplugged.",
           ref: "devices/oneplus7pro/docs/battery-gauge-20260917.md" },
-        { n: "Charging (PM8150 charger)", s: "ok", cap: "charging",
-          note: "Persistent conservative charging at 500 mA / 4.20 V, confirmed by independent PMIC readback.",
-          ref: "devices/oneplus7pro/docs/charging-20260917.md" },
+        { n: "Charging (PM8150B charger)", s: "ok", cap: "charging",
+          note: "Charges to full on the stock profile (4.39 V float, up to 3 A by temperature band, input by charger "
+              + "type) with latching safety stops; Settings can hold it at 80 %, seen holding and resuming. "
+              + "Charging stops while asleep, so it never sleeps on the charger.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Warp Charge fast charging", s: "no", cap: "fastcharge",
-          note: "Needs real charger/cable negotiation, temperature limits, taper and fault handling — raising "
-              + "the current limits is not fast charging.", ref: "docs/mobile-roadmap.md" },
+          note: "The stock profile takes about 1.1 A from a 2 A wall charger; the Warp MCU is not spoken to. Real "
+              + "fast charging needs its negotiation, temperature limits, taper and fault handling.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "True power-off / shutdown", s: "no", cap: "poweroff",
           note: "Power-off attempts currently reboot the phone instead of staying off.",
           ref: "devices/oneplus7pro/docs/shutdown-20260917.md" },
@@ -137,9 +142,9 @@ HW.oneplus7pro = {
               + "1 kHz tone reaches about 5% distortion, behind a leveler and limiter. No speaker protection "
               + "yet.", ref: "devices/oneplus7pro/docs/speakers-20260922.md" },
         { n: "Earpiece receiver (TFA9874, upper amp)", s: "partial", cap: "earpiece",
-          note: "Left channel; heard at the ear and measured by the top mic. Distorts far earlier than the "
-              + "bottom speaker, so media reaches it capped at -42 dBFS. A hard prerequisite for calls.",
-          ref: "devices/oneplus7pro/docs/speakers-20260922.md" },
+          note: "Carries VoLTE calls in its stock receiver profile, with audio both ways user-confirmed. Media "
+              + "still reaches it capped at -42 dBFS, where it distorts, and call volume is not on the keys yet.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "Stereo playback (speaker + receiver together)", s: "partial",
           note: "Both play a mono mix, verified at the mic; the earpiece is about 17 dB quieter at its cap, "
               + "so true stereo is not used.", ref: "devices/oneplus7pro/docs/speakers-20260922.md" },
@@ -151,17 +156,18 @@ HW.oneplus7pro = {
           note: "No OTP/MTP programming or calibration run; the per-speaker output cap stays until this exists.",
           ref: "devices/oneplus7pro/docs/audio-bringup-20260918.md" },
         { n: "Primary microphone", s: "partial", cap: "mic",
-          note: "AMIC4, the stock handset mic, records through PipeWire as Internal microphone and starts with "
-              + "the audio stack after reboot. Recordings of music played nearby were confirmed clean by ear. "
-              + "Not yet tested across suspend; gain is a fixed conservative default.",
-          ref: "devices/oneplus7pro/docs/microphone-20260922.md" },
+          note: "AMIC4, the stock handset mic, records through PipeWire as Internal microphone, confirmed clean "
+              + "by ear, and carries the call uplink (TX topology NONE: the uncalibrated noise suppression was "
+              + "silent). Gain is a fixed conservative default.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "Secondary / noise-cancelling microphones", s: "partial",
           note: "AMIC1 and AMIC3 also respond to room sound (+27 and +36 dB over quiet) and sound clean. AMIC3 is "
               + "the top mic; AMIC1 is probably near the rear cameras. Not exposed to applications yet.",
           ref: "devices/oneplus7pro/docs/microphone-20260922.md" },
-        { n: "Speakerphone audio path", s: "no",
-          note: "Route switching between receiver, speaker and headset is the part a call actually depends on.",
-          ref: "docs/mobile-roadmap.md" },
+        { n: "Speakerphone audio path", s: "ok",
+          note: "Speaker in a call switches the lower amp on live (a new Loudspeaker Switch), user-confirmed in "
+              + "a VoLTE call; the earpiece path keeps it off. No wired or Bluetooth headset route in calls.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "Audio during suspend", s: "no", note: "Audio suspend has not been tested.",
           ref: "devices/oneplus7pro/docs/audio-bringup-20260918.md" },
         { n: "USB-C headset / adapter audio", s: "no", cap: "headset",
@@ -174,30 +180,36 @@ HW.oneplus7pro = {
       title: "Radio & connectivity",
       items: [
         { n: "Wi-Fi (WCN3990 / ath10k_snoc)", s: "ok", cap: "wifi",
-          note: "NetworkManager connect, saved-network reconnect, internet access, and recovery after suspend.",
+          note: "NetworkManager connect, saved-network reconnect, internet access, and reconnection after sleep. "
+              + "Wake-on-Wi-Fi is not set up.",
           ref: "devices/oneplus7pro/docs/wifi-20260917.md" },
         { n: "Bluetooth", s: "partial", cap: "bluetooth",
           note: "WCN3990 loads its stock firmware, scans and pairs; OnePlus Bullets headphones play A2DP "
               + "(aptX HD) and Wi-Fi keeps working. Starts after the desktop (just enabled, not yet rebooted). Calls (HFP), PIN "
               + "keyboards and waking from suspend are untested.", ref: "devices/oneplus7pro/docs/bluetooth-20260922.md" },
-        { n: "Cellular modem subsystem (QMI / QRTR)", s: "partial",
-          note: "QMP attached, handover issued, QMI/QRTR queries answered, no daemon crashes. A running "
-              + "remoteproc is not a usable modem.", ref: "devices/oneplus7pro/docs/modem-foundations-20260917.md" },
-        { n: "SIM detection & SIM PIN handling", s: "no",
-          note: "Both reported slots are absent; no SIM tested under Linux. Verify physical tray capacity and slot mapping before provisioning.",
-          ref: "devices/oneplus7pro/docs/cellular-plan-20260922.md" },
+        { n: "Cellular modem subsystem (QMI / QRTR)", s: "ok",
+          note: "Registers on LTE at boot and stays up through sleep: the QLink assertion was the AP holding the "
+              + "modem rail at its top corner, which mss_vote.ko releases and re-sends after every resume.",
+          ref: "devices/oneplus7pro/docs/cellular-sim-20260926.md" },
+        { n: "SIM detection & SIM PIN handling", s: "partial",
+          note: "A physical nano-SIM reads (USIM and ISIM) and the modem picks its carrier profile itself. The "
+              + "card has no PIN, so PIN entry is untested.",
+          ref: "devices/oneplus7pro/docs/cellular-sim-20260926.md" },
         { n: "RF front end, EFS & calibration (IMEI)", s: "partial",
-          note: "EFS LUN backed up for recovery and never flashed from another device. IMEI validity and "
-              + "antenna behaviour under Linux are unverified.", ref: "devices/oneplus7pro/docs/backup.md" },
-        { n: "Cellular data (LTE)", s: "partial", cap: "cellular",
-          note: "IPA v4.1 binds on kernel #189 and the modem data interface appears; an rmnet link can be "
-              + "created. No SIM yet, so no registration or bearer.",
-          ref: "docs/mobile-roadmap.md" },
-        { n: "SMS / texting", s: "no", cap: "sms", note: "No tested cellular service yet, so no end-to-end SMS.",
-          ref: "devices/oneplus7pro/README.md" },
-        { n: "Voice calls / IMS / VoLTE", s: "no", cap: "calls",
-          note: "Needs modem registration plus working speaker, earpiece and microphone first.",
-          ref: "docs/mobile-roadmap.md" },
+          note: "EFS backed up and never flashed from another device. The network accepts the phone for data, "
+              + "SMS and calls; antenna performance under Linux is unmeasured.",
+          ref: "devices/oneplus7pro/docs/backup.md" },
+        { n: "Cellular data (LTE)", s: "ok", cap: "cellular",
+          note: "ModemManager and NetworkManager bring up mobile data at boot over IPA (IPv4 and IPv6 HTTPS 200), "
+              + "as a fallback route behind Wi-Fi. Needed IPA before the modem, DPM, QMAPv4 and an ipv6 module.",
+          ref: "devices/oneplus7pro/docs/cellular-sim-20260926.md" },
+        { n: "SMS / texting", s: "ok", cap: "sms",
+          note: "Both ways over IMS in the Messages app, and a text wakes the phone from sleep. MMS is not "
+              + "supported.", ref: "devices/oneplus7pro/docs/calling-20260927.md" },
+        { n: "Voice calls / IMS / VoLTE", s: "ok", cap: "calls",
+          note: "An AP-side IMS DCM server lets the modem register IMS; VoLTE calls carry audio both ways past "
+              + "30 s with speaker and mute, user-confirmed, and an incoming call wakes the phone from sleep.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "Wi-Fi calling", s: "no", note: "Depends on IMS plus stable call audio; not started." },
         { n: "GPS / GNSS", s: "no", cap: "gps", note: "Not brought up.", ref: "docs/mobile-roadmap.md" },
         { n: "NFC", s: "no", cap: "nfc", note: "Not brought up." }
@@ -229,11 +241,10 @@ HW.oneplus7pro = {
           note: "STK2232 under the display, through the sensor DSP and iio-sensor-proxy: drives automatic "
               + "brightness, which discounts the panel's own light (about 190 lux at full brightness).",
           ref: "devices/oneplus7pro/docs/sensors-20260924.md" },
-        { n: "Proximity sensor (ear-away / call detection)", s: "partial", cap: "proximity",
-          note: "The STK2232 under the display, factory-calibrated: with its near threshold lowered from the "
-              + "default 250 to 100 (a registry patch; the panel absorbs most of the infrared), a palm reads near "
-              + "and far, and iio-sensor-proxy offers it. Thresholds still to tune with a face in a call.",
-          ref: "devices/oneplus7pro/docs/sensors-20260924.md" },
+        { n: "Proximity sensor (ear-away / call detection)", s: "ok", cap: "proximity",
+          note: "The STK2232 under the display, with its near threshold lowered for the panel in front of it: it "
+              + "blanked the screen at the ear during a VoLTE call and swallowed touches, user-confirmed.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "Hall sensor (pop-up camera endstops)", s: "no",
           note: "Bounds the pop-up selfie mechanism; nothing enabled yet.", ref: "devices/oneplus7pro/docs/pathway.md" },
         { n: "In-display optical fingerprint reader", s: "no", cap: "fingerprint",
@@ -333,7 +344,8 @@ HW.oneplus7pro = {
       title: "USB & expansion",
       items: [
         { n: "USB-C peripheral networking (NCM + ACM)", s: "ok", cap: "usbnet",
-          note: "Gadget Ethernet plus pinned-key SSH for development, with reconnect support.",
+          note: "Gadget Ethernet plus pinned-key SSH, with reconnect support. After a forced reset USB does not "
+              + "attach (cause open), so SSH falls back to Wi-Fi.",
           ref: "devices/oneplus7pro/docs/usb-networking-20260917.md" },
         { n: "USB host mode (keyboard, mouse, Ethernet)", s: "no", cap: "usbhost",
           note: "Role switching, PHY and kernel support unverified. Currently high-speed peripheral only.",

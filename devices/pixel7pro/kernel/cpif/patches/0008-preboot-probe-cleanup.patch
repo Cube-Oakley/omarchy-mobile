@@ -1,0 +1,936 @@
+--- a/cpif/bootdump_io_device.c
++++ b/cpif/bootdump_io_device.c
+@@ -31,6 +31,9 @@
+ 	struct modem_shared *msd = iod->msd;
+ 	struct link_device *ld;
+ 	int ret;
++
++	if (!READ_ONCE(iod->mc->pixel_probe_ready))
++		return -ENODEV;
+ 
+ 	filp->private_data = (void *)iod;
+ 
+--- a/cpif/ipc_io_device.c
++++ b/cpif/ipc_io_device.c
+@@ -32,6 +32,9 @@
+ 	struct link_device *ld;
+ 	int ret;
+ 
++	if (!READ_ONCE(iod->mc->pixel_probe_ready))
++		return -ENODEV;
++
+ 	filp->private_data = (void *)iod;
+ 
+ 	atomic_inc(&iod->opened);
+--- a/cpif/link_device.c
++++ b/cpif/link_device.c
+@@ -3747,7 +3747,9 @@
+ 	}
+ 
+ 	ld->link_type = link_type;
+-	create_legacy_link_device(mld);
++	err = create_legacy_link_device(mld);
++	if (err)
++		goto error;
+ 
+ 	if (ld->sbd_ipc) {
+ 		hrtimer_setup(&mld->sbd_tx_timer, sbd_tx_timer_func,
+@@ -4020,6 +4022,7 @@
+ 		return NULL;
+ 	}
+ 
++	mld->link_dev.mdm_data = modem;
+ 	/*
+ 	 * Retrieve modem-specific attributes value
+ 	 */
+@@ -4222,33 +4225,65 @@
+ 	}
+ #endif
+ 
+-	/* sysfs */
+-	if (sysfs_create_group(&pdev->dev.kobj, &link_device_group))
+-		mif_err("failed to create sysfs node related link_device\n");
+-
+-	if (sysfs_create_group(&pdev->dev.kobj, &napi_group))
+-		mif_err("failed to create sysfs node related napi\n");
+-
+-#if defined(CPIF_WAKEPKT_SET_MARK)
+-	if (sysfs_create_group(&pdev->dev.kobj, &wakeup_group))
+-		mif_err("failed to create sysfs node for wakeup events\n");
+-#endif
+-
+-#if IS_ENABLED(CONFIG_CP_PKTPROC_CLAT)
+-	if (sysfs_create_group(&pdev->dev.kobj, &hw_clat_group))
+-		mif_err("failed to create sysfs node related hw clat\n");
+-#endif
+ 
+ 	mif_info("---\n");
+ 	return ld;
+ 
+ error:
++	pixel_link_destroy(&mld->link_dev);
++	mif_err("xxx\n");
++	return NULL;
++}
++
++void pixel_link_destroy(struct link_device *ld)
++{
++	struct mem_link_device *mld = to_mem_link_device(ld);
++	struct modem_data *modem = ld->mdm_data;
++
++	/* Only pre-boot probe failure. No PCI device/MSI or running CP exists. */
++	pixel_pktproc_ul_destroy(mld);
++	pixel_pktproc_destroy(mld);
++	if (ld->rx_wq)
++		destroy_workqueue(ld->rx_wq);
+ 	if (mld->dummy_net) {
+ 		napi_disable(&mld->mld_napi);
+ 		netif_napi_del(&mld->mld_napi);
+ 		free_netdev(mld->dummy_net);
+ 	}
++	pixel_legacy_destroy(mld);
++	if (mld->base) {
++		if (modem->legacy_raw_rx_buffer_cached)
++			vunmap(mld->base);
++		else
++			cp_shmem_release_region(modem->cp_num, SHMEM_IPC);
++	}
++#if IS_ENABLED(CONFIG_MODEM_IF_LEGACY_QOS)
++	if (mld->hiprio_base)
++		vunmap(mld->hiprio_base);
++#endif
++	modem->mld = NULL;
+ 	kfree(mld);
+-	mif_err("xxx\n");
+-	return NULL;
+-}
++}
++
++void pixel_link_publish(struct platform_device *pdev)
++{
++	pixel_legacy_publish(&pdev->dev);
++	pixel_pktproc_publish(&pdev->dev);
++	pixel_pktproc_ul_publish(&pdev->dev);
++	/* sysfs */
++	if (sysfs_create_group(&pdev->dev.kobj, &link_device_group))
++		mif_err("failed to create sysfs node related link_device\n");
++
++	if (sysfs_create_group(&pdev->dev.kobj, &napi_group))
++		mif_err("failed to create sysfs node related napi\n");
++
++#if defined(CPIF_WAKEPKT_SET_MARK)
++	if (sysfs_create_group(&pdev->dev.kobj, &wakeup_group))
++		mif_err("failed to create sysfs node for wakeup events\n");
++#endif
++
++#if IS_ENABLED(CONFIG_CP_PKTPROC_CLAT)
++	if (sysfs_create_group(&pdev->dev.kobj, &hw_clat_group))
++		mif_err("failed to create sysfs node related hw clat\n");
++#endif
++}
+--- a/cpif/link_device_memory.h
++++ b/cpif/link_device_memory.h
+@@ -851,3 +851,8 @@
+ #endif
+ 
+ #endif /* __MODEM_LINK_DEVICE_MEMORY_H__ */
++
++void pixel_legacy_destroy(struct mem_link_device *mld);
++void pixel_legacy_publish(struct device *dev);
++void pixel_link_destroy(struct link_device *ld);
++void pixel_link_publish(struct platform_device *pdev);
+--- a/cpif/link_device_memory_legacy.c
++++ b/cpif/link_device_memory_legacy.c
+@@ -93,7 +93,6 @@
+ 	struct legacy_link_device *bl = &mld->legacy_link_dev;
+ 	struct modem_data *modem = mld->link_dev.mdm_data;
+ 	struct link_device *ld = &mld->link_dev;
+-	int ret = 0;
+ 
+ 	bl->ld = &mld->link_dev;
+ 
+@@ -104,6 +103,8 @@
+ 	/* IPC_MAP_FMT */
+ 	bl->dev[IPC_MAP_FMT] = kzalloc(sizeof(struct legacy_ipc_device), GFP_KERNEL);
+ 	dev = bl->dev[IPC_MAP_FMT];
++	if (!dev)
++		return -ENOMEM;
+ 
+ 	dev->id = IPC_MAP_FMT;
+ 	strcpy(dev->name, "FMT");
+@@ -129,6 +130,8 @@
+ 
+ 	dev->skb_txq = kzalloc(sizeof(struct sk_buff_head), GFP_KERNEL);
+ 	dev->skb_rxq = kzalloc(sizeof(struct sk_buff_head), GFP_KERNEL);
++	if (!dev->skb_txq || !dev->skb_rxq)
++		return -ENOMEM;
+ 	skb_queue_head_init(dev->skb_txq);
+ 	skb_queue_head_init(dev->skb_rxq);
+ 
+@@ -141,6 +144,8 @@
+ 	/* IPC_MAP_HPRIO_RAW */
+ 	bl->dev[IPC_MAP_HPRIO_RAW] = kzalloc(sizeof(struct legacy_ipc_device), GFP_KERNEL);
+ 	dev = bl->dev[IPC_MAP_HPRIO_RAW];
++	if (!dev)
++		return -ENOMEM;
+ 
+ 	dev->id = IPC_MAP_HPRIO_RAW;
+ 	strcpy(dev->name, "HPRIO_RAW");
+@@ -165,6 +170,8 @@
+ 
+ 	dev->skb_txq = kzalloc(sizeof(struct sk_buff_head), GFP_KERNEL);
+ 	dev->skb_rxq = kzalloc(sizeof(struct sk_buff_head), GFP_KERNEL);
++	if (!dev->skb_txq || !dev->skb_rxq)
++		return -ENOMEM;
+ 	skb_queue_head_init(dev->skb_txq);
+ 	skb_queue_head_init(dev->skb_rxq);
+ 
+@@ -177,6 +184,8 @@
+ 	/* IPC_MAP_NORM_RAW */
+ 	bl->dev[IPC_MAP_NORM_RAW] = kzalloc(sizeof(struct legacy_ipc_device), GFP_KERNEL);
+ 	dev = bl->dev[IPC_MAP_NORM_RAW];
++	if (!dev)
++		return -ENOMEM;
+ 
+ 	dev->id = IPC_MAP_NORM_RAW;
+ 	strcpy(dev->name, "NORM_RAW");
+@@ -207,6 +216,8 @@
+ 
+ 	dev->skb_txq = kzalloc(sizeof(struct sk_buff_head), GFP_KERNEL);
+ 	dev->skb_rxq = kzalloc(sizeof(struct sk_buff_head), GFP_KERNEL);
++	if (!dev->skb_txq || !dev->skb_rxq)
++		return -ENOMEM;
+ 	skb_queue_head_init(dev->skb_txq);
+ 	skb_queue_head_init(dev->skb_rxq);
+ 
+@@ -215,12 +226,6 @@
+ 
+ 	spin_lock_init(&dev->tx_lock);
+ 
+-	/* sysfs */
+-	ret = sysfs_create_group(&ld->dev->kobj, &legacy_group);
+-	if (ret != 0) {
+-		mif_err("sysfs_create_group() error %d\n", ret);
+-		return ret;
+-	}
+ 
+ 	return 0;
+ }
+@@ -438,3 +443,25 @@
+ 	return false;
+ }
+ 
++
++/* Probe-time queues are empty: no CP interrupt or userspace open exists. */
++void pixel_legacy_destroy(struct mem_link_device *mld)
++{
++	struct legacy_link_device *bl = &mld->legacy_link_dev;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(bl->dev); i++) {
++		if (!bl->dev[i])
++			continue;
++		kfree(bl->dev[i]->skb_txq);
++		kfree(bl->dev[i]->skb_rxq);
++		kfree(bl->dev[i]);
++		bl->dev[i] = NULL;
++	}
++}
++
++void pixel_legacy_publish(struct device *dev)
++{
++	if (sysfs_create_group(&dev->kobj, &legacy_group))
++		mif_err("failed to publish legacy diagnostics\n");
++}
+--- a/cpif/link_device_memory_snapshot.c
++++ b/cpif/link_device_memory_snapshot.c
+@@ -15,10 +15,12 @@
+ 
+ int msb_init(void)
+ {
++	if (msb_kmem_cache)
++		return 0;
+ 	msb_kmem_cache = kmem_cache_create("msb_kmem_cache",
+ 					   sizeof(struct mst_buff),
+ 					   0,
+-					   (SLAB_HWCACHE_ALIGN | SLAB_PANIC),
++					   SLAB_HWCACHE_ALIGN,
+ 					   NULL);
+ 	if (!msb_kmem_cache)
+ 		return -ENOMEM;
+--- a/cpif/link_rx_pktproc.c
++++ b/cpif/link_rx_pktproc.c
+@@ -1823,6 +1823,22 @@
+ 		return ret;
+ 	}
+ 
++	if (!ppa->num_queue || ppa->num_queue > ARRAY_SIZE(ppa->q))
++		return -EINVAL;
++
++	if (!ppa->true_packet_size ||
++	    ppa->info_rgn_size < sizeof(struct pktproc_info_v2))
++		return -EINVAL;
++	if (!ppa->info_rgn_size || ppa->info_rgn_offset > memsize ||
++	    ppa->info_rgn_size > memsize - ppa->info_rgn_offset)
++		return -EINVAL;
++	if (!ppa->desc_rgn_size || ppa->desc_rgn_offset > memsize ||
++	    ppa->desc_rgn_size > memsize - ppa->desc_rgn_offset)
++		return -EINVAL;
++	if (!ppa->buff_rgn_size || ppa->buff_rgn_offset > memsize ||
++	    ppa->buff_rgn_size > memsize - ppa->buff_rgn_offset)
++		return -EINVAL;
++
+ 	if (!ppa->use_hw_iocc && ppa->info_rgn_cached) {
+ 		mif_err("cannot support sw iocc based caching on info region\n");
+ 		return -EINVAL;
+@@ -1880,6 +1896,10 @@
+ 		} else {
+ 			ppa->buff_vbase = cp_shmem_get_nc_region(ppa->buff_pbase,
+ 								 ppa->buff_rgn_size);
++		}
++		if (!ppa->buff_vbase) {
++			ret = -ENOMEM;
++			goto create_error;
+ 		}
+ 		mif_info("Total buff buffer size:0x%08x Queue:%d Size by queue:0x%08x\n",
+ 			 ppa->buff_rgn_size, ppa->num_queue, buff_size_by_q);
+@@ -2032,6 +2052,11 @@
+ 			goto create_error;
+ 		}
+ 
++		if (!q->num_desc || q->desc_size > ppa->desc_rgn_size / ppa->num_queue) {
++			ret = -EINVAL;
++			goto create_error;
++		}
++
+ 		if ((!q->manager) &&
+ 				(q->cp_desc_pbase + q->desc_size) > q->cp_buff_pbase) {
+ 			mif_err("Descriptor overflow:0x%08llx 0x%08x 0x%08llx\n",
+@@ -2109,17 +2134,21 @@
+ #endif
+ 	}
+ 
+-	/* Debug */
+-	ret = sysfs_create_group(&pdev->dev.kobj, &pktproc_group);
+-	if (ret != 0) {
+-		mif_err("sysfs_create_group() error %d\n", ret);
+-		goto create_error;
+-	}
+ 
+ 	return 0;
+ 
+ create_error:
+-	for (i = 0; i < ppa->num_queue; i++) {
++	pixel_pktproc_destroy(mld);
++	return ret;
++}
++
++/* Only before CP boot: no DMA or IRQ consumer exists yet. */
++void pixel_pktproc_destroy(struct mem_link_device *mld)
++{
++	struct pktproc_adaptor *ppa = &mld->pktproc;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ppa->q); i++) {
+ 		if (!ppa->q[i])
+ 			continue;
+ 
+@@ -2134,6 +2163,7 @@
+ 
+ 		kfree(ppa->q[i]->dma_addr);
+ 		kfree(ppa->q[i]);
++		ppa->q[i] = NULL;
+ 	}
+ 
+ 	if (!ppa->info_rgn_cached && ppa->info_vbase)
+@@ -2143,5 +2173,13 @@
+ 	if (!ppa->buff_rgn_cached && ppa->buff_vbase)
+ 		vunmap(ppa->buff_vbase);
+ 
+-	return ret;
+-}
++	ppa->info_vbase = NULL;
++	ppa->desc_vbase = NULL;
++	ppa->buff_vbase = NULL;
++}
++
++void pixel_pktproc_publish(struct device *dev)
++{
++	if (sysfs_create_group(&dev->kobj, &pktproc_group))
++		mif_err("failed to publish pktproc diagnostics\n");
++}
+--- a/cpif/link_rx_pktproc.h
++++ b/cpif/link_rx_pktproc.h
+@@ -357,3 +357,7 @@
+ #endif
+ 
+ #endif /* __LINK_RX_PKTPROC_H__ */
++
++/* Pixel PCIe probe-only cleanup, never runtime teardown. */
++void pixel_pktproc_destroy(struct mem_link_device *mld);
++void pixel_pktproc_publish(struct device *dev);
+--- a/cpif/link_tx_pktproc.c
++++ b/cpif/link_tx_pktproc.c
+@@ -409,6 +409,33 @@
+ 		return ret;
+ 	}
+ 
++	if (!ppa_ul->num_queue || ppa_ul->num_queue > ARRAY_SIZE(ppa_ul->q))
++		return -EINVAL;
++
++	/* UL DT offsets are relative to the combined packet region, while
++	 * memsize describes only its UL subregion. Validate in physical space. */
++	if (!ppa_ul->default_max_packet_size ||
++	    ppa_ul->info_rgn_size < sizeof(struct pktproc_info_ul))
++		return -EINVAL;
++	if (!ppa_ul->info_rgn_size ||
++	    (u64)memaddr + ppa_ul->info_rgn_offset <
++		cp_shmem_get_base(mld->link_dev.mdm_data->cp_num, SHMEM_PKTPROC_UL) ||
++	    (u64)memaddr + ppa_ul->info_rgn_offset + ppa_ul->info_rgn_size >
++		(u64)cp_shmem_get_base(mld->link_dev.mdm_data->cp_num, SHMEM_PKTPROC_UL) + memsize)
++		return -EINVAL;
++	if (!ppa_ul->desc_rgn_size ||
++	    (u64)memaddr + ppa_ul->desc_rgn_offset <
++		cp_shmem_get_base(mld->link_dev.mdm_data->cp_num, SHMEM_PKTPROC_UL) ||
++	    (u64)memaddr + ppa_ul->desc_rgn_offset + ppa_ul->desc_rgn_size >
++		(u64)cp_shmem_get_base(mld->link_dev.mdm_data->cp_num, SHMEM_PKTPROC_UL) + memsize)
++		return -EINVAL;
++	if (!ppa_ul->buff_rgn_size ||
++	    (u64)memaddr + ppa_ul->buff_rgn_offset <
++		cp_shmem_get_base(mld->link_dev.mdm_data->cp_num, SHMEM_PKTPROC_UL) ||
++	    (u64)memaddr + ppa_ul->buff_rgn_offset + ppa_ul->buff_rgn_size >
++		(u64)cp_shmem_get_base(mld->link_dev.mdm_data->cp_num, SHMEM_PKTPROC_UL) + memsize)
++		return -EINVAL;
++
+ #if !IS_ENABLED(CONFIG_LINK_DEVICE_PCIE_IOCC)
+ 	if (!ppa_ul->use_hw_iocc && ppa_ul->info_rgn_cached) {
+ 		mif_err("cannot support sw iocc based caching on info region\n");
+@@ -521,7 +548,7 @@
+ 
+ 		mif_info("Queue %d\n", i);
+ 
+-		ppa_ul->q[i] = kzalloc(sizeof(struct pktproc_queue),
++		ppa_ul->q[i] = kzalloc(sizeof(*ppa_ul->q[i]),
+ 				GFP_ATOMIC);
+ 		if (ppa_ul->q[i] == NULL) {
+ 			mif_err_limited("kzalloc() error %d\n", i);
+@@ -573,6 +600,7 @@
+ 		if ((last_q_desc_offset + q->desc_size) > ppa_ul->desc_rgn_size) {
+ 			mif_err("Descriptor overflow. 0x%08x + 0x%08x > 0x%08lx\n",
+ 				last_q_desc_offset, q->desc_size, ppa_ul->desc_rgn_size);
++			ret = -EINVAL;
+ 			goto create_error;
+ 		}
+ 
+@@ -618,18 +646,24 @@
+ #endif
+ 	}
+ 
+-	/* Debug */
+-	ret = sysfs_create_group(&pdev->dev.kobj, &pktproc_ul_group);
+-	if (ret != 0) {
+-		mif_err("sysfs_create_group() error %d\n", ret);
+-		goto create_error;
+-	}
+ 
+ 	return 0;
+ 
+ create_error:
+-	for (i = 0; i < ppa_ul->num_queue; i++)
++	pixel_pktproc_ul_destroy(mld);
++	return ret;
++}
++
++/* Only before CP boot: no DMA or IRQ consumer exists yet. */
++void pixel_pktproc_ul_destroy(struct mem_link_device *mld)
++{
++	struct pktproc_adaptor_ul *ppa_ul = &mld->pktproc_ul;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ppa_ul->q); i++) {
+ 		kfree(ppa_ul->q[i]);
++		ppa_ul->q[i] = NULL;
++	}
+ 
+ 	if (!ppa_ul->info_rgn_cached && ppa_ul->info_vbase)
+ 		vunmap(ppa_ul->info_vbase);
+@@ -638,5 +672,13 @@
+ 	if (!ppa_ul->buff_rgn_cached && ppa_ul->buff_vbase)
+ 		vunmap(ppa_ul->buff_vbase);
+ 
+-	return ret;
+-}
++	ppa_ul->info_vbase = NULL;
++	ppa_ul->desc_vbase = NULL;
++	ppa_ul->buff_vbase = NULL;
++}
++
++void pixel_pktproc_ul_publish(struct device *dev)
++{
++	if (sysfs_create_group(&dev->kobj, &pktproc_ul_group))
++		mif_err("failed to publish pktproc_ul diagnostics\n");
++}
+--- a/cpif/link_tx_pktproc.h
++++ b/cpif/link_tx_pktproc.h
+@@ -183,3 +183,7 @@
+ 
+ #endif /* __LINK_TX_PKTPROC_H__ */
+ 
++
++/* Pixel PCIe probe-only cleanup, never runtime teardown. */
++void pixel_pktproc_ul_destroy(struct mem_link_device *mld);
++void pixel_pktproc_ul_publish(struct device *dev);
+--- a/cpif/modem_ctrl_s5100.c
++++ b/cpif/modem_ctrl_s5100.c
+@@ -1966,9 +1966,9 @@
+ 	g_mc = mc;
+ 
+ 	s5100_get_ops(mc);
+-	if (s5100_get_pdata(mc, pdata)) {
++	ret = s5100_get_pdata(mc, pdata);
++	if (ret) {
+ 		mif_err("DT error: failed to parse\n");
+-		ret = -EINVAL;
+ 		goto err_dt_parse;
+ 	}
+ 	dev_set_drvdata(mc->dev, mc);
+@@ -2016,7 +2016,9 @@
+ 	INIT_WORK(&mc->crash_work, trigger_cp_crash_work);
+ 
+ 	mc->reboot_nb.notifier_call = s5100_reboot_handler;
+-	register_reboot_notifier(&mc->reboot_nb);
++	ret = register_reboot_notifier(&mc->reboot_nb);
++	if (ret)
++		goto err_reboot_notifier;
+ 
+ 	/* Register PM notifier_call */
+ 	mc->pm_notifier.notifier_call = s5100_pm_notifier;
+@@ -2072,6 +2074,7 @@
+ 	unregister_pm_notifier(&mc->pm_notifier);
+ err_pm_notifier:
+ 	unregister_reboot_notifier(&mc->reboot_nb);
++err_reboot_notifier:
+ 	destroy_workqueue(mc->crash_wq);
+ err_crash_wq:
+ 	destroy_workqueue(mc->wakeup_wq);
+@@ -2079,6 +2082,7 @@
+ 	cpif_wake_lock_unregister(mc->ws);
+ err_wake_lock_register:
+ err_dt_parse:
++	dev_set_drvdata(mc->dev, NULL);
+ 	g_mc = NULL;
+ 	return ret;
+ }
+@@ -2101,5 +2105,6 @@
+ 	mutex_destroy(&mc->pcie_check_lock);
+ 	mutex_destroy(&mc->pcie_onoff_lock);
+ 	cpif_wake_lock_unregister(mc->ws);
++	dev_set_drvdata(mc->dev, NULL);
+ 	g_mc = NULL;
+ }
+--- a/cpif/modem_io_device.c
++++ b/cpif/modem_io_device.c
+@@ -666,7 +666,7 @@
+ static int cpif_cdev_create_device(struct io_device *iod, const struct file_operations *fops)
+ {
+ 	int ret = 0;
+-	static u32 idx;
++	u32 idx = iod->msd->pixel_cdev_next;
+ 
+ 	cdev_init(&iod->cdev, fops);
+ 	iod->cdev.owner = THIS_MODULE;
+@@ -676,7 +676,8 @@
+ 		mif_err("cdev_add() for %s failed:%d\n", iod->name, ret);
+ 		return ret;
+ 	}
+-	idx++;
++	iod->pixel_cdev_added = true;
++	iod->msd->pixel_cdev_next++;
+ 
+ 	iod->cdevice = device_create(iod->msd->cdev_class, NULL, iod->cdev.dev, iod,
+ 				     "%s", iod->name);
+@@ -684,6 +685,7 @@
+ 		mif_err("device_create() for %s failed\n", iod->name);
+ 		ret = -ENOMEM;
+ 		cdev_del(&iod->cdev);
++		iod->pixel_cdev_added = false;
+ 		return ret;
+ 	}
+ 
+@@ -716,8 +718,10 @@
+ 		skb_queue_head_init(&iod->sk_rx_q);
+ 
+ 		ret = cpif_cdev_create_device(iod, get_bootdump_io_fops());
+-		if (ret)
++		if (ret) {
+ 			mif_info("%s: ERR! cpif_cdev_create_device failed\n", iod->name);
++			return ret;
++		}
+ 		break;
+ 
+ 	case IODEV_IPC:
+@@ -725,8 +729,10 @@
+ 		skb_queue_head_init(&iod->sk_rx_q);
+ 
+ 		ret = cpif_cdev_create_device(iod, get_ipc_io_fops());
+-		if (ret)
++		if (ret) {
+ 			mif_info("%s: ERR! cpif_cdev_create_device failed\n", iod->name);
++			return ret;
++		}
+ 
+ 		if (iod->ch == SIPC_CH_ID_CPLOG1) {
+ 			iod->ndev = alloc_netdev(sizeof(struct vnet), iod->name,
+@@ -737,11 +743,16 @@
+ 			}
+ 
+ 			iod->ndev->netdev_ops = &dummy_net_ops;
++			vnet = netdev_priv(iod->ndev);
++			vnet->iod = iod;
+ 			ret = register_netdev(iod->ndev);
+ 			if (ret) {
+ 				mif_info("%s: ERR! register_netdev fail\n", iod->name);
+ 				free_netdev(iod->ndev);
++				iod->ndev = NULL;
++				return ret;
+ 			}
++			iod->pixel_net_registered = true;
+ 
+ 			vnet = netdev_priv(iod->ndev);
+ 			vnet->iod = iod;
+@@ -767,11 +778,16 @@
+ 			return -ENOMEM;
+ 		}
+ 
++		vnet = netdev_priv(iod->ndev);
++		vnet->iod = iod;
+ 		ret = register_netdev(iod->ndev);
+ 		if (ret) {
+ 			mif_info("%s: ERR! register_netdev fail\n", iod->name);
+ 			free_netdev(iod->ndev);
++			iod->ndev = NULL;
++			return ret;
+ 		}
++		iod->pixel_net_registered = true;
+ 
+ 		mif_debug("iod 0x%pK\n", iod);
+ 		vnet = netdev_priv(iod->ndev);
+@@ -788,8 +804,10 @@
+ 		skb_queue_head_init(&iod->sk_rx_q);
+ 
+ 		ret = cpif_cdev_create_device(iod, NULL);
+-		if (ret)
++		if (ret) {
+ 			mif_info("%s: ERR! cpif_cdev_create_device fail\n", iod->name);
++			return ret;
++		}
+ 
+ 		ret = device_create_file(iod->cdevice, &attr_waketime);
+ 		if (ret)
+@@ -825,40 +843,18 @@
+ 
+ void sipc5_deinit_io_device(struct io_device *iod)
+ {
+-	mif_err("%s: io_typ=%d\n", iod->name, iod->io_typ);
+-
+-	cpif_wake_lock_unregister(iod->ws);
+-
+-	/* De-register char or net device */
+-	switch (iod->io_typ) {
+-	case IODEV_BOOTDUMP:
+-		device_destroy(iod->msd->cdev_class, iod->cdev.dev);
+-		cdev_del(&iod->cdev);
+-		break;
+-
+-	case IODEV_IPC:
+-		if (iod->ch == SIPC_CH_ID_CPLOG1) {
+-			unregister_netdev(iod->ndev);
+-			free_netdev(iod->ndev);
+-		}
+-
+-		device_destroy(iod->msd->cdev_class, iod->cdev.dev);
+-		cdev_del(&iod->cdev);
+-		break;
+-
+-	case IODEV_NET:
++	if (iod->pixel_net_registered) {
+ 		unregister_netdev(iod->ndev);
+ 		free_netdev(iod->ndev);
+-		break;
+-
+-	case IODEV_DUMMY:
+-		device_remove_file(iod->cdevice, &attr_waketime);
+-		device_remove_file(iod->cdevice, &attr_loopback);
+-		device_remove_file(iod->cdevice, &attr_txlink);
+-		device_remove_file(iod->cdevice, &attr_gro_option);
+-
+-		device_destroy(iod->msd->cdev_class, iod->cdev.dev);
++		iod->ndev = NULL;
++		iod->pixel_net_registered = false;
++	}
++	if (iod->pixel_cdev_added) {
++		if (!IS_ERR_OR_NULL(iod->cdevice))
++			device_destroy(iod->msd->cdev_class, iod->cdev.dev);
+ 		cdev_del(&iod->cdev);
+-		break;
+-	}
+-}
++		iod->pixel_cdev_added = false;
++	}
++	if (iod->ws)
++		cpif_wake_lock_unregister(iod->ws);
++}
+--- a/cpif/modem_main.c
++++ b/cpif/modem_main.c
+@@ -126,7 +126,7 @@
+ 			pdata->name, ret);
+ 		mif_err("%s: xxx\n", pdata->name);
+ 		devm_kfree(dev, modemctl);
+-		return NULL;
++		return ERR_PTR(ret);
+ 	}
+ 
+ 	mif_info("%s is created!!!\n", pdata->name);
+@@ -208,6 +208,7 @@
+ 	/* register misc device or net device */
+ 	ret = sipc5_init_io_device(iod, pdata->mld);
+ 	if (ret) {
++		sipc5_deinit_io_device(iod);
+ 		devm_kfree(dev, iod);
+ 		mif_err("sipc5_init_io_device fail (%d)\n", ret);
+ 		return NULL;
+@@ -718,12 +719,16 @@
+ 	if (IS_ERR(msd->cdev_class)) {
+ 		mif_err("class_create() failed:%ld\n", PTR_ERR(msd->cdev_class));
+ 		ret = -ENOMEM;
+-		unregister_chrdev_region(MAJOR(msd->cdev_major), pdata->num_iodevs);
++		unregister_chrdev_region(msd->cdev_major, pdata->num_iodevs);
+ 		return ret;
+ 	}
+ 
+ 	return 0;
+ }
++
++static unsigned int pixel_probe_fail;
++module_param(pixel_probe_fail, uint, 0400);
++MODULE_PARM_DESC(pixel_probe_fail, "Pre-boot cleanup test: 1 after link, 2 after first I/O device, 3 after all I/O devices");
+ 
+ static int cpif_probe(struct platform_device *pdev)
+ {
+@@ -733,7 +738,7 @@
+ 	struct modem_shared *msd;
+ 	struct modem_ctl *modemctl;
+ 	struct io_device **iod;
+-	struct link_device *ld;
++	struct link_device *ld = NULL;
+ 	enum mif_sim_mode sim_mode;
+ 	int err;
+ 
+@@ -769,10 +774,10 @@
+ 	}
+ 
+ 	modemctl = create_modemctl_device(pdev, msd);
+-	if (!modemctl) {
+-		mif_err("%s: modemctl == NULL\n", pdata->name);
++	if (IS_ERR_OR_NULL(modemctl)) {
++		mif_err("%s: modem control setup failed\n", pdata->name);
+ 		devm_kfree(dev, msd);
+-		err = -ENOMEM;
++		err = modemctl ? PTR_ERR(modemctl) : -ENOMEM;
+ 		goto fail;
+ 	}
+ 
+@@ -782,21 +787,29 @@
+ 		modemctl->log = NULL;
+ 	}
+ 
+-	if (toe_dev_create(pdev)) {
++	err = toe_dev_create(pdev);
++	if (err) {
+ 		mif_err("%s: toe dev not created\n", pdata->name);
+ 		goto free_mc;
+ 	}
+ 
+ 	/* create link device */
+ 	ld = call_link_init_func(pdev, pdata->link_type);
+-	if (!ld)
++	if (!ld) {
++		err = -ENOMEM;
+ 		goto free_toe;
++	}
+ 
+ 	mif_info("%s: %s link created\n", pdata->name, ld->name);
+ 
+ 	ld->mc = modemctl;
+ 	ld->msd = msd;
+ 	list_add(&ld->list, &msd->link_dev_list);
++
++	if (pixel_probe_fail == 1) {
++		err = -EIO;
++		goto free_toe;
++	}
+ 
+ 	/* get sim mode */
+ 	sim_mode = get_sim_mode(dev->of_node);
+@@ -812,6 +825,7 @@
+ 	iod = kcalloc(pdata->num_iodevs, sizeof(*iod), GFP_KERNEL);
+ 	if (!iod) {
+ 		mif_err("kcalloc() err\n");
++		err = -ENOMEM;
+ 		goto free_chrdev;
+ 	}
+ 
+@@ -831,21 +845,34 @@
+ 			goto free_iod;
+ 		}
+ 
++		if (pixel_probe_fail == 2) {
++			err = -EIO;
++			goto free_iod;
++		}
++
+ 		/* Basically, iods of IPC_FMT and IPC_BOOT will receive the state */
+ 		if (iod[i]->format == IPC_FMT || iod[i]->format == IPC_BOOT ||
+ 		    iod[i]->attrs & IO_ATTR_STATE_RESET_NOTI)
+ 			list_add_tail(&iod[i]->list, &modemctl->modem_state_notify_list);
+ 
+ 		/* Pixel 7 Pro port: an iod without a link fails the probe (was BUG()) */
+-		if (attach_devices(iod[i], dev))
++		err = attach_devices(iod[i], dev);
++		if (err)
+ 			goto free_iod;
+ 	}
+ 
+ 	cp_btl_create(&pdata->btl, dev);
+ 
++	if (pixel_probe_fail == 3) {
++		err = -EIO;
++		goto free_iod;
++	}
++
+ 	platform_set_drvdata(pdev, modemctl);
+ 
+ 	kfree(iod);
++	WRITE_ONCE(modemctl->pixel_probe_ready, true);
++	pixel_link_publish(pdev);
+ 
+ 	if (sysfs_create_groups(&dev->kobj, modem_groups))
+ 		mif_err("failed to create modem groups node\n");
+@@ -876,9 +903,13 @@
+ 
+ free_chrdev:
+ 	class_destroy(msd->cdev_class);
+-	unregister_chrdev_region(MAJOR(msd->cdev_major), pdata->num_iodevs);
++	unregister_chrdev_region(msd->cdev_major, pdata->num_iodevs);
+ 
+ free_toe:
++	if (ld) {
++		list_del(&ld->list);
++		pixel_link_destroy(ld);
++	}
+ 	toe_dev_destroy(pdev);
+ 
+ free_mc:
+@@ -890,7 +921,8 @@
+ 	if (msd)
+ 		devm_kfree(dev, msd);
+ 
+-	err = -ENOMEM;
++	if (!err)
++		err = -ENOMEM;
+ 
+ fail:
+ 	mif_err("%s: xxx\n", pdev->name);
+@@ -962,9 +994,43 @@
+  * notifiers stay registered), so it must not be unloaded. Without a
+  * module_exit the module is permanent.
+  */
++static struct of_changeset pixel_cp_pinctrl;
++
+ static int __init cpif_init(void)
+ {
+-	return platform_driver_register(&cpif_driver);
++	struct device_node *np, *cfg;
++	int i, ret = 0;
++
++	/* GS201 has no mainline pinctrl driver. pixel-gpio owns the explicit
++	 * CP GPIO/IRQ subset and preserves the bootloader CP-wake pull-up.
++	 * Permit only CP's pin states to retain their defaults, as AoC does.
++	 * This changes the live DT only; reboot restores the stock properties.
++	 */
++	np = of_find_compatible_node(NULL, NULL, "samsung,exynos-cp");
++	if (!np)
++		return -ENODEV;
++	of_changeset_init(&pixel_cp_pinctrl);
++	for (i = 0; (cfg = of_parse_phandle(np, "pinctrl-0", i)); i++) {
++		if (!of_property_read_bool(cfg, "pinctrl-use-default"))
++			ret = of_changeset_add_prop_bool(&pixel_cp_pinctrl, cfg,
++						"pinctrl-use-default");
++		of_node_put(cfg);
++		if (ret)
++			break;
++	}
++	of_node_put(np);
++	if (ret)
++		goto destroy;
++	ret = of_changeset_apply(&pixel_cp_pinctrl);
++	if (ret)
++		goto destroy;
++	ret = platform_driver_register(&cpif_driver);
++	if (!ret)
++		return 0;
++	of_changeset_revert(&pixel_cp_pinctrl);
++destroy:
++	of_changeset_destroy(&pixel_cp_pinctrl);
++	return ret;
+ }
+ module_init(cpif_init);
+ 
+--- a/cpif/modem_prj.h
++++ b/cpif/modem_prj.h
+@@ -291,6 +291,7 @@
+ }
+ 
+ struct io_device {
++	bool pixel_cdev_added, pixel_net_registered;
+ 	struct list_head list;
+ 
+ 	/* rb_tree node for an io device */
+@@ -548,6 +549,7 @@
+  * msd : mc : iod : ld = 1 : 1 : M : N
+  */
+ struct modem_shared {
++	u32 pixel_cdev_next;
+ 	/* list of link devices */
+ 	struct list_head link_dev_list;
+ 
+@@ -584,6 +586,7 @@
+ };
+ 
+ struct modem_ctl {
++	bool pixel_probe_ready;
+ 	struct device *dev;
+ 	char *name;
+ 	struct modem_data *mdm_data;
+--- a/cpif/modem_toe_device.c
++++ b/cpif/modem_toe_device.c
+@@ -194,6 +194,7 @@
+ 	ret = misc_register(&toe_dev_misc);
+ 	if (ret) {
+ 		mif_err("misc register error\n");
++		sysfs_remove_group(&dev->kobj, &toe_group);
+ 		goto error;
+ 	}
+ 
+--- a/cpif/net_io_device.c
++++ b/cpif/net_io_device.c
+@@ -39,6 +39,9 @@
+ 	struct link_device *ld;
+ 	int ret;
+ 
++	if (!READ_ONCE(iod->mc->pixel_probe_ready))
++		return -ENODEV;
++
+ 	atomic_inc(&iod->opened);
+ 
+ 	list_for_each_entry(ld, &msd->link_dev_list, list) {

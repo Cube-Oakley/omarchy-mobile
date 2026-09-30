@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Contacts
+Comment=People, their numbers and photos
+Exec=omarchy-mobile-app launch contacts
+Icon=x-office-address-book
+Terminal=false
+Type=Application
+Categories=Office;ContactManagement;
+StartupNotify=true

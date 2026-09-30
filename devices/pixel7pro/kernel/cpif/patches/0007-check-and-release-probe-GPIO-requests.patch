@@ -1,0 +1,44 @@
+--- a/cpif/modem_ctrl_s5100.c
++++ b/cpif/modem_ctrl_s5100.c
+@@ -1803,6 +1803,7 @@
+ 	struct platform_device *pdev = to_platform_device(mc->dev);
+ 	struct device_node *np = pdev->dev.of_node;
+ 	unsigned int i;
++	int ret;
+ 
+ 	/* label */
+ 	mc->cp_gpio[CP_GPIO_AP2CP_CP_PWR].label = "AP2CP_CP_PWR";
+@@ -1843,20 +1844,23 @@
+ 		mc->cp_gpio[i].num =
+ 			cpif_of_get_named_gpio(np, mc->cp_gpio[i].node_name, 0);
+ 
++		if (mc->cp_gpio[i].num < 0)
++			return mc->cp_gpio[i].num;
+ 		if (!gpio_is_valid(mc->cp_gpio[i].num))
+-			continue;
+-
++			return -EINVAL;
++
++		ret = devm_gpio_request_one(mc->dev, mc->cp_gpio[i].num,
++			!strncmp(mc->cp_gpio[i].label, "AP2CP", 5) ?
++			GPIOF_OUT_INIT_LOW : GPIOF_IN, mc->cp_gpio[i].label);
++		if (ret)
++			return ret;
+ 		mc->cp_gpio[i].valid = true;
+ 
+-		gpio_request(mc->cp_gpio[i].num, mc->cp_gpio[i].label);
+-		if (!strncmp(mc->cp_gpio[i].label, "AP2CP", 5))
+-			gpio_direction_output(mc->cp_gpio[i].num, 0);
+-		else
+-			gpio_direction_input(mc->cp_gpio[i].num);
+-
+ 		if (mc->cp_gpio[i].irq_type != CP_GPIO_IRQ_NONE) {
+-			mc->cp_gpio_irq[mc->cp_gpio[i].irq_type].num =
+-				gpio_to_irq(mc->cp_gpio[i].num);
++			ret = gpio_to_irq(mc->cp_gpio[i].num);
++			if (ret < 0)
++				return ret;
++			mc->cp_gpio_irq[mc->cp_gpio[i].irq_type].num = ret;
+ 
+ 			if (i == CP_GPIO_CP2AP_CP_ACTIVE) {
+ 				mc->cp_gpio_irq[mc->cp_gpio[i].irq_type].not_alive =

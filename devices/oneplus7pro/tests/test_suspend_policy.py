@@ -59,6 +59,40 @@ class SuspendPolicyTests(unittest.TestCase):
                 module.restore('1', True, 'display-helper')
         self.assertEqual(commands[-1], ('display-helper', 'on'))
 
+    def test_keep_dark_leaves_the_display_alone(self):
+        commands = []
+        with patch.object(module, 'Path', return_value=Mock()), \
+             patch.object(module, 'run', side_effect=lambda *command: commands.append(command)):
+            module.restore('1', False, 'display-helper', keep_dark=True)
+        self.assertNotIn('display-helper', [command[0] for command in commands])
+        self.assertIn('trigger', commands[0])
+
+    def reason(self, irq, modem_before=4, modem_after=4):
+        interrupts = (' 152:  1  0 GICv3 pm8941_pwrkey Edge      pm8941_pwrkey\n'
+                      ' 153:  2  0 GICv3 pm8xxx_rtc_alarm Edge      pm8xxx_rtc_alarm\n'
+                      ' 160:  0  0 GICv3 343 Edge      ipa\n')
+        def fake_read(path):
+            if path.endswith('pm_wakeup_irq'):
+                if irq is None:
+                    raise OSError('No data available')
+                return irq
+            return str(modem_after)
+        proc = Mock()
+        proc.read_text.return_value = interrupts
+        with patch.object(module, 'read', side_effect=fake_read), \
+             patch.object(module, 'Path', return_value=proc):
+            return module.wake_reason(modem_before)
+
+    def test_wake_reasons(self):
+        self.assertEqual(self.reason('152'), 'power-key')
+        self.assertEqual(self.reason('153'), 'alarm')
+        self.assertEqual(self.reason('160'), 'network')
+        # A call or text raises a wakeup without an interrupt of its own.
+        self.assertEqual(self.reason(None, modem_after=5), 'modem')
+        self.assertEqual(self.reason(None), 'unknown')
+        # The power key wins over a modem event in the same wake.
+        self.assertEqual(self.reason('152', modem_after=6), 'power-key')
+
 
 if __name__ == '__main__':
     unittest.main()

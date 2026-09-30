@@ -1,0 +1,233 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 23:39:05 -0700
+Subject: [PATCH 4/7] AOC boots on GS201 without pKVM: open the GSA and AoC
+ S2MPUs (CTRL0=0) where pKVM would program them, GSA wakelock path, AoC
+ pinctrl fix-up, header below 4 GB
+
+---
+ aoc/aoc.c                             | 66 +++++++++++++++++++----
+ gsa/Kbuild                            |  2 +-
+ stubs/include/soc/google/pkvm-s2mpu.h | 77 +++++++++++++++++++++++++++
+ 3 files changed, 134 insertions(+), 11 deletions(-)
+ create mode 100644 stubs/include/soc/google/pkvm-s2mpu.h
+
+diff --git a/aoc/aoc.c b/aoc/aoc.c
+index c0295be..75aeaae 100644
+--- a/aoc/aoc.c
++++ b/aoc/aoc.c
+@@ -707,8 +707,14 @@ static int aoc_fw_authenticate(struct aoc_prvdata *prvdata,
+ 	dma_addr_t header_dma_addr;
+ 	void *header_vaddr;
+ 
+-	/* Allocate coherent memory for the image header */
+-	header_vaddr = dma_alloc_coherent(prvdata->gsa_dev, AOC_AUTH_HEADER_SIZE,
++	/*
++	 * Pixel 7 Pro port: GSA rejects a header above 4 GB (INVALID_ARGS), and
++	 * this kernel may place the GSA device's 36-bit coherent allocations
++	 * there. Allocate it through the AOC device with a 32-bit mask; with no
++	 * IOMMU in front of either, the DMA address is the physical address.
++	 */
++	dma_set_coherent_mask(prvdata->dev, DMA_BIT_MASK(32));
++	header_vaddr = dma_alloc_coherent(prvdata->dev, AOC_AUTH_HEADER_SIZE,
+ 					  &header_dma_addr, GFP_KERNEL);
+ 	if (!header_vaddr) {
+ 		dev_err(prvdata->dev, "Failed to allocate coherent memory for header\n");
+@@ -717,6 +723,8 @@ static int aoc_fw_authenticate(struct aoc_prvdata *prvdata,
+ 	}
+ 
+ 	memcpy(header_vaddr, fw->data, AOC_AUTH_HEADER_SIZE);
++	dev_info(prvdata->dev, "GSA load: header %pad, body %pa\n", &header_dma_addr,
++		 &prvdata->dram_resource.start);
+ 
+ 	rc = gsa_load_aoc_fw_image(prvdata->gsa_dev, header_dma_addr,
+ 				   prvdata->dram_resource.start + AOC_BINARY_DRAM_OFFSET);
+@@ -727,7 +735,7 @@ static int aoc_fw_authenticate(struct aoc_prvdata *prvdata,
+ 
+ err_auth:
+ err_alloc:
+-	dma_free_coherent(prvdata->gsa_dev, AOC_AUTH_HEADER_SIZE, header_vaddr, header_dma_addr);
++	dma_free_coherent(prvdata->dev, AOC_AUTH_HEADER_SIZE, header_vaddr, header_dma_addr);
+ 	return rc;
+ }
+ 
+@@ -3210,6 +3218,14 @@ static int aoc_platform_probe(struct platform_device *pdev)
+ 		goto err_s2mpu_map;
+ 	}
+ 	prvdata->aoc_s2mpu_saved_value = ioread32(prvdata->aoc_s2mpu_virt + AOC_S2MPU_CTRL0);
++	/*
++	 * Pixel 7 Pro port: without pKVM nobody opens the AoC's S2MPU, which
++	 * the bootloader leaves enabled and blocking. Disable it (CTRL0 = 0
++	 * lets all traffic through), and restore that after AoC restarts too.
++	 */
++	dev_info(dev, "AoC S2MPU CTRL0 %#x, disabling\n", prvdata->aoc_s2mpu_saved_value);
++	prvdata->aoc_s2mpu_saved_value = 0;
++	iowrite32(0, prvdata->aoc_s2mpu_virt + AOC_S2MPU_CTRL0);
+ 
+ 	pm_runtime_set_active(dev);
+ 	/* Leave AoC in suspended state. Otherwise, AoC SysMMU is set to active which results in the
+@@ -3369,10 +3385,40 @@ static void aoc_platform_shutdown(struct platform_device *pdev)
+ }
+ 
+ /* Module methods */
++/*
++ * Pixel 7 Pro port: the AOC node's pin state (its display-vsync input) is on
++ * the GS201 pin controller, which has no mainline driver. With modules
++ * enabled, the pinctrl core would defer the AOC's probe forever. Marking the
++ * state "pinctrl-use-default" makes it give up on the missing controller, and
++ * the AOC probes without it.
++ */
++static struct of_changeset aoc_pinctrl_fixup;
++
++static void aoc_pinctrl_fixup_apply(void)
++{
++	struct device_node *aoc_node, *cfg;
++	int i;
++
++	of_changeset_init(&aoc_pinctrl_fixup);
++	aoc_node = of_find_compatible_node(NULL, NULL, "google,aoc");
++	if (!aoc_node)
++		return;
++	for (i = 0; (cfg = of_parse_phandle(aoc_node, "pinctrl-0", i)); i++) {
++		if (!of_property_read_bool(cfg, "pinctrl-use-default"))
++			of_changeset_add_prop_bool(&aoc_pinctrl_fixup, cfg, "pinctrl-use-default");
++		of_node_put(cfg);
++	}
++	of_node_put(aoc_node);
++	if (of_changeset_apply(&aoc_pinctrl_fixup))
++		pr_warn("aoc: pin state fix-up not applied\n");
++}
++
+ static int __init aoc_init(void)
+ {
+ 	pr_debug("system driver init\n");
+ 
++	aoc_pinctrl_fixup_apply();
++
+ 	if (bus_register(&aoc_bus_type) != 0) {
+ 		pr_err("failed to register AoC bus\n");
+ 		goto err_aoc_bus;
+@@ -3383,15 +3429,13 @@ static int __init aoc_init(void)
+ 		goto err_aoc_driver;
+ 	}
+ 
+-	if (platform_device_register(&sscd_dev) != 0) {
+-		pr_err("failed to register AoC coredump device\n");
+-		goto err_aoc_coredump;
+-	}
+-
++	/*
++	 * Pixel 7 Pro port: there is no coredump provider, so the coredump
++	 * device (named "aoc", and matched by this driver without its
++	 * driver_override) is not registered.
++	 */
+ 	return 0;
+ 
+-err_aoc_coredump:
+-	platform_driver_unregister(&aoc_driver);
+ err_aoc_driver:
+ 	bus_unregister(&aoc_bus_type);
+ err_aoc_bus:
+@@ -3405,6 +3449,8 @@ static void __exit aoc_exit(void)
+ 	platform_driver_unregister(&aoc_driver);
+ 
+ 	bus_unregister(&aoc_bus_type);
++	of_changeset_revert(&aoc_pinctrl_fixup);
++	of_changeset_destroy(&aoc_pinctrl_fixup);
+ }
+ 
+ module_init(aoc_init);
+diff --git a/gsa/Kbuild b/gsa/Kbuild
+index 98c369a..3651fc7 100644
+--- a/gsa/Kbuild
++++ b/gsa/Kbuild
+@@ -1,5 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ # Google's GSA driver (GS201 kernel), built out of tree; no pKVM on this boot.
+-ccflags-y += -I$(src)/include -I$(src)/../trusty/include
++ccflags-y += -I$(src)/include -I$(src)/../trusty/include -I$(src)/../stubs/include -DCONFIG_GSA_PKVM=1
+ obj-m += gsa.o
+ gsa-y := gsa_core.o gsa_mbox.o gsa_tz.o
+diff --git a/stubs/include/soc/google/pkvm-s2mpu.h b/stubs/include/soc/google/pkvm-s2mpu.h
+new file mode 100644
+index 0000000..5dd5242
+--- /dev/null
++++ b/stubs/include/soc/google/pkvm-s2mpu.h
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Stand-in for pKVM's S2MPU interface on a kernel without pKVM.
++ *
++ * S2MPUs reset to a state that blocks all DMA; on stock, the hypervisor
++ * programs them with the host's memory map when their power domain comes up
++ * (pkvm_s2mpu_resume), and blocks them again before it goes down
++ * (pkvm_s2mpu_suspend). The GSA's S2MPU is in the GSACORE domain, powered
++ * while the GSA wakelock is held, and GSA's image loads fail with
++ * INVALID_ARGS until it is opened.
++ *
++ * Without a hypervisor, resume disables the S2MPU instead (CTRL0 = 0 lets all
++ * traffic through, per Google's pKVM S2MPU driver), and suspend puts back the
++ * CTRL0 value it found. Only CTRL0 is touched.
++ */
++#ifndef _PIXEL_STUB_PKVM_S2MPU_H
++#define _PIXEL_STUB_PKVM_S2MPU_H
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++
++#define PIXEL_S2MPU_CTRL0	0x0
++
++struct pixel_s2mpu {
++	void __iomem *base;
++	u32 saved_ctrl0;
++};
++
++static inline struct device *pkvm_s2mpu_of_parse(struct device *parent)
++{
++	struct device_node *np = of_parse_phandle(parent->of_node, "s2mpu", 0);
++	struct platform_device *pdev;
++	struct pixel_s2mpu *s;
++	struct resource *res;
++
++	if (!np)
++		return NULL;
++	pdev = of_find_device_by_node(np);	/* holds a reference */
++	of_node_put(np);
++	if (!pdev)
++		return ERR_PTR(-EPROBE_DEFER);
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	s = devm_kzalloc(parent, sizeof(*s), GFP_KERNEL);
++	if (!res || !s)
++		goto err;
++	s->base = devm_ioremap(parent, res->start, PAGE_SIZE);
++	if (!s->base)
++		goto err;
++	dev_set_drvdata(&pdev->dev, s);
++	return &pdev->dev;
++err:
++	put_device(&pdev->dev);
++	return ERR_PTR(-ENOMEM);
++}
++
++/* Called with the S2MPU's power domain up (the GSA wakelock held). */
++static inline int pkvm_s2mpu_resume(struct device *dev)
++{
++	struct pixel_s2mpu *s = dev_get_drvdata(dev);
++
++	s->saved_ctrl0 = readl(s->base + PIXEL_S2MPU_CTRL0);
++	writel(0, s->base + PIXEL_S2MPU_CTRL0);
++	dev_info(dev, "S2MPU opened (CTRL0 was %#x)\n", s->saved_ctrl0);
++	return 0;
++}
++
++static inline int pkvm_s2mpu_suspend(struct device *dev)
++{
++	struct pixel_s2mpu *s = dev_get_drvdata(dev);
++
++	writel(s->saved_ctrl0, s->base + PIXEL_S2MPU_CTRL0);
++	return 0;
++}
++#endif

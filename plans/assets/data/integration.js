@@ -8,7 +8,7 @@ PAGE_INTEGRATION = {
            + "Omarchy desktop — explicit pairing, per-feature control.",
   eyebrow: "Project plan · Integration",
   title: "Integration",
-  blurb: "Phone and desktop. Today the link is a development link — SSH over USB and a build-and-flash pipeline. "
+  blurb: "Phone and desktop. Today the link is a development link — SSH over USB or Wi-Fi and a build-and-flash pipeline. "
        + "The target is an Omarchy phone that behaves like another member of the same family as an Omarchy "
        + "desktop: shared theme, shared clipboard if you want it, notifications and texts on either screen. The same link serves every device.",
 
@@ -22,21 +22,29 @@ PAGE_INTEGRATION = {
         { n: "USB SSH from the desktop", s: "ok",
           on: { pixel7pro: { s: "ok", note: "Key-only SSH with a pinned host key over USB Ethernet; an 8 MiB SFTP round trip matched its hashes.",
                              ref: "devices/pixel7pro/docs/native-arch-20260925.md" } },
-          note: "scripts/phone-ssh.sh with a separately provisioned pinned host key; recovers on replug.",
+          note: "scripts/phone-ssh.sh with a separately provisioned pinned host key; recovers on replug. USB does "
+              + "not attach after a forced reset (cause open).",
           ref: "devices/oneplus7pro/docs/usb-networking-20260917.md" },
+        { n: "SSH over Wi-Fi (fallback)", s: "ok",
+          on: { pixel7pro: { s: "ok", note: "A separate key-only listener bound to the phone's Wi-Fi address (no passwords, no forwarding) survived a normal reboot; USB SSH stays independent.",
+                             ref: "devices/pixel7pro/kernel/usb/README.md" } },
+          note: "Key-only SSH on the phone's Wi-Fi address, restricted to private networks; phone-ssh.sh falls back "
+              + "to it when USB does not answer, and the reboot helper works over it. The unauthenticated "
+              + "recovery shell stays on USB only.",
+          ref: "devices/oneplus7pro/docs/calling-20260927.md" },
         { n: "USB network / routing bring-up", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "The private USB link comes up at boot, but with no default route, DNS or NAT the phone reaches packages only through a tunnel from the computer.",
-                             ref: "devices/pixel7pro/docs/native-arch-20260925.md" } },
+          on: { pixel7pro: { s: "partial", note: "The private USB link comes up on every normal boot, and the phone's internet now comes from Wi-Fi or cellular, with the clock from its RTC. After each re-enumeration the computer's network profile has to be brought up again.",
+                             ref: "devices/pixel7pro/docs/native-boot-20260927.md" } },
           note: "phone-usb-up.sh restores routing, DNS, SSH and the clock after boot.",
           ref: "devices/oneplus7pro/scripts/phone-usb-up.sh" },
         { n: "Host-side build → transfer → flash pipeline", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "Kernel and initramfs built on the computer, the Arch root streamed over USB, then a hash-checked fastboot RAM boot; nothing is flashed yet.",
-                             ref: "devices/pixel7pro/docs/native-arch-20260925.md" } },
+          on: { pixel7pro: { s: "ok", note: "Boot images built on the computer, RAM-tested with a hash-checked fastboot boot, then installed to boot_a with direct readback; the Arch root went in as a checked sparse image.",
+                             ref: "devices/pixel7pro/docs/native-boot-20260927.md" } },
           note: "Kernel, initramfs, dtbo and desktop images built on the workstation and flashed with guards.",
           ref: "devices/oneplus7pro/scripts/" },
         { n: "Live device observation from the desktop", s: "ok",
-          on: { pixel7pro: { s: "ok", note: "Serial console beside SSH, driver debugfs counters and native Wayland screenshots, all read from the computer.",
-                             ref: "devices/pixel7pro/docs/native-shell-20260925.md" } },
+          on: { pixel7pro: { s: "ok", note: "Serial console beside SSH, debugfs counters, Wayland screenshots and per-boot USB and kernel logs; since September 30 the previous boot's kernel console survives in ramoops.",
+                             ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
           note: "USB watchers, battery recorder, scanout readers, Sahara crashdump reads.",
           ref: "devices/oneplus7pro/scripts/watch_phone_usb.sh" }
       ]
@@ -64,10 +72,10 @@ PAGE_INTEGRATION = {
             { n: "Desktop notifications on the phone", s: "no", note: "Not started.",
               ref: "docs/mobile-roadmap.md" },
             { n: "Texting (SMS) from the computer", s: "no",
-              note: "Depends on the modem milestone as well as the paired service.", ref: "docs/mobile-roadmap.md" },
+              note: "Both phones now text; this waits only on the paired service.", ref: "docs/mobile-roadmap.md" },
             { n: "Calls surfaced on the desktop", s: "no",
-              note: "Depends on modem registration plus call audio, and on audio routing between devices.",
-              ref: "docs/mobile-roadmap.md" },
+              note: "Both phones now make VoLTE calls; this waits on the paired service and on audio routing "
+                  + "between devices.", ref: "docs/mobile-roadmap.md" },
             { n: "Clipboard sync (opt-in)", s: "no",
               note: "Local history exists on the phone. Sync is not built; the store is the intended surface.",
               ref: "devices/oneplus7pro/docs/settings-clipboard-20260919.md" },

@@ -1,0 +1,34 @@
+diff -ruN a/drivers/slimbus/qcom-ngd-ctrl.c b/drivers/slimbus/qcom-ngd-ctrl.c
+--- a/drivers/slimbus/qcom-ngd-ctrl.c	2026-09-27 11:40:13.237133951 -0700
++++ b/drivers/slimbus/qcom-ngd-ctrl.c	2026-09-27 11:40:13.255549591 -0700
+@@ -1454,7 +1454,7 @@
+ 
+ 	/* Make sure qmi service is up before continuing */
+ 	if (!wait_for_completion_interruptible_timeout(&ctrl->qmi_up,
+-						       msecs_to_jiffies(MSEC_PER_SEC))) {
++						       msecs_to_jiffies(5 * MSEC_PER_SEC))) {
+ 		dev_err(ctrl->dev, "QMI wait timeout\n");
+ 		return;
+ 	}
+@@ -1588,7 +1588,6 @@
+ 	}
+ 
+ 	INIT_WORK(&ctrl->m_work, qcom_slim_ngd_master_worker);
+-	INIT_WORK(&ctrl->ngd_up_work, qcom_slim_ngd_up_worker);
+ 	ctrl->mwq = create_singlethread_workqueue("ngd_master");
+ 	if (!ctrl->mwq) {
+ 		dev_err(&pdev->dev, "Failed to start master worker\n");
+@@ -1656,6 +1655,13 @@
+ 	init_completion(&ctrl->qmi.qmi_comp);
+ 	init_completion(&ctrl->qmi_up);
+ 
++	/*
++	 * The audio PD may already be up: PDR then reports it as soon as the
++	 * lookup is added, which can be before the child device probes. The
++	 * work must exist by then; it waits for QMI (set up by the child).
++	 */
++	INIT_WORK(&ctrl->ngd_up_work, qcom_slim_ngd_up_worker);
++
+ 	ctrl->pdr = pdr_handle_alloc(slim_pd_status, ctrl);
+ 	if (IS_ERR(ctrl->pdr)) {
+ 		ret = dev_err_probe(dev, PTR_ERR(ctrl->pdr),

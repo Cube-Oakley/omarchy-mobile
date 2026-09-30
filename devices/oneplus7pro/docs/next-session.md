@@ -1,5 +1,39 @@
 # Next session — hardware and cellular handoffs
 
+**September 27 calling:** [texts, calls and the phone apps](calling-20260927.md).
+VoLTE calls work with audio both ways (earpiece, microphone, speaker, mute),
+with the proximity sensor blanking the screen at the ear; SMS works both ways.
+Omarchy-themed Phone, Messages and Contacts apps and a shell incoming-call
+screen are installed. Call audio is sdm845's q6voice (VoiceMMode1) with four
+patches; the uplink needed TX topology NONE (the default ECNS topology is
+silent without calibration, and the network then drops the call on an RTCP
+timeout at ~21 s). A SLIMbus enumeration race is fixed. USB does not come up
+after a forced reset (cause still open), so SSH now also works over Wi-Fi
+(static address, DHCP/Static in Settings) and the port-23 shell is USB-only.
+Never dial or text a number the user has not approved.
+
+**September 27 cellular:** [data and IMS](cellular-sim-20260926.md#third-round-data-and-ims-working).
+The QLink assertion was the AP holding the modem rail (`mss.lvl`) at its top
+corner (rpmhpd before `sync_state`); `mss_vote.ko` releases it. The
+registration drop was the missing IPA data path; IPA now loads before the
+modem. Data needed DPM Open Port, WDA QMAPv4 and an `ipv6.ko` built from the
+#194 tree. ModemManager + NetworkManager now bring up mobile data at boot
+(IPv6 and IPv4 HTTPS 200), and an IMS DCM server (`phone-qmi.py ims-dcm`)
+lets the modem register IMS: SMS and voice at full service. Call audio next.
+
+**September 26 SIM:** [first SIM](cellular-sim-20260926.md). The Tello card
+reads (USIM and ISIM, no PIN, no SIM lock); opening the USIM session makes the
+modem fetch and activate `Commercial-TMO` itself. Online, it registered on LTE
+(310-260 "Tello", CS and PS attached) in three seconds, then asserted 103 s
+later: `RFLM@qsf_hl_seq.c:118 (rflm_qlnk_ls_retry_cnt < 2)`, the 7T Pro's
+QLink failure, now with the right profile active. Pins, TLMM routing, QLink
+clkref, unused-resource cleanup, LDO modes and LLCC all match stock. The slot A
+Android test is unsafe: the Arch root is `userdata`. The modem's own DIAG log
+(diag-router at boot, opt-in, decoded with the image's qdb) shows QLink's
+low-speed link start failing on the first RF wakeup after the modem has idled;
+modem recovery panics the kernel and stays off. See the doc for the tools and
+the incidents (a whole-SMEM read rebooted the phone).
+
 **September 22 cellular groundwork:** [baseline](cellular-baseline-20260922.md).
 Read-only PDC probe works: 25 resident EU profiles, active `Free-VoLTE`, no
 T-Mobile resident; `Commercial-TMO` (PDC ID `cb45c810…`) is in the firmware

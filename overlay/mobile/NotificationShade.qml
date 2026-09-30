@@ -18,7 +18,6 @@ PanelWindow {
     property var networks: []
     property string networkMessage: ""
     property var weather: ({configured: false})
-    property var locations: []
     property string weatherMessage: ""
     property string pendingInput: ""
     property string weatherInput: ""
@@ -53,7 +52,9 @@ PanelWindow {
     mask: Region { width: shade.opened || motion.dragging ? shade.width : 0; height: shade.opened || motion.dragging ? shade.height : 0 }
     WlrLayershell.namespace: "omarchy-mobile-shade"
     WlrLayershell.layer: WlrLayer.Top
-    WlrLayershell.keyboardFocus: editingField !== "" ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
+    // On demand, not exclusive: Hyprland sends every touch to an exclusive layer,
+    // so the on-screen keyboard above the shade would never get a tap.
+    WlrLayershell.keyboardFocus: detail === "wifi" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
     function amount(value, unit, decimals) { return value === null || value === undefined ? "—" : Number(value).toFixed(decimals || 0) + " " + unit; }
     function begin() { opening(); motion.begin(); MobileStatus.refresh(); }
     function move(distance, velocity) { motion.update(distance, velocity); }
@@ -64,7 +65,7 @@ PanelWindow {
     function toggle() { if (opened) close(); else open(); }
     function releaseKeyboard() {
         editingField = "";
-        password.focus = false; locationInput.focus = false;
+        password.focus = false;
         if (keyboardOwned) keyboardRequested("hide");
         keyboardOwned = false;
     }
@@ -183,13 +184,7 @@ PanelWindow {
             try {
                 const result = JSON.parse(stdout.text);
                 shade.weatherMessage = result.error || "";
-                if (result.locations) {
-                    shade.locations = result.locations;
-                    if (!result.locations.length) shade.weatherMessage = result.error || "No matching locations";
-                } else if (result.configured !== undefined) {
-                    shade.weather = result;
-                    shade.locations = [];
-                }
+                if (result.configured !== undefined) shade.weather = result;
             } catch (e) { shade.weatherMessage = "Weather unavailable"; }
         }
     }
@@ -226,6 +221,8 @@ PanelWindow {
                 Layout.fillWidth: true; implicitHeight: 72
                 Text { font.family: MobileTheme.fontFamily; y: 0; text: Qt.formatDateTime(clock.date, "dddd, MMMM d").toUpperCase(); color: MobileTheme.accent; font.pixelSize: 11; font.letterSpacing: 1.5 }
                 Text { font.family: MobileTheme.fontFamily; y: 24; text: "At a glance"; color: MobileTheme.foreground; font.pixelSize: 32; font.bold: true }
+                // Performance: CPU and memory use, cores, temperatures and top processes.
+                TouchButton { anchors.right: parent.right; anchors.rightMargin: 108; y: 19; implicitWidth: 46; implicitHeight: 46; label: "\u{F035B}"; onClicked: shade.showDetail("stats") }
                 TouchButton { anchors.right: parent.right; anchors.rightMargin: 54; y: 19; implicitWidth: 46; implicitHeight: 46; label: "⧉"; onClicked: shade.showDetail("clipboard") }
                 TouchButton { anchors.right: parent.right; y: 19; implicitWidth: 46; implicitHeight: 46; label: "⌃"; onClicked: shade.close() }
             }
@@ -383,7 +380,7 @@ PanelWindow {
                     Layout.fillWidth: true; Layout.preferredWidth: 1
                     symbol: WeatherIcons.glyph(shade.weather.kind || "")
                     title: shade.weather.available ? shade.amount(shade.weather.current.temperature_2m, "°F") : "Weather"
-                    subtitle: shade.weather.available ? (shade.weather.condition || shade.weatherName(shade.weather.current.weather_code)) + (shade.weather.stale ? " · Offline" : "") : "Choose your location"
+                    subtitle: shade.weather.available ? (shade.weather.condition || shade.weatherName(shade.weather.current.weather_code)) + (shade.weather.stale ? " · Offline" : "") : "Set a location"
                     onClicked: shade.showDetail("weather")
                 }
             }
@@ -475,7 +472,7 @@ PanelWindow {
         width: parent.width - 32
         height: Math.min(popupContent.implicitHeight + 44, parent.height - (shade.keyboardOwned ? ((MobileTheme.state.device || {}).keyboardHeight || 280) + 48 : 48))
         anchors.horizontalCenter: parent.horizontalCenter
-        y: shade.selectedNetwork || locationInput.activeFocus ? 24 : Math.max(24, (parent.height - height) / 2 - 30)
+        y: shade.selectedNetwork ? 24 : Math.max(24, (parent.height - height) / 2 - 30)
         color: MobileTheme.background; radius: MobileTheme.radius(26); border.width: 1; border.color: MobileTheme.accent
         MouseArea { anchors.fill: parent; onClicked: {} }
         Flickable {
@@ -540,8 +537,8 @@ PanelWindow {
                         }
                         RowLayout {
                             Layout.fillWidth: true
-                            TouchButton { Layout.fillWidth: true; label: "Connect"; enabled: !networkProcess.running; selected: true; onClicked: { shade.networkAction("connect", {bssid: shade.selectedNetwork.bssid, password: password.text}); password.text = ""; shade.releaseKeyboard(); } }
                             TouchButton { Layout.fillWidth: true; label: "Cancel"; onClicked: { shade.selectedNetwork = null; password.text = ""; if (shade.detail === "wifi") shade.releaseKeyboard(); } }
+                            TouchButton { Layout.fillWidth: true; label: "Connect"; enabled: !networkProcess.running; selected: true; onClicked: { shade.networkAction("connect", {bssid: shade.selectedNetwork.bssid, password: password.text}); password.text = ""; shade.releaseKeyboard(); } }
                         }
                     }
                     Repeater {
@@ -553,7 +550,8 @@ PanelWindow {
                             selected: modelData.active; enabled: !networkProcess.running
                             onClicked: {
                                 if (/802\.1X|EAP|WEP/.test(modelData.security)) { shade.networkMessage = "This security type needs an advanced NetworkManager profile."; return; }
-                                shade.selectedNetwork = modelData; password.text = "";
+                                // Clear first: selecting empties the model, which destroys this delegate.
+                                password.text = ""; shade.selectedNetwork = modelData;
                             }
                         }
                     }
@@ -646,7 +644,12 @@ PanelWindow {
                 }
                 ColumnLayout {
                     visible: shade.detail === "weather"; Layout.fillWidth: true; spacing: 12
-                    Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: shade.weather.location ? shade.weather.location.name : "Choose a location"; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: MobileTheme.accent; font.pixelSize: 17 }
+                    Text {
+                        font.family: MobileTheme.fontFamily; Layout.fillWidth: true
+                        text: shade.weather.location ? shade.weather.location.name : "No location yet"
+                        textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: MobileTheme.accent; font.pixelSize: 17
+                        TapHandler { onTapped: shade.settingsRequested("weather") }
+                    }
                     RowLayout {
                         visible: shade.weather.available === true
                         Layout.fillWidth: true; spacing: 14
@@ -655,6 +658,26 @@ PanelWindow {
                             Layout.fillWidth: true; spacing: 2
                             Text { font.family: MobileTheme.fontFamily; text: shade.weather.available ? shade.amount(shade.weather.current.temperature_2m, "°F") : ""; color: MobileTheme.foreground; font.pixelSize: 32; font.bold: true }
                             Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; wrapMode: Text.WordWrap; text: shade.weather.condition || shade.weatherName(shade.weather.current && shade.weather.current.weather_code); color: MobileTheme.secondary; font.pixelSize: 15 }
+                        }
+                    }
+                    // The next 24 hours; swipe sideways for the rest.
+                    ListView {
+                        id: hourly
+                        visible: shade.weather.available === true && count > 0
+                        Layout.fillWidth: true; implicitHeight: 104
+                        orientation: ListView.Horizontal; spacing: 8; clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: shade.weather.available ? (shade.weather.hourly_forecast || []) : []
+                        delegate: Rectangle {
+                            required property var modelData
+                            width: 64; height: hourly.height; radius: MobileTheme.radius(14); color: MobileTheme.surface
+                            Column {
+                                anchors.centerIn: parent; spacing: 4
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.label; color: MobileTheme.secondary; font.family: MobileTheme.fontFamily; font.pixelSize: 12 }
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: WeatherIcons.glyph(modelData.kind); color: MobileTheme.accent; font.family: MobileTheme.fontFamily; font.pixelSize: 24 }
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; text: modelData.temperature == null ? "—" : Math.round(modelData.temperature) + "°"; color: MobileTheme.foreground; font.family: MobileTheme.fontFamily; font.pixelSize: 15; font.bold: true }
+                                Text { anchors.horizontalCenter: parent.horizontalCenter; visible: modelData.precipitation >= 10; text: modelData.precipitation + "%"; color: MobileTheme.secondary; font.family: MobileTheme.fontFamily; font.pixelSize: 11 }
+                            }
                         }
                     }
                     DetailRow { visible: shade.weather.available === true; Layout.fillWidth: true; label: "Feels like"; value: shade.weather.available ? shade.amount(shade.weather.current.apparent_temperature, "°F") : "—" }
@@ -678,20 +701,8 @@ PanelWindow {
                         }
                     }
                     Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: shade.weatherMessage; visible: text.length > 0; wrapMode: Text.WordWrap; color: MobileTheme.secondary; font.pixelSize: 13 }
-                    TouchTextField { font.family: MobileTheme.fontFamily;
-                        id: locationInput; Layout.fillWidth: true; implicitHeight: 50; placeholderText: "City or postal code"
-                        color: MobileTheme.foreground; placeholderTextColor: MobileTheme.secondary
-                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
-                        editing: shade.editingField === "location" && shade.detail === "weather"
-                        onEditingRequested: shade.editField("location", locationInput)
-                        onCopyRequested: text => shade.clipboardAction("record", {text: text})
-                    }
-                    TouchButton { Layout.fillWidth: true; label: "Find location"; enabled: !weatherProcess.running; onClicked: { shade.fetchWeather("search", {query: locationInput.text}); shade.releaseKeyboard(); } }
-                    Repeater {
-                        model: shade.locations
-                        TouchButton { required property var modelData; Layout.fillWidth: true; label: modelData.name; textSize: 13; onClicked: shade.fetchWeather("set", modelData) }
-                    }
-                    Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: "Weather data: Open-Meteo · CC BY 4.0\nManual location · updates at most every 15 minutes"; wrapMode: Text.WordWrap; color: MobileTheme.secondary; font.pixelSize: 11 }
+                    TouchButton { visible: shade.weather.configured !== true; Layout.fillWidth: true; label: "Choose a location"; onClicked: shade.settingsRequested("weather") }
+                    Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: "Weather data: Open-Meteo · CC BY 4.0 · updates at most every 15 minutes\nChange the place in Settings → Weather"; wrapMode: Text.WordWrap; color: MobileTheme.secondary; font.pixelSize: 11 }
                 }
                 ColumnLayout {
                     visible: shade.detail === "clipboard"; Layout.fillWidth: true; spacing: 12

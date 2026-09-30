@@ -58,6 +58,10 @@ struct tfa9874 {
 	bool configured;
 	bool active;
 	bool receiver;
+	/* The lower amp's Loudspeaker Switch: off keeps it silent while its
+	 * stream runs, so a call on the earpiece stays on the earpiece. */
+	bool enabled;
+	bool streaming;
 };
 
 static const struct tfa9874_reg_value tfa9874_0c74_optimal[] = {
@@ -344,26 +348,15 @@ static int tfa9874_startup(struct snd_pcm_substream *substream,
 	return ret;
 }
 
-static int tfa9874_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
+/* Called with tfa->lock held. */
+static int tfa9874_power_on(struct tfa9874 *tfa)
 {
-	struct tfa9874 *tfa = snd_soc_component_get_drvdata(dai->component);
 	unsigned int status;
-	int ret = 0;
-
-	if (stream != SNDRV_PCM_STREAM_PLAYBACK)
-		return 0;
-
-	mutex_lock(&tfa->lock);
-	if (mute) {
-		if (tfa->active)
-			tfa9874_log_status(tfa, "pre-mute");
-		ret = tfa9874_safe_off(tfa);
-		goto out;
-	}
+	int ret;
 
 	ret = tfa9874_configure(tfa);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = regmap_update_bits(tfa->regmap, TFA9874_MANAGER_CONTROL,
 				 TFA9874_MANSCONF, TFA9874_MANSCONF);
@@ -392,11 +385,32 @@ static int tfa9874_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 	usleep_range(1000, 1500);
 	tfa->active = true;
 	tfa9874_log_status(tfa, "unmuted");
-	goto out;
+	return 0;
 
 fail_off:
 	tfa9874_safe_off(tfa);
-out:
+	return ret;
+}
+
+static int tfa9874_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
+{
+	struct tfa9874 *tfa = snd_soc_component_get_drvdata(dai->component);
+	int ret;
+
+	if (stream != SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+
+	mutex_lock(&tfa->lock);
+	tfa->streaming = !mute;
+	if (mute) {
+		if (tfa->active)
+			tfa9874_log_status(tfa, "pre-mute");
+		ret = tfa9874_safe_off(tfa);
+	} else if (!tfa->enabled) {
+		ret = tfa9874_safe_off(tfa);
+	} else {
+		ret = tfa9874_power_on(tfa);
+	}
 	mutex_unlock(&tfa->lock);
 	return ret;
 }
@@ -469,6 +483,40 @@ static const struct snd_kcontrol_new tfa9874_upper_controls[] = {
 	SOC_ENUM_EXT("Earpiece Mode", tfa9874_mode_enum, tfa9874_mode_get, tfa9874_mode_put),
 };
 
+static int tfa9874_switch_get(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *value)
+{
+	struct tfa9874 *tfa = snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	mutex_lock(&tfa->lock);
+	value->value.integer.value[0] = tfa->enabled;
+	mutex_unlock(&tfa->lock);
+	return 0;
+}
+
+/* Takes effect at once, also while a stream runs (speakerphone in a call). */
+static int tfa9874_switch_put(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *value)
+{
+	struct tfa9874 *tfa = snd_soc_component_get_drvdata(snd_soc_kcontrol_component(kcontrol));
+	bool enabled = value->value.integer.value[0];
+	int ret = 0;
+
+	mutex_lock(&tfa->lock);
+	if (tfa->enabled != enabled) {
+		tfa->enabled = enabled;
+		if (tfa->streaming)
+			ret = enabled ? tfa9874_power_on(tfa) : tfa9874_safe_off(tfa);
+		if (!ret)
+			ret = 1;
+	}
+	mutex_unlock(&tfa->lock);
+	return ret;
+}
+
+static const struct snd_kcontrol_new tfa9874_lower_controls[] = {
+	SOC_SINGLE_BOOL_EXT("Loudspeaker Switch", 0, tfa9874_switch_get, tfa9874_switch_put),
+};
+
 static int tfa9874_component_probe(struct snd_soc_component *component)
 {
 	struct tfa9874 *tfa = dev_get_drvdata(component->dev);
@@ -476,7 +524,8 @@ static int tfa9874_component_probe(struct snd_soc_component *component)
 	if (!tfa->slot)
 		return snd_soc_add_component_controls(component, tfa9874_upper_controls,
 			ARRAY_SIZE(tfa9874_upper_controls));
-	return 0;
+	return snd_soc_add_component_controls(component, tfa9874_lower_controls,
+		ARRAY_SIZE(tfa9874_lower_controls));
 }
 
 static const struct snd_soc_component_driver tfa9874_component_driver = {
@@ -505,8 +554,8 @@ static ssize_t diagnostics_show(struct device *dev,
 		return ret;
 
 	return sysfs_emit(buf,
-		"slot=%u configured=%u active=%u system=%04x status0=%04x status1=%04x status3=%04x battery=%04x temp=%04x vddp=%04x\n",
-		tfa->slot, tfa->configured, tfa->active, system, status0,
+		"slot=%u configured=%u active=%u enabled=%u streaming=%u receiver=%u system=%04x status0=%04x status1=%04x status3=%04x battery=%04x temp=%04x vddp=%04x\n",
+		tfa->slot, tfa->configured, tfa->active, tfa->enabled, tfa->streaming, tfa->receiver, system, status0,
 		status1, status3, battery, temp, vddp);
 }
 static DEVICE_ATTR_RO(diagnostics);
@@ -536,6 +585,7 @@ static int tfa9874_i2c_probe(struct i2c_client *client)
 	tfa->dev = &client->dev;
 	tfa->slot = client->addr == 0x35;
 	tfa->receiver = !tfa->slot;
+	tfa->enabled = true;
 	mutex_init(&tfa->lock);
 	tfa->regmap = devm_regmap_init_i2c(client, &tfa9874_regmap_config);
 	if (IS_ERR(tfa->regmap))

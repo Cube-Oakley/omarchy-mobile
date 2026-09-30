@@ -1,3 +1,278 @@
+# Checkpoint — September 29, 2026 (audio and sensors)
+
+
+**Cellular and app integration:** the native Phone and Messages apps now use
+one Pixel SIT service. The user confirmed sending/receiving texts, calls with
+two-way audio, and microphone mute. Normal calls use the validated +6 dB
+microphone boost. Speakerphone routing remains unfinished.
+
+Cellular IPv4 now supplies a metric-700 fallback default route. A Wi-Fi-off
+check passed normal DNS and certificate-verified HTTPS with `rmnet0` as the
+only default interface; reconnecting Wi-Fi restores its preference. Carrier
+DNS is selected only while cellular is the default connection.
+
+The opt-in persistent modem manager now prepares a fresh RAM runtime, loads
+the pinned drivers, and brings up LTE and IMS automatically on boot. A RAM boot and
+two normal installed boots reached app readiness and cellular HTTPS 200. The user confirmed app texting and calling after reboot. The
+runtime has no test deadline. Ordered shutdown ends calls and host networking,
+powers CP off before stopping RFS, then disarms the watchdog; the recovery PID1
+uses this sequence before killing other processes. A durable failure marker
+keeps a modem fault from looping across boots. Automatic warm CP recovery is
+still unverified and disabled. All nine protected partitions remain read-only
+while the modem runs. A separately user-approved one-bit boot-success repair
+keeps Linux slot A from exhausting its retries; all other devinfo bytes were
+verified unchanged and read-only protection restored. The LTE workaround disables NR while saving the original
+mode; 5G is unresolved. A modem-online five-second RTC suspend attempt aborted
+at the kernel freeze stage before entering sleep, with CP and LTE traffic still
+working afterward. The user confirmed screen-off ringing, display wake and
+answering; calls/SMS waking from true suspend are still unverified.
+See [the modem integration notes](../modem/README.md) for setup and limits.
+
+**Active work: audio and sensors.** The built-in microphones, both speakers
+and the sensors work through the AoC, under Google's own drivers ported to
+this kernel ([aoc](../kernel/aoc/README.md)).
+- **AoC:**
+  - Trusty, the GSA and the AoC core load the AoC firmware (12255112-polygon),
+    which comes online with 82 services.
+  - What it took without pKVM: opening the GSA's and AoC's S2MPUs where pKVM
+    would program them, a static SysMMU for the AoC, and the right Trusty load
+    order.
+  - The AoC starts once per boot. Restarting it needs ACPM's asynchronous
+    reset notification, which is not implemented.
+- **Microphones:** their PMIC supplies were off. The stock DT keeps them
+  always on; `pixel-aoc-power` switches them on through ACPM
+  ([aoc-power](../kernel/aoc-power/README.md)).
+- **Speakers:** two CS35L41 amplifiers on SPI7, driven by mainline `cs35l41`:
+  - the SPI7 host is [spi](../kernel/spi/README.md), with reset and interrupt
+    lines from [gpio](../kernel/gpio/README.md);
+  - the stock protection firmware runs on both amplifiers, with the factory
+    calibration read (read-only) from persist;
+  - the left amplifier drives the top speaker and the right the bottom one,
+    each on its own TDM slot.
+- **PipeWire:** a UCM profile and a WirePlumber rule ([../audio](../audio))
+  give "Built-in Audio Speakers" and "Built-in Audio Microphones". A tone
+  played with `pw-play` shows up in `pw-record`.
+- **Sensors:** accelerometer, gyroscope, magnetometers, barometer, proximity
+  and light, all run by the AoC's sensor framework (USF). The protocol was
+  recovered from the stock `libusf.so` ([sensors](../sensors/README.md)).
+  - `pixel-sensor-proxy` serves iio-sensor-proxy's D-Bus API, so the shell's
+    rotation, automatic brightness and proximity helpers use it unchanged.
+  - The sensors need their PMIC rails on
+    ([aoc-power](../kernel/aoc-power/README.md)) and the AoC's registry
+    loaded, with this phone's factory calibration read from persist.
+  - Rotation follows the phone both ways (checked by hand).
+  - Light comes from Google's auto-brightness sensor, once a second. It sees
+    none of the panel's own light, so the Pixel profile sets `panelLux` to 0.
+  - **Open:** since about 16:50 on 2026-09-29 the TMD3719 (light and
+    proximity) has not converted. The AoC logs a watchdog (`status:0`) and
+    "Sync delay shouldn't be less than 0 after adjustment" on each enable.
+    Reboots, a power-on reset of its rails, a display cycle, full brightness
+    and a constantly redrawing screen did not bring it back. It worked
+    earlier the same day. Its readings are synced to the panel (the stock
+    registry sets TE2 alignment, EM cycles and `min_fps`), so the panel's TE2
+    or display state the Android HAL feeds the AoC are the suspects.
+    Automatic brightness waits on it.
+- **RTC alarm:** the S2MPG12's alarm 0 now wakes the phone from s2idle
+  ([rtc](../kernel/rtc/README.md)), so `rtcwake` works and suspend can be
+  tested unattended. Four suspend/wake cycles passed with the AoC, audio,
+  sensors and Wi-Fi running.
+- **Bluetooth:** works; pairing is still to be tested by hand
+  ([bluetooth](../kernel/bluetooth/README.md)).
+- **Speaker level:** the amplifiers ran at their reset gain of 0.5 dB, about
+  17 dB below stock. The boot script now sets the rest of the stock default
+  path: 17.5 dB of amplifier gain, DRE, and both protection inputs from each
+  amplifier's own slot.
+- **Touch in the shell:** fixed. The shell stopped taking taps after a touch
+  with fingers on both the shell and an app, for example a grip on the
+  screen's edge while tapping the rotate button. Hyprland 0.56 sends every
+  finger's moves and lift to wherever the last finger landed. The shared
+  shell now has a Hyprland plugin, `touch-fingers` (overlay/mobile), that
+  sends each finger's moves and lift to the surface it went down on. The
+  wallpaper also takes touches no other surface does.
+
+The modem-persistence image (`out/modem-persistent/image`) is now in `boot_a`;
+its direct readback matches SHA256
+`15636c7fe93ebfc51b363ec9d85e478ee123ac9d8df32627a50710c7bc21ab2f`. It is image H
+plus ordered modem shutdown in recovery PID1; the hardware kernel and bundled
+audio/Bluetooth/RTC drivers are unchanged. The prior image H remains available
+locally under `out/checkpoints/20260929-audio/image-h` with SHA256
+`ebbcc45e97ac848cff8ec552a0be54bd25e63da45f09d3d50a3c8df9847d92bf`.
+`aoc.bin` is on the Pixel root, because it does not fit under the boot
+image's AVB boundary. The boot script now starts Bluetooth, the AoC with audio
+and the sensors, and PipeWire.
+
+Validated from normal boots of `boot_a` on 2026-09-29:
+- the AoC comes online (82 services) and both amplifiers run protected;
+- `pixel-sensor-proxy` finds the accelerometer, light and proximity sensors;
+- PipeWire shows the speakers and microphones, and a tone played through it
+  reaches the microphones;
+- Bluetooth is powered;
+- an `rtcwake` suspend wakes on the RTC alarm;
+- by hand: the microphones record a voice, and each speaker plays on its own
+  channel (top on the left, bottom on the right);
+- by hand: proximity reports near and far, and rotation turns the screen both
+  ways;
+- after three reboots, the boot script applies the amplifier gain and the
+  shell loads `touch-fingers`.
+
+# Checkpoint — September 29, 2026 (sleep and Wi-Fi power)
+
+**Active work: sleep.** Screen off, connected to Wi-Fi and idle, the phone
+now draws 1.47 W at the USB input, down from 2.11 W:
+- **Wi-Fi power:** about 0.10 W instead of 0.45 W.
+  - Firmware deep sleep now runs, using the in-band device-wake handshake over
+    control-ring mailbox messages.
+  - The PCIe link enters L1.1/L1.2 once the firmware runs
+    ([pcie](../kernel/pcie/README.md)).
+  - Throughput is unchanged.
+- **Panel sleep:** the panel sleeps while the screen is off
+  (`pixel_scanout.panel_sleep`), saving 0.32 W. On wake the DSC configuration
+  is sent again.
+- **Keys:** power and volume use wake-up interrupts ([keys](../kernel/keys/README.md)).
+- **System suspend:** `s2idle` is the default. Deep (PSCI SYSTEM_SUSPEND) needs
+  the vendor's PMU preparation, which is not done yet.
+  - Staged tests pass (freezer, devices ×6, platform ×2).
+  - A real s2idle woke on the power key, with display, USB and Wi-Fi back.
+  - Wi-Fi goes through D3 and back, and drops sleep requests while
+    suspending, as bcmdhd does.
+- **CPU idle:** the MCT is now the tick broadcast device, so every CPU can
+  enter C2 at once; the kernel's hrtimer broadcast kept one CPU awake. The mid
+  and big clusters power down when all their CPUs are idle
+  ([cpupm](../kernel/cpupm/README.md)). Neither changes the input draw much.
+  - The mid and big rails keep about 50–60 mW for their PLLs and clock
+    trees, and only SICD (the SoC's clock-down idle) stops those.
+  - The vendor's bus clock gating changed nothing measurable.
+- **Touch:** the touch worker no longer counts as load (the load average went
+  from 1.0 to about 0.2), and it freezes for suspend.
+- **Brightness:** the panel's brightness register (DCS 0x51, DBV 4–2047) is
+  now a backlight device, `pixel-panel`. The shell's brightness slider works,
+  and the level is restored at session start.
+- **Flashlight:** the LM3644 on hsi2c_15 ([torch](../kernel/torch/README.md)).
+- **Vibration:** the CS40L26A's ROM effects on hsi2c_8
+  ([haptics](../kernel/haptics/README.md)). Not yet felt by hand.
+- **I2C buses:** hsi2c_15 and hsi2c_8, as the bootloader leaves them
+  ([i2c](../kernel/i2c/README.md)). The battery EEPROM and the NFC/eSIM chip
+  are guarded.
+- **Wi-Fi MAC address:** stable per network (NetworkManager `stable`). The chip
+  has no MAC address of its own.
+- **Bluetooth (in progress):** the chip powers up and answers HCI over UART18,
+  but it hangs at the first record of Google's patch firmware. On ROM firmware
+  its radio finds nothing. It is not in the image
+  ([bluetooth](../kernel/bluetooth/README.md)).
+
+These changes are not yet in a kernel checkpoint. Image F is in `boot_a`. It
+is image E (kernel v25) plus `pixel-mct.ko`, cluster power-down in
+`pixel-cpupm.ko` and the boot script that loads them. Its readback matches
+SHA256 `376b4d9271465f365966763a41b242ced47bc4074b4b83f89c90b3860807408c`.
+
+# Checkpoint — September 28, 2026 (Wi-Fi)
+
+**Active work: Wi-Fi.** The BCM4389 runs Google's stock firmware under
+mainline brcmfmac (kernel [v24](../kernel/wifi-v24/README.md)), on PCIe
+channel 1 from the [PCIe module](../kernel/pcie/README.md).
+- **Starts at boot:** the boot script loads the link, then the Wi-Fi stack from
+  the image, then the system bus and NetworkManager, which reconnects to saved
+  networks. The shell's Wi-Fi panel lists and joins networks.
+- **Speed:** 5 GHz at a 720–816 Mbit/s link rate; about 90 Mbit/s down and up,
+  which is the home network's limit.
+- **Power:** with the screen off it costs about 0.45 W (2.11 W against 1.65 W
+  with the chip off). The link has no power states yet and firmware deep
+  sleep is off.
+
+Image Z is in `boot_a`. Its readback matches SHA256
+`bcdc339ad0801df786379b0d43435894d1d1dd287e8497823ce52e5a7ce76a34`.
+
+# Checkpoint — September 28, 2026 (idle power)
+
+**Active work: power usage.** See the [power record](power-20260928.md).
+Whole phone from USB, image W to image X: screen on 3.01 W to 2.09 W, screen
+off 2.87 W to 1.65 W.
+- **CPU idle:** the firmware rejected every C2 entry, so idle CPUs spun on
+  SMCs. The [cpupm module](../kernel/cpupm/README.md) makes C2 work.
+- **Power domains:** the unused camera pipeline, TPU, codecs, G2D, EH and AUR
+  are powered off at boot ([pd](../kernel/pd/README.md)).
+- **Memory clock:** MIF drops to 421 MHz while the screen is off (kernel
+  [v23](../kernel/power-v23/README.md)).
+- **Measuring:** the [ODPM module](../kernel/odpm/README.md) reads 24 PMIC
+  rails; `scripts/pixel-usb-power.py` measures the USB input.
+
+Image X was installed in `boot_a` (since replaced by image Z). Its readback
+matched SHA256 `b6b5de2e51a8f508ba34692e88068918825aeb56e3035bbc46f9457661d3f0d1`.
+
+# Checkpoint — September 28, 2026 (battery)
+
+**Active work: battery and charging.** See the [battery module](../kernel/battery/README.md).
+- **Battery state:** percentage, voltage, current, temperature and charge
+  status now reach the shell. They come from the MAX77759 gauge and charger,
+  over the bootloader's I2C bus 13.
+- **Charging while in use:** the bootloader leaves the USB input at 500 mA, so
+  with the screen on the phone drained about 90 mA while plugged in. The module
+  allows 1.5 A from USB, as stock does on this computer's charging port. Measured:
+  +0.7 to +1.0 A into the battery.
+- **Charge limit:** the shell's limit works. At the limit the phone runs from
+  USB and the battery rests. Charging also pauses at 45 °C.
+- **Gauge caveat:** it has lost the stock battery model (POR). The percentage
+  follows its default model and the capacity estimates are wrong until that
+  model is restored.
+
+Image W (V plus the battery module) was installed in `boot_a` (since replaced
+by X). Its readback matched SHA256
+`6aeb78276a390ade7b64ab0f3925378b76fa3388daef547bd73b943a036668cd`.
+
+Wi-Fi is paused. A test PCIe host driver for channel 1
+(`kernel/pcie/pixel-pcie.c`) hangs the SoC at its first sub-controller
+register access, though every clock gate and Q-channel for the controller is
+on. It is not in any image.
+
+# Checkpoint — September 28, 2026
+
+**Active work: UI smoothness.** See the [smoothness record](smoothness-20260928.md).
+- **Display:** 120 Hz now works on a normal boot.
+- **GPU:** scales 302–885 MHz with a thermal cap.
+- **Touch:** runs on the SPI0 controller with its attention interrupt,
+  at about 240 Hz with almost no CPU; it restarts the controller after errors.
+  See the [SPI touch record](touch-spi-20260928.md).
+- **CPUs:** full stock rates (to 2.85 GHz) under a 20 ms thermal cap that
+  holds sustained load at 2.05 GHz, with a stock cross-cluster floor.
+- **Switcher:** it now handles the session's terminal.
+- **Result:** shell animations average 111–115 fps, up from 61.
+
+Image V (U plus SPI0 and interrupt touch; U added the fast CPU thermal cap)
+is in `boot_a`. Its readback matches SHA256
+`1e9375e2850cef287e1555c2c4cf5f915e4baf5f6458dd06f376ccb1d376bbbe`.
+The Pixel runs the current shared shell.
+Kernel checkpoint: [v22](../kernel/smooth-v22/README.md).
+
+# Checkpoint — September 27, 2026
+
+**Active work: native boot without fastboot.** See the [native boot record](native-boot-20260927.md).
+- **Storage:** UFS runs HS gear 4 rate B on two lanes (1.2–1.8 GB/s, up from
+  0.57 MB/s), so the persistent desktop starts in seconds instead of about six
+  minutes.
+- **USB:** the kernel now powers up the USB 2 PHY that a normal boot leaves
+  isolated.
+- **Normal reboot of image K:** USB SSH returned after 15 seconds. Startup then
+  stopped at CPU scaling, because the little cluster boots at 1598 MHz. The
+  remaining steps, run by hand, started Hyprland and the shared shell on that
+  normal boot.
+- **Image L** accepts that rate, and the boot script no longer stops on a
+  refused CPU-scaling request.
+- **Normal reboot of image L:** after an orderly reboot, USB SSH returned in 18
+  seconds, CPU scaling started, and the desktop finished starting by itself in
+  under a minute.
+
+- **Image M** resets the UFS device before the host enable, so the first probe
+  succeeds on every boot (it used to fail once and retry).
+- **Image N** reads the battery-backed PMIC RTC, so the clock is real time at
+  boot.
+
+Image N was then installed (since replaced by S), SHA256
+`684f3704d8f7526f421d1ae2089f8a0bcdb85b3c9196fc27fd1671a8dfe2dbe1`.
+`scripts/pixel-reboot.py fastboot|linux` switches between Linux and fastboot
+without buttons, using a warm reset. Power+VolDown is only a fallback. Kernel checkpoint: [v20](../kernel/native-boot-v20/README.md).
+Astra has stopped work on the Pixel. Linux-only installs to `boot_a` and userdata
+are authorized. Never write the ST54J or the efs/persist partitions.
+
 # Checkpoint — September 26, 2026
 
 **Active work: persistent installation and power-button screen sleep/wake.**

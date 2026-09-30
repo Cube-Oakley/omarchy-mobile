@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Phone
+Comment=Place and answer phone calls
+Exec=omarchy-mobile-app launch phone
+Icon=phone
+Terminal=false
+Type=Application
+Categories=Network;Telephony;
+StartupNotify=true

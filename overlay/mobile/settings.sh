@@ -9,7 +9,7 @@ export QML2_IMPORT_PATH="$QML_IMPORT_PATH${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}
 config=${XDG_CONFIG_HOME:-$HOME/.config}
 shell_config="$config/quickshell/omarchy-mobile-settings/shell.qml"
 panel=${1:-home}
-case $panel in home|appearance|clipboard|network|wifi|sound|battery|about|bluetooth|display|storage|apps) ;; *) panel=home ;; esac
+case $panel in home|appearance|clipboard|network|wifi|sound|battery|about|bluetooth|display|storage|apps|weather) ;; *) panel=home ;; esac
 : "${WAYLAND_DISPLAY:?Launch from a Wayland session}"
 if [[ -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
     for socket in "$XDG_RUNTIME_DIR"/hypr/*/.socket.sock; do

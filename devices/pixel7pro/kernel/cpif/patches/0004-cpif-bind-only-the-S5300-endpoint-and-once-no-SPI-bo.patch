@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 02:43:45 -0700
+Subject: [PATCH 4/4] cpif: bind only the S5300 endpoint and once, no SPI boot
+ without a boot device, no unload
+
+- s51xx: match 144d:a5a5 only. Google's table matched every Samsung PCI
+  function, and its probe rewrites BAR0 and the resources of what it
+  binds.
+- s51xx_pcie_init(): register the PCI driver once. register_pcie() calls
+  it on every boot attempt until the endpoint probes, and a second
+  pci_register_driver() of the same driver fails and duplicates the proc
+  entry.
+- Without CONFIG_BOOT_DEVICE_SPI, IOCTL_SET_SPI_BOOT_MODE fails with
+  -ENODEV instead of switching the link to a loader that reported success
+  without loading anything.
+- cpif has no remove path; drop its module_exit so it cannot be unloaded
+  with its devices still registered.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ cpif/boot_device_spi.h    |  3 ++-
+ cpif/bootdump_io_device.c |  5 +++++
+ cpif/modem_main.c         | 11 ++++++++++-
+ cpif/s51xx_pcie.c         | 22 ++++++++++++++++++++--
+ 4 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/cpif/boot_device_spi.h b/cpif/boot_device_spi.h
+index c322a3b..8127b26 100644
+--- a/cpif/boot_device_spi.h
++++ b/cpif/boot_device_spi.h
+@@ -20,8 +20,9 @@ extern int cpboot_spi_load_cp_image(struct link_device *ld, struct io_device *io
+ 		unsigned long arg);
+ #else
+ static inline struct cpboot_spi *cpboot_spi_get_device(int bus_num) { return NULL; }
++/* Pixel 7 Pro port: no SPI boot device; fail rather than report a loaded image. */
+ static inline int cpboot_spi_load_cp_image(struct link_device *ld, struct io_device *iod,
+-		unsigned long arg) { return 0; }
++		unsigned long arg) { return -ENODEV; }
+ #endif
+ 
+ #endif /* __BOOT_DEVICE_SPI_H__ */
+diff --git a/cpif/bootdump_io_device.c b/cpif/bootdump_io_device.c
+index 67d8213..2572a5f 100644
+--- a/cpif/bootdump_io_device.c
++++ b/cpif/bootdump_io_device.c
+@@ -392,6 +392,11 @@ static long bootdump_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
+ 		return ld->handover_block_info(ld, arg);
+ 
+ 	case IOCTL_SET_SPI_BOOT_MODE:
++		/* Pixel 7 Pro port: the CP boots over PCIe; there is no SPI boot device. */
++		if (!IS_ENABLED(CONFIG_BOOT_DEVICE_SPI)) {
++			mif_err("%s: IOCTL_SET_SPI_BOOT_MODE: no SPI boot device\n", iod->name);
++			return -ENODEV;
++		}
+ 		mld = to_mem_link_device(ld);
+ 		if (!mld) {
+ 			mif_err("%s: mld is null\n", iod->name);
+diff --git a/cpif/modem_main.c b/cpif/modem_main.c
+index 0e1cd31..dfc167c 100644
+--- a/cpif/modem_main.c
++++ b/cpif/modem_main.c
+@@ -957,7 +957,16 @@ static struct platform_driver cpif_driver = {
+ 	},
+ };
+ 
+-module_platform_driver(cpif_driver);
++/*
++ * Pixel 7 Pro port: cpif has no remove path (its misc devices, netdevs and
++ * notifiers stay registered), so it must not be unloaded. Without a
++ * module_exit the module is permanent.
++ */
++static int __init cpif_init(void)
++{
++	return platform_driver_register(&cpif_driver);
++}
++module_init(cpif_init);
+ 
+ MODULE_DESCRIPTION("Exynos CP interface Driver");
+ MODULE_LICENSE("GPL");
+diff --git a/cpif/s51xx_pcie.c b/cpif/s51xx_pcie.c
+index 7946a81..8a14992 100644
+--- a/cpif/s51xx_pcie.c
++++ b/cpif/s51xx_pcie.c
+@@ -534,9 +534,14 @@ static void s51xx_pcie_remove(struct pci_dev *pdev)
+ 	pci_release_regions(pdev);
+ }
+ 
+-/* For Test */
++/*
++ * Pixel 7 Pro port: the S5300 endpoint only (144d:a5a5 on stock). Google's
++ * table matched any Samsung PCI function, so any one without a driver (a
++ * root port whose port driver is not bound, on either channel) would get
++ * its BAR0 rewritten by s51xx_pcie_probe().
++ */
+ static struct pci_device_id s51xx_pci_id_tbl[] = {
+-	{ PCI_VENDOR_ID_SAMSUNG, PCI_ANY_ID, PCI_ANY_ID, PCI_ANY_ID, },   // SC Basic
++	{ PCI_VDEVICE(SAMSUNG, 0xa5a5), },
+ 	{ }
+ };
+ 
+@@ -556,12 +561,25 @@ int s51xx_pcie_init(struct modem_ctl *mc)
+ {
+ 	int ch_num = mc->pcie_ch_num;
+ 	int ret;
++	static bool registered;
++
++	/*
++	 * Pixel 7 Pro port: register_pcie() calls this again on every boot
++	 * attempt until the endpoint has probed; register the driver once.
++	 */
++	if (registered)
++		return 0;
+ 
+ 	mif_info("Register PCIE drvier for s51xx.(chNum: %d, mc: 0x%p)\n", ch_num, mc);
+ 
+ 	mc->pci_driver = s51xx_driver;
+ 
+ 	ret = pci_register_driver(&mc->pci_driver);
++	if (ret) {
++		mif_err("pci_register_driver() error %d\n", ret);
++		return ret;
++	}
++	registered = true;
+ 
+ 	/* Create PROC fs */
+ 	proc_create("driver/s51xx_pcie_proc", 0, NULL, &s51xx_pcie_proc_fops);

@@ -1,0 +1,671 @@
+--- a/cpif/shm_ipc.c
++++ b/cpif/shm_ipc.c
+@@ -13,6 +13,9 @@
+ #include <linux/slab.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/of_fdt.h>
++#include <linux/mm.h>
++#include <linux/mutex.h>
++#include <linux/vmalloc.h>
+ #include <soc/google/shm_ipc.h>
+ 
+ #include "modem_utils.h"
+@@ -32,70 +35,81 @@
+ static int _rmem_count;
+ static struct cp_reserved_mem _cp_rmem[MAX_CP_RMEM];
+ 
+-#if defined(MODULE)
++/* This out-of-tree port is specific to the Pixel 7 Pro stock DT. The AoC
++ * voice window is SRAM, not DRAM: retain its metadata but never phys_to_page
++ * or map it here until the voice transport is integrated with the AoC driver.
++ */
++static const struct {
++	unsigned long base;
++	u32 size;
++} pixel_rmem[] = {
++	{ 0xea400000, 0x800000 },
++	{ 0xf6200000, 0x1000 },
++	{ 0xe8000000, 0x2000000 },
++	{ 0x197fd000, 0x3000 },
++};
++
++static bool pixel_reserved_ram(unsigned long base, u32 size)
++{
++	unsigned long addr, end;
++	unsigned int i;
++
++	if (!size || !PAGE_ALIGNED(base) || !PAGE_ALIGNED(size))
++		return false;
++	for (i = 0; i < 3; i++) {
++		if (!_cp_rmem[i].size || base < _cp_rmem[i].p_base ||
++		    size > _cp_rmem[i].size ||
++		    base - _cp_rmem[i].p_base > _cp_rmem[i].size - size)
++			continue;
++		end = base + size; /* containment above excludes overflow */
++		for (addr = base; addr < end; addr += PAGE_SIZE)
++			if (!pfn_valid(PHYS_PFN(addr)) ||
++			    !PageReserved(pfn_to_page(PHYS_PFN(addr))))
++				return false;
++		return true;
++	}
++	return false;
++}
++
+ static int cp_rmem_setup_latecall(struct platform_device *pdev)
+ {
+ 	struct device_node *np;
+ 	struct reserved_mem *rmem;
+-	u32 rmem_index = 0;
+-	int i;
+-
+-	for (i = 0; i < MAX_CP_RMEM; i++) {
++	u32 index;
++	int i, ret;
++
++	memset(_cp_rmem, 0, sizeof(_cp_rmem));
++	_rmem_count = 0;
++	if (!of_machine_is_compatible("google,GS201") ||
++	    of_count_phandle_with_args(pdev->dev.of_node, "memory-region", NULL) !=
++	    ARRAY_SIZE(pixel_rmem))
++		return -EINVAL;
++	for (i = 0; i < ARRAY_SIZE(pixel_rmem); i++) {
+ 		np = of_parse_phandle(pdev->dev.of_node, "memory-region", i);
+ 		if (!np)
+-			break;
+-
+-		mif_dt_read_u32(np, "rmem_index", rmem_index);
+-
++			return -EINVAL;
++		ret = of_property_read_u32(np, "rmem_index", &index);
+ 		rmem = of_reserved_mem_lookup(np);
+-		if (!rmem) {
+-			mif_err("of_reserved_mem_lookup() failed\n");
+-			break;
+-		}
+-
+-		_cp_rmem[i].index = rmem_index;
+-		_cp_rmem[i].name = (char *)rmem->name;
+-		_cp_rmem[i].p_base = rmem->base;
+-		_cp_rmem[i].size = rmem->size;
+-
+-		mif_info("rmem %d %s 0x%08lx 0x%08x\n",
+-				_cp_rmem[i].index, _cp_rmem[i].name,
+-				_cp_rmem[i].p_base, _cp_rmem[i].size);
+-	}
+-
++		of_node_put(np);
++		if (ret || !rmem || index >= ARRAY_SIZE(pixel_rmem) ||
++		    _cp_rmem[index].size || rmem->base != pixel_rmem[index].base ||
++		    rmem->size != pixel_rmem[index].size)
++			return -EINVAL;
++		_cp_rmem[index].index = index;
++		_cp_rmem[index].name = (char *)rmem->name;
++		_cp_rmem[index].p_base = rmem->base;
++		_cp_rmem[index].size = rmem->size;
++		_rmem_count++;
++	}
++	for (i = 0; i < 3; i++) {
++		if (!pixel_reserved_ram(_cp_rmem[i].p_base, _cp_rmem[i].size))
++			return -EINVAL;
++		mif_info("rmem %d: all %u DRAM pages reserved; WB/IOCC mapping required\n",
++			 i, _cp_rmem[i].size >> PAGE_SHIFT);
++	}
++	mif_info("rmem 3: AoC SRAM metadata only; CPU mapping disabled\n");
+ 	return 0;
+ }
+-#else
+-static int __init cp_rmem_setup(struct reserved_mem *rmem)
+-{
+-	const __be32 *prop;
+-	int len;
+-
+-	if (_rmem_count >= MAX_CP_RMEM) {
+-		mif_err("_cp_rmem is full for %s\n", rmem->name);
+-		return -ENOMEM;
+-	}
+-
+-	prop = of_get_flat_dt_prop(rmem->fdt_node, "rmem_index", &len);
+-	if (!prop) {
+-		mif_err("rmem_name is not defined for %s\n", rmem->name);
+-		return -ENOENT;
+-	}
+-	_cp_rmem[be32_to_cpu(prop[0])].index = be32_to_cpu(prop[0]);
+-	_cp_rmem[be32_to_cpu(prop[0])].name = (char *)rmem->name;
+-	_cp_rmem[be32_to_cpu(prop[0])].p_base = rmem->base;
+-	_cp_rmem[be32_to_cpu(prop[0])].size = rmem->size;
+-	_rmem_count++;
+-
+-	mif_info("rmem %d %s 0x%08lx 0x%08x\n",
+-			_cp_rmem[be32_to_cpu(prop[0])].index, _cp_rmem[be32_to_cpu(prop[0])].name,
+-			_cp_rmem[be32_to_cpu(prop[0])].p_base, _cp_rmem[be32_to_cpu(prop[0])].size);
+-
+-	return 0;
+-}
+-RESERVEDMEM_OF_DECLARE(modem_if, "exynos,modem_if", cp_rmem_setup);
+-
+-#endif
+ 
+ /*
+  * Shared memory
+@@ -113,253 +127,134 @@
+ 
+ static struct cp_shared_mem _cp_shmem[MAX_CP_NUM][MAX_CP_SHMEM];
+ 
++static DEFINE_MUTEX(cp_shmem_lock);
++
+ static int cp_shmem_setup(struct device *dev)
+ {
+-	struct device_node *regions = NULL;
+-	struct device_node *child = NULL;
+-	u32 cp_num;
+-	u32 shmem_index, rmem_index;
+-	u32 offset;
+-	u32 count = 0;
+-
+-	mif_dt_read_u32(dev->of_node, "cp_num", cp_num);
+-
++	struct device_node *regions, *child;
++	struct cp_shared_mem *shm;
++	struct cp_reserved_mem *rmem;
++	u32 cp_num, index, rindex, offset, size, cached;
++	const char *name;
++	int ret = -EINVAL;
++
++	if (of_property_read_u32(dev->of_node, "cp_num", &cp_num) || cp_num != 0)
++		return -EINVAL;
+ 	regions = of_get_child_by_name(dev->of_node, "regions");
+-	if (!regions) {
+-		mif_err("of_get_child_by_name() error:regions\n");
++	if (!regions)
+ 		return -EINVAL;
+-	}
+-
+ 	for_each_child_of_node(regions, child) {
+-		if (count >= MAX_CP_SHMEM) {
+-			mif_err("_cp_shmem is full for %d\n", count);
+-			return -ENOMEM;
+-		}
+-		mif_dt_read_u32(child, "region,index", shmem_index);
+-		_cp_shmem[cp_num][shmem_index].index = shmem_index;
+-		_cp_shmem[cp_num][shmem_index].cp_num = cp_num;
+-		mif_dt_read_string(child, "region,name", _cp_shmem[cp_num][shmem_index].name);
+-
+-		mif_dt_read_u32(child, "region,rmem", _cp_shmem[cp_num][shmem_index].rmem);
+-		rmem_index = _cp_shmem[cp_num][shmem_index].rmem;
+-		if (!_cp_rmem[rmem_index].p_base) {
+-			mif_err("_cp_rmem[%d].p_base is null\n", rmem_index);
+-			return -ENOMEM;
+-		}
+-		mif_dt_read_u32(child, "region,offset", offset);
+-
+-		_cp_shmem[cp_num][shmem_index].p_base = _cp_rmem[rmem_index].p_base + offset;
+-		mif_dt_read_u32(child, "region,size", _cp_shmem[cp_num][shmem_index].size);
+-		if ((_cp_shmem[cp_num][shmem_index].p_base + _cp_shmem[cp_num][shmem_index].size) >
+-			(_cp_rmem[rmem_index].p_base + _cp_rmem[rmem_index].size)) {
+-			mif_err("%d %d size error 0x%08lx 0x%08x 0x%08lx 0x%08x\n",
+-				rmem_index, shmem_index,
+-				_cp_shmem[cp_num][shmem_index].p_base,
+-				_cp_shmem[cp_num][shmem_index].size,
+-				_cp_rmem[rmem_index].p_base, _cp_rmem[rmem_index].size);
+-			return -ENOMEM;
+-		}
+-
+-		mif_dt_read_u32_noerr(child, "region,cached",
+-				_cp_shmem[cp_num][shmem_index].cached);
+-		count++;
+-	}
+-
++		if (of_property_read_u32(child, "region,index", &index) ||
++		    index >= MAX_CP_SHMEM || _cp_shmem[cp_num][index].size ||
++		    of_property_read_u32(child, "region,rmem", &rindex) ||
++		    rindex >= ARRAY_SIZE(pixel_rmem) ||
++		    of_property_read_u32(child, "region,offset", &offset) ||
++		    of_property_read_u32(child, "region,size", &size) ||
++		    of_property_read_string(child, "region,name", &name))
++			goto fail;
++		rmem = &_cp_rmem[rindex];
++		if (!size || size > rmem->size || offset > rmem->size - size ||
++		    !PAGE_ALIGNED(offset) || !PAGE_ALIGNED(size))
++			goto fail;
++		cached = 0;
++		if (of_find_property(child, "region,cached", NULL) &&
++		    (of_property_read_u32(child, "region,cached", &cached) || cached > 1))
++			goto fail;
++		if (rindex == 3 && (index != SHMEM_VSS || cached))
++			goto fail;
++		shm = &_cp_shmem[cp_num][index];
++		shm->name = (char *)name;
++		shm->index = index;
++		shm->rmem = rindex;
++		shm->cp_num = cp_num;
++		shm->p_base = rmem->p_base + offset;
++		shm->size = size;
++		shm->cached = cached;
++	}
++	/* The PCIe port needs all four DRAM subregions before probing cpif. */
++	if (!_cp_shmem[0][SHMEM_IPC].size || !_cp_shmem[0][SHMEM_MSI].size ||
++	    !_cp_shmem[0][SHMEM_PKTPROC].size || !_cp_shmem[0][SHMEM_PKTPROC_UL].size)
++		goto done;
++	ret = 0;
++	goto done;
++fail:
++	of_node_put(child);
++done:
++	of_node_put(regions);
++	return ret;
++}
++
++/*
++ * Export functions - legacy
++ */
++unsigned long shm_get_msi_base(void)
++{
++	return cp_shmem_get_base(0, SHMEM_MSI);
++}
++EXPORT_SYMBOL(shm_get_msi_base);
++
++void __iomem *shm_get_vss_region(void)
++{
++	return cp_shmem_get_region(0, SHMEM_VSS);
++}
++EXPORT_SYMBOL(shm_get_vss_region);
++
++unsigned long shm_get_vss_base(void)
++{
++	return cp_shmem_get_base(0, SHMEM_VSS);
++}
++EXPORT_SYMBOL(shm_get_vss_base);
++
++u32 shm_get_vss_size(void)
++{
++	return cp_shmem_get_size(0, SHMEM_VSS);
++}
++EXPORT_SYMBOL(shm_get_vss_size);
++
++void __iomem *shm_get_vparam_region(void)
++{
++	return cp_shmem_get_region(0, SHMEM_VPA);
++}
++EXPORT_SYMBOL(shm_get_vparam_region);
++
++unsigned long shm_get_vparam_base(void)
++{
++	return cp_shmem_get_base(0, SHMEM_VPA);
++}
++EXPORT_SYMBOL(shm_get_vparam_base);
++
++u32 shm_get_vparam_size(void)
++{
++	return cp_shmem_get_size(0, SHMEM_VPA);
++}
++EXPORT_SYMBOL(shm_get_vparam_size);
++
++/*
++ * Export functions
++ */
++int cp_shmem_get_mem_map_on_cp_flag(u32 cp_num)
++{
++	/* PCIe uses the validated DT; on-SoC firmware-supplied maps are disabled. */
+ 	return 0;
+ }
+-
+-/*
+- * Memory map on CP binary
+- */
+-#define MAX_MAP_ON_CP		10
+-#define MAP_ON_CP_OFFSET	0xA0
+-
+-struct ns_map_info {	/* Non secure map */
+-	u32 name;
+-	u32 offset;
+-	u32 size;
+-};
+-
+-struct cp_mem_map {	/* Memory map on CP */
+-	u32 version;
+-	u32 secure_size;
+-	u32 ns_size;
+-	u32 ns_map_count;
+-	struct ns_map_info ns_map[MAX_MAP_ON_CP];
+-	u32 mem_guard;
+-};
+-
+-struct cp_toc {		/* CP TOC */
+-	char name[12];
+-	u32 img_offset;
+-	u32 mem_offset;
+-	u32 size;
+-	u32 crc;
+-	u32 reserved;
+-} __packed;
+-
+-static int _mem_map_on_cp[MAX_CP_NUM] = {};
+-
+-static int cp_shmem_check_mem_map_on_cp(struct device *dev)
+-{
+-	u32 cp_num = 0;
+-	void __iomem *base = NULL;
+-	struct cp_toc *toc = NULL;
+-	struct cp_mem_map map = {};
+-	u32 name;
+-	int i;
+-	u32 rmem_index = 0;
+-	u32 shmem_index = 0;
+-	long long base_diff = 0;
+-
+-	mif_dt_read_u32(dev->of_node, "cp_num", cp_num);
+-	base = phys_to_virt(cp_shmem_get_base(cp_num, SHMEM_CP));
+-	if (!base) {
+-		mif_err("base is null\n");
+-		return -ENOMEM;
+-	}
+-
+-	toc = (struct cp_toc *)(base + sizeof(struct cp_toc));
+-	if (!toc) {
+-		mif_err("toc is null\n");
+-		return -ENOMEM;
+-	}
+-	mif_info("offset:0x%08x\n", toc->img_offset);
+-
+-	if (toc->img_offset > (cp_shmem_get_size(cp_num, SHMEM_CP) - MAP_ON_CP_OFFSET)) {
+-		mif_info("Invalid img_offset:0x%08x. Use dt information\n", toc->img_offset);
+-		return 0;
+-	}
+-
+-	memcpy(&map, base + toc->img_offset + MAP_ON_CP_OFFSET, sizeof(struct cp_mem_map));
+-	name = ntohl(map.version);
+-	if (strncmp((const char *)&name, "MEM\0", sizeof(name))) {
+-		mif_err("map.version error:0x%08x. Use dt information\n", map.version);
+-		return 0;
+-	}
+-
+-	_mem_map_on_cp[cp_num] = 1;
+-
+-	mif_info("secure_size:0x%08x ns_size:0x%08x count:%d\n",
+-			map.secure_size, map.ns_size, map.ns_map_count);
+-	_cp_shmem[cp_num][SHMEM_CP].size = map.secure_size;
+-
+-	for (i = 0; i < map.ns_map_count; i++) {
+-		name = map.ns_map[i].name;
+-		if (!strncmp((const char *)&name, "CPI\0", sizeof(name)))
+-			shmem_index = SHMEM_IPC;
+-		else if (!strncmp((const char *)&name, "SSV\0", sizeof(name)))
+-			shmem_index = SHMEM_VSS;
+-		else if (!strncmp((const char *)&name, "GOL\0", sizeof(name)))
+-			shmem_index = SHMEM_BTL;
+-		else if (!strncmp((const char *)&name, "EGOL\0", sizeof(name)))
+-			shmem_index = SHMEM_BTL_EXT;
+-		else if (!strncmp((const char *)&name, "B2L\0", sizeof(name)))
+-			shmem_index = SHMEM_L2B;
+-		else if (!strncmp((const char *)&name, "PKP\0", sizeof(name)))
+-			shmem_index = SHMEM_PKTPROC;
+-		else if (!strncmp((const char *)&name, "UKP\0", sizeof(name)))
+-			shmem_index = SHMEM_PKTPROC_UL;
+-		else if (!strncmp((const char *)&name, "MDD\0", sizeof(name)))
+-			shmem_index = SHMEM_DDM;
+-		else
+-			continue;
+-
+-		rmem_index = _cp_shmem[cp_num][shmem_index].rmem;
+-		if (!_cp_rmem[rmem_index].p_base) {
+-			mif_err("_cp_rmem[%d].p_base is null\n", rmem_index);
+-			return -ENOMEM;
+-		}
+-
+-		base_diff = _cp_rmem[rmem_index].p_base - _cp_rmem[0].p_base;
+-		_cp_shmem[cp_num][shmem_index].p_base =
+-			_cp_rmem[rmem_index].p_base + map.ns_map[i].offset - base_diff;
+-		_cp_shmem[cp_num][shmem_index].size = map.ns_map[i].size;
+-
+-		if ((_cp_shmem[cp_num][shmem_index].p_base + _cp_shmem[cp_num][shmem_index].size) >
+-			(_cp_rmem[rmem_index].p_base + _cp_rmem[rmem_index].size)) {
+-			mif_err("rmem:%d shmem_index:%d size error 0x%08lx 0x%08x 0x%08lx 0x%08x\n",
+-				rmem_index, shmem_index,
+-				_cp_shmem[cp_num][shmem_index].p_base,
+-				_cp_shmem[cp_num][shmem_index].size,
+-				_cp_rmem[rmem_index].p_base, _cp_rmem[rmem_index].size);
+-			return -ENOMEM;
+-		}
+-
+-		mif_info("rmem:%d shmem_index:%d base:0x%08lx offset:0x%08x size:0x%08x\n",
+-				rmem_index, shmem_index, _cp_rmem[rmem_index].p_base,
+-				map.ns_map[i].offset, map.ns_map[i].size);
+-	}
+-
+-	return 0;
+-}
+-
+-/*
+- * Export functions - legacy
+- */
+-unsigned long shm_get_msi_base(void)
+-{
+-	return cp_shmem_get_base(0, SHMEM_MSI);
+-}
+-EXPORT_SYMBOL(shm_get_msi_base);
+-
+-void __iomem *shm_get_vss_region(void)
+-{
+-	return cp_shmem_get_region(0, SHMEM_VSS);
+-}
+-EXPORT_SYMBOL(shm_get_vss_region);
+-
+-unsigned long shm_get_vss_base(void)
+-{
+-	return cp_shmem_get_base(0, SHMEM_VSS);
+-}
+-EXPORT_SYMBOL(shm_get_vss_base);
+-
+-u32 shm_get_vss_size(void)
+-{
+-	return cp_shmem_get_size(0, SHMEM_VSS);
+-}
+-EXPORT_SYMBOL(shm_get_vss_size);
+-
+-void __iomem *shm_get_vparam_region(void)
+-{
+-	return cp_shmem_get_region(0, SHMEM_VPA);
+-}
+-EXPORT_SYMBOL(shm_get_vparam_region);
+-
+-unsigned long shm_get_vparam_base(void)
+-{
+-	return cp_shmem_get_base(0, SHMEM_VPA);
+-}
+-EXPORT_SYMBOL(shm_get_vparam_base);
+-
+-u32 shm_get_vparam_size(void)
+-{
+-	return cp_shmem_get_size(0, SHMEM_VPA);
+-}
+-EXPORT_SYMBOL(shm_get_vparam_size);
+-
+-/*
+- * Export functions
+- */
+-int cp_shmem_get_mem_map_on_cp_flag(u32 cp_num)
+-{
+-	mif_info("cp:%d flag:%d\n", cp_num, _mem_map_on_cp[cp_num]);
+-
+-	return _mem_map_on_cp[cp_num];
+-}
+ EXPORT_SYMBOL(cp_shmem_get_mem_map_on_cp_flag);
+ 
+ void __iomem *cp_shmem_get_nc_region(unsigned long base, u32 size)
+ {
+ 	unsigned int num_pages = (unsigned int)DIV_ROUND_UP(size, PAGE_SIZE);
+-	pgprot_t prot = pgprot_writecombine(PAGE_KERNEL);
++	/* These pages already have a WB linear alias. The host enables IOCC;
++	 * a WC alias would violate arm64 memory-type requirements. Keep vmap
++	 * ownership so existing non-cached-path callers can still vunmap.
++	 */
++	pgprot_t prot = PAGE_KERNEL;
+ 	struct page **pages;
+ 	void *v_addr;
+ 	unsigned int i;
+ 
+-	if (!base)
++	if (!pixel_reserved_ram(base, size)) {
++		mif_err("Refusing non-reserved/non-DRAM mapping 0x%lx + 0x%x\n", base, size);
+ 		return NULL;
++	}
+ 
+ 	pages = kvcalloc(num_pages, sizeof(struct page *), GFP_KERNEL);
+ 	if (!pages)
+@@ -382,56 +277,60 @@
+ 
+ void __iomem *cp_shmem_get_region(u32 cp, u32 idx)
+ {
+-	if (_cp_shmem[cp][idx].v_base)
+-		return _cp_shmem[cp][idx].v_base;
+-
+-	if (_cp_shmem[cp][idx].cached)
+-		_cp_shmem[cp][idx].v_base = phys_to_virt(_cp_shmem[cp][idx].p_base);
+-	else
+-		_cp_shmem[cp][idx].v_base = cp_shmem_get_nc_region(_cp_shmem[cp][idx].p_base,
+-				_cp_shmem[cp][idx].size);
+-
+-	return _cp_shmem[cp][idx].v_base;
++	struct cp_shared_mem *shm;
++	void __iomem *base;
++
++	if (cp >= MAX_CP_NUM || idx >= MAX_CP_SHMEM)
++		return NULL;
++	shm = &_cp_shmem[cp][idx];
++	if (!pixel_reserved_ram(shm->p_base, shm->size))
++		return NULL;
++	mutex_lock(&cp_shmem_lock);
++	if (!shm->v_base) {
++		if (shm->cached)
++			shm->v_base = phys_to_virt(shm->p_base);
++		else
++			shm->v_base = cp_shmem_get_nc_region(shm->p_base, shm->size);
++	}
++	base = shm->v_base;
++	mutex_unlock(&cp_shmem_lock);
++	return base;
+ }
+ EXPORT_SYMBOL(cp_shmem_get_region);
+ 
+ void cp_shmem_release_region(u32 cp, u32 idx)
+ {
+-	if (_cp_shmem[cp][idx].v_base)
+-		vunmap(_cp_shmem[cp][idx].v_base);
++	struct cp_shared_mem *shm;
++
++	if (cp >= MAX_CP_NUM || idx >= MAX_CP_SHMEM)
++		return;
++	mutex_lock(&cp_shmem_lock);
++	shm = &_cp_shmem[cp][idx];
++	if (shm->v_base && !shm->cached)
++		vunmap(shm->v_base);
++	shm->v_base = NULL;
++	mutex_unlock(&cp_shmem_lock);
+ }
+ EXPORT_SYMBOL(cp_shmem_release_region);
+ 
+ void cp_shmem_release_rmem(u32 cp, u32 idx, u32 headroom)
+ {
+-	int i;
+-	unsigned long base, offset = 0;
+-	u32 size;
+-	struct page *page;
+-
+-	base = cp_shmem_get_base(cp, idx);
+-	size = cp_shmem_get_size(cp, idx);
+-	mif_info("Release rmem base:0x%08lx size:0x%08x headroom:0x%08x\n", base, size, headroom);
+-
+-	for (i = 0; i < (size >> PAGE_SHIFT); i++) {
+-		if (offset >= headroom) {
+-			page = phys_to_page(base + offset);
+-			free_reserved_page(page);
+-		}
+-		offset += PAGE_SIZE;
+-	}
++	/* The fixed PCIe DMA windows must remain reserved for the entire boot.
++	 * The port disables the vendor IOMMU path that used to free these pages.
++	 */
++	mif_err("Refusing to free CP reserved memory\n");
+ }
+ EXPORT_SYMBOL(cp_shmem_release_rmem);
+ 
+ unsigned long cp_shmem_get_base(u32 cp, u32 idx)
+ {
+-	return _cp_shmem[cp][idx].p_base;
++	return cp < MAX_CP_NUM && idx < MAX_CP_SHMEM ? _cp_shmem[cp][idx].p_base : 0;
+ }
+ EXPORT_SYMBOL(cp_shmem_get_base);
+ 
+ u32 cp_shmem_get_size(u32 cp, u32 idx)
+ {
+-	return _cp_shmem[cp][idx].size;
++	return cp < MAX_CP_NUM && idx < MAX_CP_SHMEM ? _cp_shmem[cp][idx].size : 0;
+ }
+ EXPORT_SYMBOL(cp_shmem_get_size);
+ 
+@@ -447,31 +346,18 @@
+ 
+ 	mif_info("+++\n");
+ 
+-#if defined(MODULE)
+-	if (!_rmem_count) {
+-		ret = cp_rmem_setup_latecall(pdev);
+-		if (ret) {
+-			mif_err("cp_rmem_setup_latecall() error:%d\n", ret);
+-			goto fail;
+-		}
+-	}
+-#endif
+-
++	ret = cp_rmem_setup_latecall(pdev);
++	if (ret)
++		goto fail;
+ 	ret = cp_shmem_setup(dev);
+-	if (ret) {
+-		mif_err("cp_shmem_setup() error:%d\n", ret);
++	if (ret)
+ 		goto fail;
+-	}
+-
+-	mif_dt_read_u32(dev->of_node, "use_mem_map_on_cp", use_map_on_cp);
++	ret = of_property_read_u32(dev->of_node, "use_mem_map_on_cp", &use_map_on_cp);
++	if (ret)
++		goto fail;
+ 	if (use_map_on_cp) {
+-		ret = cp_shmem_check_mem_map_on_cp(dev);
+-		if (ret) {
+-			mif_err("cp_shmem_check_mem_map_on_cp() error:%d\n", ret);
+-			goto fail;
+-		}
+-	} else {
+-		mif_info("use_mem_map_on_cp is disabled. Use dt information\n");
++		ret = -EOPNOTSUPP;
++		goto fail;
+ 	}
+ 
+ 	for (i = 0; i < MAX_CP_NUM; i++) {
+@@ -492,6 +378,9 @@
+ 	return 0;
+ 
+ fail:
++	memset(_cp_shmem, 0, sizeof(_cp_shmem));
++	memset(_cp_rmem, 0, sizeof(_cp_rmem));
++	_rmem_count = 0;
+ 	/* Pixel 7 Pro port: fail the probe; do not panic the kernel. */
+ 	mif_err("CP shmem probe failed: %d\n", ret);
+ 	return ret;
+@@ -499,6 +388,14 @@
+ 
+ static void cp_shmem_remove(struct platform_device *pdev)
+ {
++	u32 cp, idx;
++
++	for (cp = 0; cp < MAX_CP_NUM; cp++)
++		for (idx = 0; idx < MAX_CP_SHMEM; idx++)
++			cp_shmem_release_region(cp, idx);
++	memset(_cp_shmem, 0, sizeof(_cp_shmem));
++	memset(_cp_rmem, 0, sizeof(_cp_rmem));
++	_rmem_count = 0;
+ }
+ 
+ static const struct of_device_id cp_shmem_dt_match[] = {

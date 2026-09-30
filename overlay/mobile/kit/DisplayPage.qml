@@ -11,6 +11,27 @@ Flickable {
     // The always-on display (prefs alwaysOn): the power button shows a dim
     // clock instead of switching the panel off.
     property bool alwaysOn: false
+    // Seconds without input before the screen goes off (prefs screenTimeout; 0 never).
+    property int screenTimeout: 60
+    readonly property var timeouts: [15, 30, 60, 120, 300, 600, 0]
+    function timeoutName(seconds) {
+        if (seconds === 0) return "Never";
+        if (seconds < 60) return seconds + " seconds";
+        return seconds === 60 ? "1 minute" : (seconds / 60) + " minutes";
+    }
+    function applyPrefs(text) {
+        try {
+            const prefs = JSON.parse(text);
+            if (prefs.error) return;
+            page.alwaysOn = prefs.alwaysOn === true;
+            if (typeof prefs.screenTimeout === "number") page.screenTimeout = prefs.screenTimeout;
+        } catch (e) {}
+    }
+    function setScreenTimeout(seconds) {
+        screenTimeout = seconds;
+        prefsSave.payload = JSON.stringify({screenTimeout: seconds}) + "\n";
+        prefsSave.running = true;
+    }
     function refresh() {
         if (!probe.running) probe.running = true;
         if (!prefsLoad.running) prefsLoad.running = true;
@@ -25,10 +46,7 @@ Flickable {
         id: prefsLoad
         command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-prefs"]
         stdout: StdioCollector {}
-        onExited: {
-            try { page.alwaysOn = JSON.parse(stdout.text).alwaysOn === true; }
-            catch (e) {}
-        }
+        onExited: page.applyPrefs(stdout.text)
     }
     Process {
         id: prefsSave
@@ -39,8 +57,7 @@ Flickable {
         onStarted: { write(prefsSave.payload); prefsSave.payload = ""; stdinEnabled = false; }
         onExited: {
             stdinEnabled = true;
-            try { page.alwaysOn = JSON.parse(stdout.text).alwaysOn === true; }
-            catch (e) {}
+            page.applyPrefs(stdout.text);
         }
     }
     Process {
@@ -101,6 +118,13 @@ Flickable {
         }
         SettingsRow {
             width: parent.width
+            label: "Screen timeout"
+            value: page.timeoutName(page.screenTimeout)
+            enabled: !prefsSave.running
+            onClicked: timeoutPicker.open = true
+        }
+        SettingsRow {
+            width: parent.width
             label: "Always-on display"
             value: page.alwaysOn ? "On" : "Off"
             selected: page.alwaysOn
@@ -125,4 +149,12 @@ Flickable {
         }
     }
     signal appearanceRequested()
+    ChoicePicker {
+        id: timeoutPicker
+        parent: page
+        title: "Screen timeout"
+        current: page.screenTimeout
+        options: page.timeouts.map(seconds => ({value: seconds, label: page.timeoutName(seconds)}))
+        onChosen: value => page.setScreenTimeout(value)
+    }
 }

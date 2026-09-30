@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:49:39 -0700
+Subject: [PATCH 6/7] aoc/alsa: card driver name aoc-snd-card for UCM
+
+---
+ aoc/alsa/aoc_alsa_card.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/aoc/alsa/aoc_alsa_card.c b/aoc/alsa/aoc_alsa_card.c
+index c37c53e..6481978 100644
+--- a/aoc/alsa/aoc_alsa_card.c
++++ b/aoc/alsa/aoc_alsa_card.c
+@@ -1947,6 +1947,12 @@ static int aoc_snd_card_probe(struct platform_device *pdev)
+ 	pdata->g_chip.wakelock = wakeup_source_register(dev, dev_name(dev));
+ 
+ 	card->owner = THIS_MODULE;
++	/*
++	 * Pixel 7 Pro port: a driver name for userspace (UCM looks up
++	 * conf.d/<driver>/); derived from the DT card name, it is truncated
++	 * to "google_aoc-snd-".
++	 */
++	card->driver_name = "aoc-snd-card";
+ 	card->dev = dev;
+ 	card->late_probe = aoc_card_late_probe;
+ 	mutex_init(&pdata->mutex);

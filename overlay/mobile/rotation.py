@@ -104,6 +104,9 @@ def sensor_ready(has):
 
 def watch():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # End with the shell too: a killed shell leaves its children running, and
+    # this one would hold its sensor.
+    die_with_parent()
     last = None
     while True:
         if not status().get('screen_on', False) or not sensor_ready('HasAccelerometer'):

@@ -1,0 +1,12 @@
+/dts-v1/;
+/plugin/;
+#include <dt-bindings/sound/qcom,q6voice.h>
+
+/* The VoiceMMode1 front end: opening it starts the modem voice session
+ * (11C05000) on the ports chosen by its mixers. */
+&sound {
+    voicemmode1-dai-link {
+        link-name = "VoiceMMode1";
+        cpu { sound-dai = <&q6voicedai VOICEMMODE1>; };
+    };
+};

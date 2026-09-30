@@ -240,6 +240,15 @@ Item {
         const targetTop = cardTop + (tileGap - cardTop) * pose;
         return targetTop - scaledTop;
     }
+    // From the home screen there is no app to shrink into a card: play the
+    // minimize animation backwards, so the cards grow and fade in.
+    function revealFromHome(duration) {
+        homeAnim.stop();
+        home = 2;
+        homeAnim.to = 0;
+        homeAnim.duration = duration;
+        homeAnim.start();
+    }
     function minimizeHome() {
         homeAnim.stop();
         homeAnim.to = Math.max(0, 2 - openness);
@@ -464,7 +473,8 @@ Item {
                             const other = overview.expandingId && !card.expanding ? (1 - overview.lift) : 1;
                             const homeFade = front
                                 ? (overview.present <= 1 ? 1 : Math.max(0, 1 - (overview.present - 1)))
-                                : Math.max(0, Math.min(1, (overview.present - 0.3) / 0.7));
+                                : (overview.present <= 1 ? Math.max(0, Math.min(1, (overview.present - 0.3) / 0.7))
+                                                         : Math.max(0, 1 - (overview.present - 1)));
                             return fade * other * homeFade;
                         }
                     Rectangle {

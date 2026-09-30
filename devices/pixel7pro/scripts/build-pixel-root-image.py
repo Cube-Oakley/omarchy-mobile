@@ -64,10 +64,34 @@ def main():
         'root/pixel-desktop-prepare.sh': ('adapter/desktop-prepare.sh', 0o700),
         'usr/local/lib/omarchy-mobile/pixel-boot.sh': ('scripts/pixel-persistent-session.sh', 0o700),
         'root/install-pixel-root.sh': ('scripts/install-pixel-root.sh', 0o700),
+        'usr/local/sbin/pixel-usb-diag': ('scripts/pixel-usb-diag.py', 0o755),
+        'usr/local/sbin/pixel-wifi-ssh': ('scripts/pixel-wifi-ssh.py', 0o755),
+        'etc/NetworkManager/dispatcher.d/50-pixel-wifi-ssh': ('scripts/pixel-wifi-ssh-dispatcher.sh', 0o755),
+        'usr/local/sbin/pixel-reboot': ('scripts/pixel-reboot.sh', 0o755),
+        'etc/NetworkManager/conf.d/10-pixel.conf': ('adapter/network/NetworkManager-pixel.conf', 0o644),
+        'usr/share/alsa/ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf':
+            ('audio/ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf', 0o644),
+        'usr/share/alsa/ucm2/Google/aoc/HiFi.conf': ('audio/ucm2/Google/aoc/HiFi.conf', 0o644),
+        'etc/wireplumber/wireplumber.conf.d/51-pixel-aoc.conf': ('audio/wireplumber/51-pixel-aoc.conf', 0o644),
+        'usr/local/lib/omarchy-mobile/sensors/pixel-sensor-proxy.py': ('sensors/pixel-sensor-proxy.py', 0o755),
+        'usr/local/lib/omarchy-mobile/sensors/usf.py': ('sensors/usf.py', 0o644),
+        'usr/local/lib/omarchy-mobile/sensors/usf_backend.py': ('sensors/usf_backend.py', 0o644),
     }
     directories = {'mnt': 0o755, 'run': 0o755, 'dev': 0o755, 'proc': 0o755, 'sys': 0o755, 'tmp': 0o1777}
     proof = 'pixel-persistent-' + uuid.uuid4().hex + '\n'
     extras = {'etc/omarchy-mobile-pixel-root': b'v1\n', 'root/persistence-proof.txt': proof.encode()}
+    # The AoC (audio DSP) firmware, 12255112-polygon from the stock vendor
+    # image. Proprietary: it stays in the ignored out/ and in this local image.
+    # The boot script points the kernel's firmware path at this directory.
+    aoc_firmware = (ROOT / 'out/stock-vendor/audio/firmware/aoc.bin').read_bytes()
+    if not hashlib.sha256(aoc_firmware).hexdigest().startswith('3d4dc885e95163bb'):
+        raise RuntimeError('Stock AoC firmware checksum mismatch')
+    extras['usr/lib/firmware/omarchy-mobile/aoc.bin'] = aoc_firmware
+    # The stock sensor registry scripts (/vendor/etc/sensors/registry), which
+    # pixel-sensor-proxy loads into the AoC. Vendor data: ignored out/ only.
+    registry = ROOT / 'out/stock-vendor/sensors/registry'
+    for path in sorted(registry.rglob('*.reg')):
+        extras['usr/share/omarchy-mobile/sensors/registry/' + str(path.relative_to(registry))] = path.read_bytes()
     required = {'usr/bin/bash', 'usr/bin/Hyprland', 'usr/bin/quickshell', 'etc/ssh/sshd_config.pixel'}
     seen = set()
     prepared = out / 'root.tar'
@@ -89,6 +113,13 @@ def main():
             target.addfile(member)
         files = {name: ((ROOT / relative).read_bytes(), mode) for name, (relative, mode) in overrides.items()}
         files.update({name: (data, 0o644) for name, data in extras.items()})
+        # Parents of added files that the archive lacks, shallowest first.
+        parents = {str(parent) for name in files for parent in Path(name).parents if str(parent) != '.'}
+        for name in sorted(parents - seen - set(directories), key=lambda n: n.count('/')):
+            member = tarfile.TarInfo(name)
+            member.type = tarfile.DIRTYPE
+            member.mode = 0o755
+            target.addfile(member)
         for name, (data, mode) in files.items():
             member = tarfile.TarInfo(name)
             member.size, member.mode, member.mtime = len(data), mode, int(time.time())

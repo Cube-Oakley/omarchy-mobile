@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Opt-in, manually located Open-Meteo weather with a 15-minute cache."""
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -44,6 +44,13 @@ def condition_kind(code):
     if code <= 82: return 'showers'
     if code <= 86: return 'snow'
     return 'thunder'
+
+
+def after_dark(kind, is_day):
+    """Clear skies at night get the moon (is_day is Open-Meteo's 0 or 1)."""
+    if is_day == 0 and kind in ('clear', 'mostly_clear'):
+        return kind + '_night'
+    return kind
 
 
 def condition_name(code):
@@ -93,12 +100,50 @@ def forecast_rows(daily, today=None):
     return rows
 
 
-def enrich(result, today=None):
+def hourly_rows(hourly, hour):
+    """The 24 hours from `hour` ('YYYY-MM-DDTHH', the location's local time)."""
+    times = hourly.get('time') or []
+    temperatures = hourly.get('temperature_2m') or []
+    codes = hourly.get('weather_code') or []
+    rain = hourly.get('precipitation_probability') or []
+    daylight = hourly.get('is_day') or []
+    rows = []
+    for index, stamp in enumerate(times):
+        if stamp[:13] < hour:
+            continue
+        try:
+            when = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        code = codes[index] if index < len(codes) else None
+        rows.append({
+            'time': stamp,
+            'label': 'Now' if not rows else when.strftime('%-I %p'),
+            'temperature': temperatures[index] if index < len(temperatures) else None,
+            'kind': after_dark(condition_kind(code), daylight[index] if index < len(daylight) else None),
+            'precipitation': rain[index] if index < len(rain) else None,
+        })
+        if len(rows) == 24:
+            break
+    return rows
+
+
+def local_hour(result, now=None):
+    """This hour at the location: a cached forecast is up to 15 minutes old."""
+    offset = result.get('utc_offset_seconds')
+    if offset is None:
+        return ((result.get('current') or {}).get('time') or '')[:13]
+    now = datetime.now(timezone.utc) if now is None else now
+    return (now + timedelta(seconds=offset)).strftime('%Y-%m-%dT%H')
+
+
+def enrich(result, today=None, now=None):
     current = result.get('current') or {}
     code = current.get('weather_code')
-    result['kind'] = condition_kind(code)
+    result['kind'] = after_dark(condition_kind(code), current.get('is_day'))
     result['condition'] = condition_name(code)
     result['daily_forecast'] = forecast_rows(result.get('daily') or {}, today=today)
+    result['hourly_forecast'] = hourly_rows(result.get('hourly') or {}, local_hour(result, now))
     return result
 
 
@@ -119,17 +164,20 @@ def main():
     config = read(CONFIG)
     if not config: return {'configured': False}
     cached = read(CACHE)
-    matches = cached.get('location') == config
+    # A cache from before the hourly forecast is refetched.
+    matches = cached.get('location') == config and 'hourly' in cached
     if matches and time.time() - cached.get('fetched', 0) < 900:
         return enrich(cached)
     try:
         data = get('https://api.open-meteo.com/v1/forecast', {
             'latitude': config['latitude'], 'longitude': config['longitude'],
-            'current': 'temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m',
+            'current': 'temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day',
             'daily': 'temperature_2m_max,temperature_2m_min,weather_code',
+            'hourly': 'temperature_2m,weather_code,precipitation_probability,is_day',
             'forecast_days': 5, 'timezone': 'auto', 'temperature_unit': 'fahrenheit', 'wind_speed_unit': 'mph'})
         result = {'configured': True, 'available': True, 'location': config, 'fetched': time.time(),
-                  'current': data['current'], 'daily': data['daily']}
+                  'current': data['current'], 'daily': data['daily'], 'hourly': data.get('hourly') or {},
+                  'utc_offset_seconds': data.get('utc_offset_seconds', 0)}
         save(CACHE, result)
         return enrich(result)
     except Exception:

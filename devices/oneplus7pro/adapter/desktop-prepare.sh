@@ -9,6 +9,16 @@ if [[ -x /usr/local/sbin/guacamole-radio-start &&
     nohup /usr/local/sbin/guacamole-radio-start \
         >> /root/radio-bringup/logs/startup.log 2>&1 < /dev/null &
 fi
+# SSH over Wi-Fi, the recovery shell kept to USB, and USB failure evidence.
+if [[ -x /usr/local/sbin/guacamole-remote-access ]]; then
+    nohup /usr/local/sbin/guacamole-remote-access > /dev/null 2>&1 < /dev/null &
+fi
+# Charging with the stock profile (4.39 V, input by charger type) and the
+# saved charge limit, in place of the built-in 500 mA / 4.20 V bring-up policy.
+if [[ -x /usr/local/sbin/guacamole-charging-start &&
+      -f /root/power-bringup/charging-enabled ]]; then
+    nohup /usr/local/sbin/guacamole-charging-start > /dev/null 2>&1 < /dev/null &
+fi
 if [[ -x /usr/local/sbin/guacamole-audio-start &&
       -f /root/audio-bringup/autostart-enabled ]]; then
     nohup /usr/local/sbin/guacamole-audio-start \

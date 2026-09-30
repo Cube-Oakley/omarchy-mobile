@@ -6,6 +6,8 @@ import os
 
 base = Path('/root/audio-bringup/modules')
 modules = {p.stem.replace('-', '_'): p for p in base.glob('*.ko')}
+voice = Path('/root/audio-bringup/voice')
+modules.update({p.stem.replace('-', '_'): p for p in voice.glob('q6*.ko')})
 kernel = os.uname().release
 visited = set()
 
@@ -33,4 +35,9 @@ for name in ('q6core', 'q6afe', 'q6afe-dai', 'q6afe-clocks', 'q6asm',
     load(name)
 if Path('/sys/module/guacamole_speaker_route').exists():
     load('snd-soc-tfa9874')
+# Call audio: with its card link applied, the voice DAI must register before
+# the card, or the card would wait for it.
+if Path('/sys/module/guacamole_voice_link').exists():
+    for name in ('q6mvm', 'q6cvs', 'q6cvp', 'q6voice-dai'):
+        load(name)
 load('snd-soc-sm8150')

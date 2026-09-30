@@ -25,9 +25,6 @@ Singleton {
     }
     // Set while the shade's performance page is open.
     property bool statsShown: false
-    // Busy share of all CPUs and used memory, in percent, for the status bar.
-    property var cpuPercent: null
-    property var memoryPercent: null
     function refresh() {
         batteryProbe.refresh(); wifiProbe.refresh(); bluetoothProbe.refresh();
         volumeProbe.refresh(); statsProbe.refresh();
@@ -133,37 +130,6 @@ Singleton {
         // stalled the shell's animations for 60 ms, so it only runs while
         // its page is shown.
         active: status.statsShown
-    }
-    // The status bar's bars read /proc directly: no process, no stall.
-    property var cpuLast: null
-    FileView {
-        id: procStat
-        path: "/proc/stat"
-        onLoaded: {
-            const line = text().split("\n")[0].split(/\s+/);
-            if (line[0] !== "cpu") return;
-            const nums = line.slice(1).map(Number);
-            const now = {total: nums.reduce((sum, value) => sum + value, 0), idle: nums[3] + (nums[4] || 0)};
-            const last = status.cpuLast;
-            status.cpuLast = now;
-            if (!last || now.total <= last.total) return;
-            const busy = 1 - (now.idle - last.idle) / (now.total - last.total);
-            status.cpuPercent = Math.round(Math.max(0, Math.min(1, busy)) * 1000) / 10;
-        }
-    }
-    FileView {
-        id: procMeminfo
-        path: "/proc/meminfo"
-        onLoaded: {
-            const total = /MemTotal:\s+(\d+)/.exec(text());
-            const available = /MemAvailable:\s+(\d+)/.exec(text());
-            if (!total || !available) return;
-            status.memoryPercent = Math.round(1000 * (1 - Number(available[1]) / Number(total[1]))) / 10;
-        }
-    }
-    Timer {
-        interval: 3000; running: true; repeat: true
-        onTriggered: { procStat.reload(); procMeminfo.reload(); }
     }
     Process {
         id: prefsLoad

@@ -19,24 +19,27 @@ PAGE_SOFTWARE = {
       blurb: "The always-present surfaces: bar, shade, launcher, overview, keyboard, gestures.",
       items: [
         { n: "Status bar", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "Renders on the Pixel; there is no battery or Wi-Fi hardware under Linux yet for it to report.",
-                             ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
-          note: "Battery percentage with charging bolt, Wi-Fi signal, and a compact CPU/RAM chip. Event-driven "
-              + "battery/Wi-Fi; the CPU/RAM chip reads /proc in the shell every 3 s. The full performance "
-              + "snapshot runs only while its shade page is open.",
-          ref: "devices/oneplus7pro/docs/smoothness-20260923.md" },
+          on: { pixel7pro: { s: "ok", note: "Shows the MAX77759 gauge's battery and charging state and the Wi-Fi signal from real hardware.",
+                             ref: "devices/pixel7pro/kernel/battery/README.md" } },
+          note: "Battery percentage with charging bolt, Wi-Fi signal, a call chip during calls and an unread-texts "
+              + "count; event-driven. The CPU/RAM bars and their 3 s /proc polling are gone: a chip in the "
+              + "shade's header opens the performance page instead.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Notification shade (pull-down)", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "Its layer loads with the rest of the shell, but it has not been pulled down by touch, and its Wi-Fi, audio and battery backends have no hardware behind them.",
-                             ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
+          on: { pixel7pro: { s: "ok", note: "The user reports the shade drags smoothly at 120 Hz; its Wi-Fi page lists and joins networks, and the brightness slider and flashlight toggle drive real hardware.",
+                             ref: "devices/pixel7pro/docs/status.md" } },
           note: "Drag-down panel with themed detail popups, grouped notifications, heads-up toasts, Wi-Fi/mute/DND "
               + "toggles, battery metrics, Wi-Fi scan and connect, calendar, opt-in weather. Swipe up to close.",
           ref: "devices/oneplus7pro/docs/shell-controls-20260918.md" },
         { n: "App launcher / drawer", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "The Applications page renders and launches apps through the shell's IPC; launching by touch is not verified yet.",
-                             ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
-          note: "Touch launcher on desktop entries; launching through the drawer verified for both installed apps.",
+          on: { pixel7pro: { s: "ok", note: "The current alphabetical drawer at a steady 120 fps; the user reports it drags smoothly.",
+                             ref: "devices/pixel7pro/docs/smoothness-20260928.md" } },
+          note: "Touch launcher on desktop entries, sorted alphabetically (desktop-entry order changed between "
+              + "starts); launching through the drawer verified.",
           ref: "devices/oneplus7pro/docs/keyboard-browser-20260918.md" },
         { n: "Workspace & window overview", s: "ok",
+          on: { pixel7pro: { s: "ok", note: "Opens smoothly from an app, and from the home screen it now grows in while held; the first open after the shell starts costs one 60–67 ms frame.",
+                             ref: "devices/pixel7pro/docs/smoothness-20260928.md" } },
           note: "Card switcher with previews, tap to open, drag onto a card to tile. The swipe up follows the "
               + "finger from the first frame (a recent screen copy, taken only while the phone is in use); "
               + "thumbnails stop copying once taken, and opening another app no longer rebuilds the cards "
@@ -47,36 +50,51 @@ PAGE_SOFTWARE = {
           note: "Left = launcher, centre = overview, right = keyboard; finger-tracked sheets with swipe-down "
               + "dismissal. User-confirmed.", ref: "devices/oneplus7pro/docs/mobile-gestures-20260917.md" },
         { n: "On-screen keyboard", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "Renders and shows or hides on request; touch-to-key input is untested.",
-                             ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
+          on: { pixel7pro: { s: "ok", note: "Takes touch input on the SPI touchscreen: the user sent texts from Messages on the Pixel.",
+                             ref: "devices/pixel7pro/modem/README.md" } },
           note: "Gesture activation, explicit-tap popup input, swipe-down handle to hide, no duplicate surfaces.",
           ref: "devices/oneplus7pro/docs/keyboard-browser-20260918.md" },
         { n: "Mobile scaling & tiled windows", s: "ok",
           on: { pixel7pro: { s: "ok", note: "Scale 3 on the 1440 × 3120 panel through the Pixel adapter, with several Kitty windows tiled beside the shell surfaces.",
                              ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
           note: "Scale appropriate to 1440 × 3120; multiple tiled app windows coexist with the shell surfaces." },
+        { n: "Touch with several fingers at once", s: "partial",
+          on: { pixel7pro: { s: "partial", note: "Found on the Pixel (a grip on the edge while tapping rotate froze the shell's taps); the plugin loads at every boot, checked over three reboots, but a hand test of the fix is not written up.",
+                             ref: "devices/pixel7pro/docs/status.md" } },
+          note: "Hyprland 0.56 sends every finger's moves and lift to wherever the last finger landed, which "
+              + "stranded the shell's touch and stopped its taps. The shared touch-fingers plugin sends each finger "
+              + "to the surface it went down on, and the wallpaper takes stray touches. install.sh builds it "
+              + "against the installed Hyprland.",
+          ref: "overlay/mobile/README.md" },
         { n: "Shell crash recovery", s: "ok",
           note: "A watchdog starts the shell again about 5 s after it exits, and stops the dead shell's helpers. "
               + "Hyprland 0.56.2 can disconnect the shell when a window closes during a preview capture (a "
               + "compositor bug, still upstream).", ref: "devices/oneplus7pro/docs/shell-fixes-20260924.md" },
         { n: "Notification actions, grouping and dismissal", s: "partial",
-          note: "Cards group by app, with expand, per-item and group dismiss, actions, and heads-up toasts. No "
-              + "persistent history, lock-screen notifications or banners after reboot.",
-          ref: "devices/oneplus7pro/docs/shell-controls-20260918.md" },
+          note: "Cards group by app, with expand, per-item and group dismiss, actions, and heads-up toasts; texts "
+              + "(with an Open button) and missed calls post notifications. No persistent history, lock-screen "
+              + "notifications or banners after reboot.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Quick-setting toggles (brightness, Bluetooth, DND…)", s: "partial",
+          on: { pixel7pro: { s: "partial", note: "The brightness slider and the flashlight toggle work; automatic brightness waits on the stalled light sensor, and Bluetooth pairing is untested by hand.",
+                             ref: "devices/pixel7pro/docs/status.md" } },
           note: "Wi-Fi radio, Bluetooth, mute, Do Not Disturb, the flashlight and a brightness slider are in "
               + "the shade; the sun icon beside the slider switches automatic brightness. Bluetooth starts its "
               + "stack when needed. No hotspot yet.",
           ref: "devices/oneplus7pro/docs/controls-20260923.md" },
         { n: "Performance panel", s: "ok",
-          note: "CPU/RAM chip opens CPU, memory, load, thermal zones, battery draw and top CPU processes. Process "
-              + "ranking is CPU time, not milliwatts.",
-          ref: "devices/oneplus7pro/docs/shell-controls-20260918.md" },
+          note: "A chip in the shade's header opens CPU, memory, load, thermal zones, battery draw and top CPU "
+              + "processes. Process ranking is CPU time, not milliwatts.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Weather tile", s: "partial",
-          note: "Icons, weekday names and a five-day forecast are installed; location still unset on the handset.",
-          ref: "devices/oneplus7pro/docs/shell-controls-20260918.md" },
+          note: "Current conditions, a 24-hour strip swiped sideways and a five-day forecast from Open-Meteo; the "
+              + "location is searched in Settings → Weather. Opt-in.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "New Wi-Fi network entry (password)", s: "partial",
-          note: "Saved-network activation and HTTPS verified; entering a password for a new network is untested.",
+          on: { pixel7pro: { s: "partial", note: "The shade's Wi-Fi page lists and joins networks on the Pixel; a new network's password typed on the phone is not recorded.",
+                             ref: "devices/pixel7pro/docs/status.md" } },
+          note: "Saved-network activation and HTTPS verified. The password field now takes on-screen keyboard taps "
+              + "(the shade no longer grabs exclusive focus); joining a new network by password is not recorded here.",
           ref: "devices/oneplus7pro/docs/notification-shade-20260918.md" },
         { n: "Copy / paste and touch text selection", s: "partial",
           note: "Shell text fields long-press to select, with handles and Copy/Paste/All. Password fields do not "
@@ -85,6 +103,8 @@ PAGE_SOFTWARE = {
           ref: "devices/oneplus7pro/docs/settings-clipboard-20260919.md" },
         { n: "Touch window resize / move", s: "no", note: "Not implemented." },
         { n: "Auto-rotate", s: "ok",
+          on: { pixel7pro: { s: "ok", note: "The same rotate button on the AoC's accelerometer through pixel-sensor-proxy; the screen turns upright both ways, checked by hand.",
+                             ref: "devices/pixel7pro/sensors/README.md" } },
           note: "Android's rotate button, by choice: the screen keeps its orientation, and when the phone is "
               + "held another way a button offers to follow it. Both landscape directions checked by hand, touch "
               + "rotating with the picture; upside-down portrait not tried. The accelerometer is released while "
@@ -97,8 +117,8 @@ PAGE_SOFTWARE = {
     {
       id: "settings",
       title: "Settings & configuration",
-      blurb: "Theme and preference plumbing works; there is no settings application yet. The panel list below "
-           + "is the scope that app has to cover.",
+      blurb: "Theme and preference plumbing works, and Settings exists as a themed app. The panel list below "
+           + "is what it covers and what it still has to.",
       groups: [
         {
           title: "Working today",
@@ -117,6 +137,8 @@ PAGE_SOFTWARE = {
               note: "JetBrainsMono Nerd Font is the default; Appearance in Settings can pick another installed family.",
               ref: "devices/oneplus7pro/docs/settings-clipboard-20260919.md" },
             { n: "Battery detail view", s: "ok",
+              on: { pixel7pro: { s: "ok", note: "Percentage, voltage, current, temperature and charge status from the MAX77759 gauge and charger.",
+                                 ref: "devices/pixel7pro/kernel/battery/README.md" } },
               note: "Percentage, charge/current direction, voltage and temperature distinguished from input "
                   + "current.", ref: "devices/oneplus7pro/docs/notification-shade-20260918.md" },
             { n: "Volume UI and output routing", s: "partial",
@@ -135,35 +157,43 @@ PAGE_SOFTWARE = {
           note: "Settings exists as a themed app. Rows below are remaining panels.",
           items: [
             { n: "Settings application", s: "partial",
-              on: { pixel7pro: { s: "partial", note: "Opens and renders on the Pixel; its hardware panels have nothing behind them yet.",
-                                 ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
-              note: "Appearance, Network/Wi-Fi, Sound, Battery, About, clipboard and DND. Shade still has the "
-                  + "quick toggles. Searchable panels are still ahead.",
+              on: { pixel7pro: { s: "partial", note: "Opens and renders on the Pixel, and Wi-Fi, battery, brightness, audio and Bluetooth now have hardware behind it; its panels have not been checked one by one there.",
+                                 ref: "devices/pixel7pro/docs/status.md" } },
+              note: "Appearance, Network/Wi-Fi, Display, Sound, Battery, Bluetooth, Weather, About, clipboard and "
+                  + "DND. Shade still has the quick toggles. Searchable panels are still ahead.",
               ref: "devices/oneplus7pro/docs/settings-panels-20260919.md" },
             { n: "Panel — Network & Wi-Fi", s: "partial",
-              note: "Settings Wi-Fi page plus shade picker. Static DNS and forget are installed. Cellular/VPN/"
-                  + "hotspot are not. Speed test is HTTP throughput to Cloudflare.",
-              ref: "devices/oneplus7pro/docs/network-speedtest-20260919.md" },
+              note: "Settings Wi-Fi page plus shade picker, with forget, static DNS, and Automatic (DHCP) or static "
+                  + "IPv4 with address, gateway and DNS. Cellular, VPN and hotspot are not. Speed test is HTTP "
+                  + "throughput to Cloudflare.",
+              ref: "devices/oneplus7pro/docs/calling-20260927.md" },
             { n: "Panel — Display & brightness", s: "partial",
-              note: "Settings Display shows the monitor mode and switches the always-on display. Brightness is "
-                  + "read here and changed from the shade. Corners are toggled from Appearance.",
+              note: "Settings Display shows the monitor mode, sets the screen timeout (15 s to 10 min, or never) and "
+                  + "switches the always-on display. Brightness is read here and changed from the shade.",
               ref: "docs/mobile-architecture.md" },
             { n: "Panel — Sound & output routing", s: "partial",
               note: "Settings Sound and the OSD share the PipeWire volume helper. The OSD's four volume groups "
                   + "are not in Settings yet; no device picker or per-app routing.",
               ref: "devices/oneplus7pro/docs/settings-panels-20260919.md" },
-            { n: "Panel — Battery & charging", s: "partial",
-              note: "Settings Battery shows the same sysfs metrics as the shade. Charge policy is not user-settable.",
-              ref: "devices/oneplus7pro/docs/settings-panels-20260919.md" },
+            { n: "Panel — Battery & charging", s: "ok",
+              on: { pixel7pro: { s: "ok", note: "The charge limit works on the Pixel: at the limit the phone runs from USB and the battery rests.",
+                                 ref: "devices/pixel7pro/kernel/battery/README.md" } },
+              note: "Settings Battery shows the shade's metrics, holds charging at a chosen limit (80 % held and "
+                  + "resumed on the phone), and sets sleep, the background check and the last sleep's summary.",
+              ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
             { n: "Panel — Appearance & theme", s: "ok",
               note: "Theme, wallpaper and font live in the Settings app.",
               ref: "devices/oneplus7pro/docs/settings-clipboard-20260919.md" },
             { n: "Panel — Bluetooth & devices", s: "partial",
+              on: { pixel7pro: { s: "partial", note: "The radio is powered at boot and scans; pairing is untested by hand on the Pixel.",
+                                 ref: "devices/pixel7pro/kernel/bluetooth/README.md" } },
               note: "Settings Bluetooth powers the radio, scans, pairs, connects, disconnects and forgets; "
                   + "headphones pair and play. Devices that ask for a PIN (most keyboards) cannot pair yet.",
               ref: "devices/oneplus7pro/docs/bluetooth-20260922.md" },
-            { n: "Panel — SIM & cellular", s: "no", note: "Blocked behind modem bring-up.",
-              ref: "devices/oneplus7pro/docs/modem-foundations-20260917.md" },
+            { n: "Panel — SIM & cellular", s: "no",
+              note: "Cellular works on both phones, but Settings has no SIM or cellular page yet: no mobile-data "
+                  + "toggle, APN or network-mode choice.",
+              ref: "devices/oneplus7pro/docs/cellular-sim-20260926.md" },
             { n: "Panel — Security, lock screen & fingerprint", s: "no",
               note: "Covers credential enrollment and the fingerprint reader, neither of which is enabled.",
               ref: "docs/mobile-roadmap.md" },
@@ -237,18 +267,46 @@ PAGE_SOFTWARE = {
         {
           title: "Phone apps we build for touch",
           note: "The stock set a phone is expected to have. Free-software options that fit a touch phone are "
-              + "thin, so the working assumption is that we build these on the shared framework.",
+              + "thin (GNOME Calls and Chatty would pull in about 490 MB and cannot follow the theme), so we "
+              + "build these on the shared framework. Phone and Messages pick their telephony backend from the "
+              + "device adapter: ModemManager on the OnePlus, the Pixel's own modem service there.",
           items: [
-            { n: "Phone / dialer", s: "no", note: "Blocked behind modem registration and call audio.",
-              ref: "docs/mobile-roadmap.md" },
-            { n: "Messaging (SMS/MMS)", s: "no", note: "Blocked behind modem registration.",
-              ref: "docs/mobile-roadmap.md" },
-            { n: "Contacts", s: "no",
-              note: "Needs a local contacts store plus vCard import/export, and to be readable by the dialer, "
-                  + "messaging and the agent.", ref: "docs/mobile-roadmap.md" },
+            { n: "Phone / dialer", s: "ok",
+              on: { pixel7pro: { s: "ok", note: "Drives the Pixel's modem service: outgoing and incoming calls with two-way audio and mute, user-confirmed, also after reboot. Speaker is unavailable on this backend.",
+                                 ref: "devices/pixel7pro/modem/README.md" } },
+              note: "Keypad, recents with missed calls, a contacts tab and the call screen (mute, touch tones, "
+                  + "speaker, end). VoLTE calls with audio both ways, user-confirmed. Call volume on the "
+                  + "volume keys is still to do.",
+              ref: "devices/oneplus7pro/docs/calling-20260927.md" },
+            { n: "Incoming-call screen", s: "ok",
+              on: { pixel7pro: { s: "ok", note: "The user confirmed ringing with the screen off, the display waking, and answering from the shell's screen.",
+                                 ref: "devices/pixel7pro/docs/status.md" } },
+              note: "A full-screen answer/decline layer over everything: wakes the display, rings through the ring "
+                  + "volume group and vibrates, following the alert slider and Do Not Disturb; a green chip returns "
+                  + "to the call. Answered from it, user-confirmed.",
+              ref: "devices/oneplus7pro/docs/calling-20260927.md" },
+            { n: "In-call proximity screen cover", s: "ok",
+              on: { pixel7pro: { s: "no", note: "The shell helper is the same, but the Pixel's proximity chip has not converted since September 29, so the cover cannot trigger.",
+                                 ref: "devices/pixel7pro/sensors/README.md" } },
+              note: "During an earpiece call the shell blanks the screen and swallows touches while proximity reads "
+                  + "near, so a cheek cannot end the call; user-confirmed at the ear.",
+              ref: "devices/oneplus7pro/docs/calling-20260927.md" },
+            { n: "Messaging (SMS/MMS)", s: "partial",
+              on: { pixel7pro: { s: "partial", note: "Sending and receiving texts user-confirmed on the Pixel's modem service; an incoming text woke the phone and appeared in Messages. No MMS.",
+                                 ref: "devices/pixel7pro/modem/README.md" } },
+              note: "Messages: conversations, search, delivery state, part counts, notifications and an unread count "
+                  + "even with the app closed; texts both ways, user-confirmed. MMS (pictures, group texts) is not "
+                  + "supported.",
+              ref: "devices/oneplus7pro/docs/calling-20260927.md" },
+            { n: "Contacts", s: "partial",
+              note: "One vCard file per contact, with photos, favourites, search, vCard and Google/Outlook CSV "
+                  + "import and .vcf export; Phone and Messages read it. Covered by tests, but first real use on the "
+                  + "phone is still to come.",
+              ref: "devices/oneplus7pro/docs/calling-20260927.md" },
             { n: "Clock (alarm, timer, stopwatch)", s: "no",
-              note: "Alarms have to wake the phone from suspend, so this depends on the wake design as much as "
-                  + "on UI.", ref: "devices/oneplus7pro/docs/background-wake-plan.md" },
+              note: "No app yet, and nothing lets a user set an alarm. Alarms have to wake the phone from "
+                  + "suspend; RTC alarm wake is verified on the Pixel.",
+              ref: "devices/oneplus7pro/docs/background-wake-plan.md" },
             { n: "Gallery / photo viewer", s: "no",
               note: "Blocked behind the camera pipeline for capture, but a viewer over existing files is "
                   + "independent work.", ref: "devices/oneplus7pro/docs/pathway.md" },
@@ -260,7 +318,8 @@ PAGE_SOFTWARE = {
               note: "The shade already renders calendar data; no app, no account sync.",
               ref: "devices/oneplus7pro/docs/notification-shade-20260918.md" },
             { n: "Weather", s: "partial",
-              note: "A tile exists in the shade; a real app with locations and a forecast view does not.",
+              note: "The shade has current conditions, a 24-hour strip and a five-day forecast, and Settings → "
+                  + "Weather picks the place; a real app with several locations does not exist.",
               ref: "devices/oneplus7pro/docs/notification-shade-20260918.md" },
             { n: "Camera", s: "partial", note: "Omarchy Camera, our own app on libcamera's public API so it "
                 + "carries to other phones: GPU preview with no CPU copies, tap to focus, 12 MP stills in "
@@ -272,8 +331,8 @@ PAGE_SOFTWARE = {
                 + "main camera and the telephoto. No video yet.",
               ref: "devices/oneplus7pro/docs/camera-20260922.md" },
             { n: "Settings application", s: "partial",
-              on: { pixel7pro: { s: "partial", note: "Opens and renders on the Pixel; its hardware panels have nothing behind them yet.",
-                                 ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
+              on: { pixel7pro: { s: "partial", note: "Opens and renders on the Pixel; its panels have not been checked one by one there.",
+                                 ref: "devices/pixel7pro/docs/status.md" } },
               note: "See the Settings & configuration section.",
               ref: "devices/oneplus7pro/docs/settings-clipboard-20260919.md" },
             { n: "Further stock apps (TBD)", s: "no",
@@ -356,20 +415,20 @@ PAGE_SOFTWARE = {
       blurb: "Platform capability rather than surfaces: rendering, sessions, tooling, power behaviour.",
       items: [
         { n: "GPU Wayland desktop (Hyprland + Quickshell)", s: "ok",
-          on: { pixel7pro: { s: "ok", note: "Hyprland and Quickshell render on the Mali-G710; fullscreen animation runs at 119.6–120.2 fps, confirmed smooth. Started by hand in each RAM session, not at boot.",
-                             ref: "devices/pixel7pro/docs/panel120-20260925.md" } },
+          on: { pixel7pro: { s: "ok", note: "Starts by itself on every normal boot from boot_a and renders on the Mali-G710 at 120 Hz; shell animations average 111–115 fps, which the user reports smooth.",
+                             ref: "devices/pixel7pro/docs/native-boot-20260927.md" } },
           note: "Starts automatically on boot with FD640 rendering and native scanout.",
           ref: "devices/oneplus7pro/docs/native-display-work-20260917.md" },
         { n: "Automated UI / backend / hardware-policy tests", s: "ok",
           note: "Gesture, backend and policy checks under tests/, run against the live session.", ref: "tests/" },
         { n: "Guarded build, flash and rollback tooling", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "Guarded sparse userdata installation checks identity, layout and image hash. Boot-slot tooling additionally checks the running kernel build ID and direct write readback. Android userdata has been replaced.",
-                             ref: "devices/pixel7pro/README.md" } },
+          on: { pixel7pro: { s: "ok", note: "A new image is RAM-tested, then written to boot_a only while that exact kernel runs, with direct readback; pixel-reboot.py moves between Linux and fastboot without buttons, and earlier images are kept for rollback.",
+                             ref: "devices/pixel7pro/docs/native-boot-20260927.md" } },
           note: "Explicit target identity, image/hash and slot checks, frozen checkpoints and rollback images.",
           ref: "devices/oneplus7pro/README.md" },
         { n: "Reusable shell across devices", s: "partial",
-          on: { pixel7pro: { s: "partial", note: "The shared overlay runs unchanged with a three-file Pixel adapter (scale, session preparation, bootstrap), included in the prepared Arch root now installed on internal storage.",
-                             ref: "devices/pixel7pro/docs/hyprland-mobile-20260925.md" } },
+          on: { pixel7pro: { s: "partial", note: "The current shared shell installs with overlay/mobile/install.sh and the Pixel adapter (display profile, telephony backend, restart and suspend delegates); still installed by hand.",
+                             ref: "devices/pixel7pro/adapter/README.md" } },
           note: "Shared UI in overlay/mobile/, one adapter per device. The Pixel 7 Pro runs it unchanged as a second "
               + "device; both now live in one repository, but the shell is still installed by hand, not assembled "
               + "per device.",
@@ -378,16 +437,32 @@ PAGE_SOFTWARE = {
           note: "The bring-up desktop runs as root; the mobile-browser account is a temporary Chromium bridge, "
               + "not the intended session design.", ref: "docs/mobile-roadmap.md" },
         { n: "Power-key CRT screen close / open", s: "ok",
-          on: { pixel7pro: { s: "ok", note: "Physical power key, shared CRT animation and panel off/on confirmed on v19 B, with no boot-console flash. CPU remains awake.",
-                             ref: "devices/pixel7pro/docs/persistence-power-20260925.md" } },
+          on: { pixel7pro: { s: "ok", note: "The power key, now on a wake-up interrupt, plays the shared CRT close and open, and wakes the phone from s2idle.",
+                             ref: "devices/pixel7pro/kernel/keys/README.md" } },
           note: "Shared CrtPower.qml animation runs before panel-off and during wake; hardware suspend remains device-specific.",
           ref: "overlay/mobile/README.md" },
-        { n: "Automatic idle / sleep policy", s: "no", note: "Not implemented; sleep is currently user-triggered.",
-          ref: "devices/oneplus7pro/docs/status.md" },
-        { n: "Background wake for delayed delivery", s: "no",
-          note: "Design written up, implementation not started. This is what alarms, message delivery and "
-              + "agent tasks waiting on a schedule all depend on.", ref: "devices/oneplus7pro/docs/background-wake-plan.md" },
+        { n: "Power menu (hold the power key)", s: "partial",
+          on: { oneplus7pro: { s: "no", note: "The OnePlus adapter has no restart script yet, so the menu offers no actions here." },
+                pixel7pro: { s: "partial", note: "Restart and Restart to bootloader run pixel-reboot, which stops the modem and lets PID 1 sync storage first; a hand test is not written up.",
+                             ref: "devices/pixel7pro/adapter/README.md" } },
+          note: "Holding the power key for two seconds opens a themed menu; a tap still switches the display. Its "
+              + "restart actions come from a device adapter. There is no Power off entry yet.",
+          ref: "devices/pixel7pro/adapter/README.md" },
+        { n: "Automatic idle / sleep policy", s: "ok",
+          on: { pixel7pro: { s: "partial", note: "The same policy delegates to a guarded s2idle helper that refuses on the charger, in calls or without the modem supervisor; five automatic unplugged sleeps were recorded, and a 15-minute RTC fallback stays on pending longer tests.",
+                             ref: "devices/pixel7pro/docs/suspend-20260929.md" } },
+          note: "A screen timeout, then s2idle 10 s after the screen goes dark, never during a call, audio or on "
+              + "the charger; each wake is logged with its cause. The user saw it sleep and wake on the power key.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
+        { n: "Background wake for delayed delivery", s: "partial",
+          on: { pixel7pro: { s: "partial", note: "Incoming calls and texts wake the AP from s2idle, and an RTC alarm bounds each sleep; nothing else schedules wakes.",
+                             ref: "devices/pixel7pro/docs/suspend-20260929.md" } },
+          note: "Calls and texts wake the phone, and a background check wakes it every 15 minutes by default. "
+              + "Scheduled wakes for apps, alarms and agent tasks are still design only.",
+          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Measured, repeatable battery life", s: "no",
+          on: { pixel7pro: { s: "no", note: "Only USB-input and partial-rail figures (1.47 W screen-off idle on Wi-Fi; metered rails 0.81–0.85 W across sleeps); no unplugged drain measured.",
+                             ref: "devices/pixel7pro/docs/suspend-20260929.md" } },
           note: "Only short informal samples exist (131 mA screen-off awake vs 83 mA suspended; 85%→78% over "
               + "~3h45m). No claim is defensible yet.", ref: "devices/oneplus7pro/docs/idle-measurement-20260917.md" },
         { n: "Secure / verified boot path", s: "no",

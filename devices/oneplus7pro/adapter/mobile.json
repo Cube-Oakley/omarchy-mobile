@@ -5,5 +5,6 @@
   "keyboardLandscapeHeight": 200,
   "workspaceCount": 8,
   "terminalShortcut": "SUPER + Q",
+  "panelLux": 190,
   "bluetoothStart": "/usr/local/sbin/guacamole-bluetooth-start"
 }

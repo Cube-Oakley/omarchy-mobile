@@ -14,10 +14,14 @@ PanelWindow {
     property bool playing: false
     property double wakeAt: 0
     property bool capturing: false
+    // Frames drawn since the open asked for the panel; -1 when not waiting.
+    property int litFrames: -1
     readonly property string shot: Quickshell.env("XDG_RUNTIME_DIR") + "/omarchy-mobile-crt.jpg"
     readonly property var phase: phases.sample(mode === "on" ? "on" : "off", progress)
     readonly property bool veil: playing && (mode === "on" || mode === "off")
     signal finished(string token)
+    // An open has played: the screen is lit again.
+    signal opened()
 
     anchors { top: true; bottom: true; left: true; right: true }
     exclusionMode: ExclusionMode.Ignore
@@ -78,6 +82,8 @@ PanelWindow {
     }
     function cover(id) {
         anim.stop();
+        litFrames = -1;
+        litWait.stop();
         captureWait.stop();
         capturing = false;
         playing = false;
@@ -99,14 +105,42 @@ PanelWindow {
             return;
         }
         if (playing) return;
+        litFrames = -1;
+        litWait.stop();
         token = id;
         progress = 0;
         mode = which === "on" ? "on" : "off";
         if (which === "on") {
             wakeAt = now;
             Quickshell.execDetached(["hyprctl", "eval", "hl.dispatch(hl.dsp.dpms({ action = \"enable\" }))"]);
+            // The panel takes a few hundred milliseconds to light, longer
+            // after a suspend than the whole open. The compositor draws no
+            // frames for a dark output, so the open starts on the second
+            // frame after the enable (or after 1.5 s).
+            litFrames = 0;
+            litWait.restart();
+            return;
         }
         begin();
+    }
+    function lit() {
+        if (litFrames < 0) return;
+        litFrames = -1;
+        litWait.stop();
+        begin();
+    }
+    Timer { id: litWait; interval: 1500; onTriggered: crt.lit() }
+    // Keeps frames coming while the open waits, so their arrival shows the panel is lit.
+    Item {
+        id: litProbe
+        width: 1; height: 1; opacity: 0
+        NumberAnimation on rotation { from: 0; to: 360; duration: 1000; loops: Animation.Infinite; running: crt.litFrames >= 0 }
+    }
+    Connections {
+        target: crt.litFrames >= 0 ? litProbe.Window.window : null
+        function onFrameSwapped() {
+            if (++crt.litFrames >= 2) crt.lit();
+        }
     }
     function begin() {
         captureWait.stop();
@@ -124,6 +158,7 @@ PanelWindow {
         if (!playing) return;
         playing = false;
         const id = token;
+        const opening = mode === "on";
         if (mode === "off") {
             frame.source = "";
             clearShot.running = true;
@@ -134,6 +169,7 @@ PanelWindow {
         progress = 0;
         mark("settled", id);
         finished(id);
+        if (opening) opened();
         console.log("MOBILE_CRT settled " + id);
     }
     NumberAnimation {

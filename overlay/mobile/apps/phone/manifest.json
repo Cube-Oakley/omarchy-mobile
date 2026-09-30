@@ -1,0 +1,10 @@
+{
+  "id": "phone",
+  "name": "Phone",
+  "comment": "Place and answer phone calls",
+  "icon": "phone",
+  "permissions": [
+    "phone",
+    "contacts"
+  ]
+}

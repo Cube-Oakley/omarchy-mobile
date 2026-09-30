@@ -2,7 +2,6 @@
 import importlib.util
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -24,89 +23,59 @@ class PowerButtonTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         self.button = module.PowerButton()
-        self.button.adapter.parent.mkdir()
-        self.button.adapter.touch(mode=0o755)
         self.button.display_on = Mock(return_value=True)
         self.button.set_display = Mock()
+        self.button.start_hold = Mock()
+        self.button.show_menu = Mock()
         # The screen's close animation starts as its own process.
         self.button.start_display = Mock(return_value=Mock(poll=Mock(return_value=0), wait=Mock()))
-        self.calls = []
-        self.ready = True
-        self.during_sleep = lambda: None
-        self.patch_run = patch.object(module.subprocess, 'run', side_effect=self.run_command)
-        self.patch_run.start()
+        self.patch_run = patch.object(module.subprocess, 'run')
+        self.run = self.patch_run.start()
         self.addCleanup(self.patch_run.stop)
-
-    def run_command(self, command, **kwargs):
-        self.calls.append(command)
-        if '--check' in command:
-            return subprocess.CompletedProcess(command, 0 if self.ready else 1,
-                                               '', '' if self.ready else 'Unplug before sleeping')
-        self.during_sleep()
-        return subprocess.CompletedProcess(command, 0)
 
     def tap(self):
         self.button.event('press')
         self.button.event('release')
 
-    def test_unplugged_suspends_and_restores_display(self):
+    def test_lit_screen_goes_dark_without_sleeping(self):
+        # The sleep policy suspends later; the key only darkens the screen.
         self.tap()
-        self.assertEqual(self.calls, [[str(self.button.adapter), '--check'], [str(self.button.adapter)]])
-        self.button.set_display.assert_called_once_with('on')
-
-    def test_plugged_in_blanks_without_sleeping(self):
-        self.ready = False
-        self.tap()
-        self.assertEqual(len(self.calls), 1)
         self.button.start_display.assert_called_once_with('off')
         self.button.set_display.assert_not_called()
+        self.run.assert_not_called()
 
-    def test_blanked_screen_restores_without_suspend(self):
+    def test_dark_screen_lights(self):
         self.button.display_on.return_value = False
         self.tap()
-        self.assertFalse(self.calls)
+        self.button.set_display.assert_called_once_with('on')
+        self.button.start_display.assert_not_called()
+
+    def test_wake_press_after_sleep_lights_the_screen(self):
+        # The press that woke the phone arrives once it is awake, on a dark screen.
+        self.tap()
+        self.button.display_on.return_value = False
+        with patch.object(module.time, 'monotonic', return_value=module.time.monotonic() + 600):
+            self.tap()
         self.button.set_display.assert_called_once_with('on')
 
-    def test_missing_adapter_retains_display_control(self):
-        self.button.adapter.unlink()
-        self.tap()
-        self.assertFalse(self.calls)
+    def test_release_that_starts_before_its_press_still_acts(self):
+        # After a wake both processes start at once; the release may win the lock.
+        other = module.PowerButton()
+        other.start_hold = Mock()
+        with patch.object(module.time, 'sleep', side_effect=lambda seconds: other.event('press')):
+            self.button.event('release')
         self.button.start_display.assert_called_once_with('off')
 
-    def test_release_without_press_never_sleeps(self):
-        self.button.event('release')
-        self.assertFalse(self.calls)
+    def test_release_without_press_does_nothing(self):
+        with patch.object(module.time, 'sleep'):
+            self.button.event('release')
+        self.button.start_display.assert_not_called()
+        self.button.set_display.assert_not_called()
 
-    def test_wake_press_during_suspend_and_late_release_do_not_resleep(self):
-        other = module.PowerButton()
-        other.act = Mock()
-        self.during_sleep = lambda: other.event('press')
-        self.tap()
-        # Even a long-held wake key released after the grace period is unpaired.
-        with patch.object(module.time, 'monotonic', return_value=module.time.monotonic() + 10):
-            other.event('release')
-        other.act.assert_not_called()
-
-    def test_queued_wake_pair_ignored_then_new_tap_works(self):
-        self.tap()
-        self.tap()
-        self.assertEqual(len(self.calls), 2)
-        with patch.object(module.time, 'monotonic', return_value=module.time.monotonic() + 3):
-            self.tap()
-        self.assertEqual(len(self.calls), 4)
-
-    def test_failed_suspend_restores_display_and_suppresses_wake(self):
-        self.during_sleep = Mock(side_effect=OSError('suspend process failed'))
-        with self.assertRaises(OSError):
-            self.tap()
-        self.button.set_display.assert_called_once_with('on')
-        self.assertIn('ignore_until', self.button.load())
-
-    def test_always_on_shows_ambient_and_never_sleeps(self):
+    def test_always_on_shows_ambient(self):
         self.button.prefs.parent.mkdir(parents=True, exist_ok=True)
         self.button.prefs.write_text('{"alwaysOn": true}')
         self.tap()
-        self.assertFalse(self.calls)
         self.button.start_display.assert_not_called()
         self.button.set_display.assert_called_once_with('ambient')
 
@@ -115,14 +84,37 @@ class PowerButtonTests(unittest.TestCase):
         self.button.prefs.write_text('{"alwaysOn": true}')
         self.button.ambient.touch()
         self.tap()
-        self.assertFalse(self.calls)
         self.button.set_display.assert_called_once_with('on')
 
-    def test_supervised_alarm_is_passed_to_adapter(self):
-        (self.root / 'omarchy-mobile-power-test-alarm').write_text('90\n')
-        self.tap()
-        self.assertEqual(self.calls[-1][-2:], ['--wake-after', '90'])
+    def test_hold_shows_menu_before_release_and_release_does_not_blank(self):
+        with patch.object(module.time, 'monotonic', return_value=100):
+            self.button.event('press')
+        with patch.object(module.time, 'sleep'), patch.object(module.time, 'monotonic', return_value=102.1):
+            self.button.hold(100)
+            self.button.event('release')
+        self.button.show_menu.assert_called_once()
+        self.button.start_display.assert_not_called()
+        self.button.set_display.assert_not_called()
 
+    def test_old_hold_timer_cannot_act_on_released_or_new_press(self):
+        self.tap()
+        self.button.save({'pressed': 200})
+        with patch.object(module.time, 'sleep'), patch.object(module.time, 'monotonic', return_value=202.1):
+            self.button.hold(100)
+        self.button.show_menu.assert_not_called()
+        self.assertEqual(self.button.load(), {'pressed': 200})
+
+    def test_delayed_timer_and_key_repeats_still_show_only_one_menu(self):
+        with patch.object(module.time, 'monotonic', return_value=100):
+            self.button.event('press')
+            self.button.event('press')
+        self.button.start_hold.assert_called_once_with(100)
+        with patch.object(module.time, 'monotonic', return_value=103):
+            self.button.event('release')
+        with patch.object(module.time, 'sleep'), patch.object(module.time, 'monotonic', return_value=104):
+            self.button.hold(100)
+        self.button.show_menu.assert_called_once()
+        self.button.start_display.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

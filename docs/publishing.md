@@ -173,3 +173,13 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   Published installer completion guard and forced-command-line tracing guard.
   No handset identifiers, home paths, credentials, photos or device artifacts
   are included.
+
+- September 30: `public` synced to development `main` after four days of
+  private-only work: the OnePlus cellular, SMS, VoLTE and phone apps, and the
+  Pixel's native boot, smoothness, Wi-Fi, Bluetooth, AoC audio and sensors,
+  modem, LTE data, texts and calls, guarded suspend and step charging, plus
+  the updated plan pages. The checks above found only the documented Pixel USB
+  link addresses and gadget MACs, example and test addresses, fictional
+  555-01xx numbers and public carrier codes. The author address in the AoC and
+  cpif patch headers was replaced with a no-reply one. No firmware, NV or
+  partition backups, boot images, logs or handset identifiers are included.

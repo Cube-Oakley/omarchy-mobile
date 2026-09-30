@@ -1,0 +1,110 @@
+--- a/drivers/firmware/samsung/exynos-acpm.c
++++ b/drivers/firmware/samsung/exynos-acpm.c
+@@ -591,6 +591,95 @@
+ 	       size <= acpm->sram_size - offset;
+ }
+ 
++/* Google's fw_header/common.h and acpm_get_buffer(): all firmware pointers
++ * are offsets in the existing SRAM mapping. Only expose the named FLEXPMU
++ * counters, never arbitrary firmware memory or a write operation.
++ */
++static int acpm_flexpmu_buffer(struct acpm_info *acpm, void __iomem **out)
++{
++	u32 plugins = readl(&acpm->shmem->reserved[0]);
++	u32 count = readl(&acpm->shmem->reserved[1]);
++	u32 i;
++
++	/* Stock 32-bit plugin descriptor: 48 bytes, plugin_ops at +12. */
++	if (!count || count > 32 || !acpm_sram_range_valid(acpm, plugins, count * 48))
++		return -EINVAL;
++	for (i = 0; i < count; i++) {
++		u32 ops = readl(acpm->sram_base + plugins + i * 48 + 12);
++		u32 next, links;
++
++		if (!ops)
++			continue;
++		/* Four callbacks, build_info[50] + padding, buffers at +68.
++		 * Version[47] must terminate; major >= 1 introduced buffers.
++		 */
++		if (!acpm_sram_range_valid(acpm, ops, 72))
++			return -EINVAL;
++		if (readb(acpm->sram_base + ops + 63) ||
++		    readb(acpm->sram_base + ops + 64) < 1)
++			continue;
++		next = readl(acpm->sram_base + ops + 68);
++		for (links = 0; next && links < 64; links++) {
++			char name[12];
++			u32 address, size, following;
++
++			if (!acpm_sram_range_valid(acpm, next, 24))
++				return -EINVAL;
++			size = readl(acpm->sram_base + next);
++			address = readl(acpm->sram_base + next + 4);
++			following = readl(acpm->sram_base + next + 8);
++			memcpy_fromio(name, acpm->sram_base + next + 12, sizeof(name));
++			if (!memcmp(name, "FLEXPMU_DBG", sizeof(name))) {
++				if (size < 26 * 16 || !acpm_sram_range_valid(acpm, address, size))
++					return -EINVAL;
++				*out = acpm->sram_base + address;
++				return 0;
++			}
++			if (following == next)
++				return -ELOOP;
++			next = following;
++		}
++		if (next)
++			return -ELOOP;
++	}
++	return -ENOENT;
++}
++
++static ssize_t flexpmu_stats_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct acpm_info *acpm = dev_get_drvdata(dev);
++	void __iomem *base;
++	int ret;
++
++	ret = acpm_flexpmu_buffer(acpm, &base);
++	if (ret)
++		return ret;
++	/* Non-atomic firmware snapshot. Fixed stock DID indices, data at +8.
++	 * Each counter is independently updated by ACPM; readers compare
++	 * snapshots around a controlled sleep, rather than mixing readers.
++	 */
++	return sysfs_emit(buf,
++		"soc_early %u\nsoc_down %u\nmif_down %u\n"
++		"sleep_early %u\nsleep_soc_down %u\nsleep_mif_down %u\n"
++		"sicd_early %u\nsicd_soc_down %u\nsicd_mif_down %u\n"
++		"mif_always_on %u\nsw_flags %08x %08x\n",
++		readl(base + 16 * 16 + 8), readl(base + 16 * 16 + 12),
++		readl(base + 17 * 16 + 12),
++		readl(base + 22 * 16 + 8), readl(base + 22 * 16 + 12),
++		readl(base + 23 * 16 + 12),
++		readl(base + 24 * 16 + 8), readl(base + 24 * 16 + 12),
++		readl(base + 25 * 16 + 12),
++		readl(base + 21 * 16 + 12),
++		readl(base + 10 * 16 + 8), readl(base + 10 * 16 + 12));
++}
++static DEVICE_ATTR_RO(flexpmu_stats);
++
++static struct attribute *acpm_stats_attrs[] = {
++	&dev_attr_flexpmu_stats.attr,
++	NULL,
++};
++static const struct attribute_group acpm_stats_group = { .attrs = acpm_stats_attrs };
++
+ /**
+  * acpm_chan_shmem_get_params() - get channel parameters and addresses of the
+  * TX/RX queues.
+@@ -829,6 +918,11 @@
+ 	acpm->handle.ops = &exynos_acpm_driver_ops;
+ 
+ 	platform_set_drvdata(pdev, acpm);
++	if (of_device_is_compatible(dev->of_node, "google,gs201-acpm-ipc")) {
++		ret = devm_device_add_group(dev, &acpm_stats_group);
++		if (ret)
++			return ret;
++	}
+ 
+ 	acpm_clk_pdev = platform_device_register_data(dev,
+ 						match_data->acpm_clk_dev_name,

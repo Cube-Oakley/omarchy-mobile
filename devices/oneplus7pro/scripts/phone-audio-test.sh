@@ -20,6 +20,18 @@ case ${1:-status} in
         [[ $modem_running == 1 ]]
         cp -an firmware/. /lib/firmware/qcom/sm8150/oneplus/guacamole/
         for file in firmware/*; do cmp "$file" "/lib/firmware/qcom/sm8150/oneplus/guacamole/${file##*/}"; done
+        # Call audio is opt-in (voice-enabled). Its ADSP services must exist
+        # before the ADSP starts, since APR lists services only then.
+        voice=0
+        if [[ $1 == speakers && -f voice-enabled && -f voice/guacamole_voice_services.ko ]]; then
+            (cd voice && sha256sum -c SHA256SUMS >/dev/null) && voice=1
+        fi
+        if [[ $voice == 1 && ! -d /sys/module/guacamole_voice_services ]]; then
+            if [[ -d /sys/module/guacamole_adsp_test ]] || ! insmod ./voice/guacamole_voice_services.ko; then
+                echo 'Call audio skipped: the ADSP started before its voice services' >&2
+                voice=0
+            fi
+        fi
         [[ -d /sys/module/guacamole_adsp_test ]] || insmod ./guacamole_adsp_test.ko
         adsp_running=0
         for attempt in $(seq 1 15); do
@@ -37,6 +49,9 @@ case ${1:-status} in
             [[ -d /sys/module/guacamole_speaker_route ]] || insmod ./guacamole_speaker_route.ko
             # Adds dai@1 to q6asmdai, so it must precede q6asm-dai's probe.
             [[ -d /sys/module/guacamole_microphone ]] || insmod ./guacamole_microphone.ko
+            if [[ $voice == 1 ]]; then
+                [[ -d /sys/module/guacamole_voice_link ]] || insmod ./voice/guacamole_voice_link.ko
+            fi
         fi
         python3 phone-audio-modules.py
         [[ -r /proc/asound/cards ]] && grep -q 'OnePlus 7 Pro' /proc/asound/cards
