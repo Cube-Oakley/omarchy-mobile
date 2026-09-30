@@ -19,13 +19,17 @@ Sensor samples arrive as UsfMsg type 9 whose data is a packed binary
 This module only ever sends: GetServer, Echo, SensorList, SensorInfo,
 StartSampling and StopSampling requests (plus, only when explicitly asked for
 with --check-registry / --get-time, the read-only RegistryGet and GetTime
-requests).  It never sends registry writes, I2C/SPI/DMA, register writes,
-injection, self-test or production-script requests.
+requests).  It never sends I2C/SPI/DMA, register writes, injection, self-test
+or production-script requests.  The registry load (--load-registry) and the
+DisplayInfo report (id 1001, display state for the under-display TMD3719,
+UsfClient.display_info) are there for callers such as pixel-sensor-proxy;
+both only change the AoC's RAM.
 """
 
 import argparse
 import errno
 import os
+import re
 import select
 import struct
 import sys
@@ -84,6 +88,7 @@ REQ_SUEZ = 32
 REQ_SHMEM_TRANSPORT_INIT = 33
 REQ_SHMEM_TRANSPORT_DEINIT = 34
 REQ_DEBUG_GET_BUFFER = 35
+REQ_REPORT_SENSOR_ACTIVE = 37   # HAL ProxMonitorService: subscribe to a sensor's active state
 REQ_REGISTRY_PROD_SCRIPT_NODE = 40
 REQ_CONTEXT_EVENT = 300
 REQ_START_DATA_INJECTION = 800
@@ -100,7 +105,10 @@ ALLOWED_REQUESTS = {REQ_GET_SERVER, REQ_ECHO, REQ_SENSOR_LIST, REQ_SENSOR_INFO,
                     REQ_REGISTRY_GET, REQ_GET_TIME,   # read-only, opt-in
                     # The registry load Android's sensor HAL does at every AoC
                     # boot: into the AoC's RAM only (opt-in, --load-registry).
-                    REQ_REGISTRY_LOAD_SCRIPT, REQ_REGISTRY_SET}
+                    REQ_REGISTRY_LOAD_SCRIPT, REQ_REGISTRY_SET,
+                    # Display state the HAL reports to the AoC (brightness,
+                    # on/off, refresh rate) for the display-synced TMD3719.
+                    REQ_DISPLAY_INFO}
 
 SERVER_MGR_HANDLE = 1        # fixed handle of the server-manager server
 
@@ -109,6 +117,19 @@ UUID_SENSOR_MGR = bytes.fromhex('6b31cbf0744a14a1d4e8ae8a3e09fc4d')
 UUID_TIME = bytes.fromhex('8bb81b18254c299f0a45deb4d8cbc541')
 UUID_REGISTRY = bytes.fromhex('d76a14cc264deea1c6406f8b461682c0')
 UUID_STAT = bytes.fromhex('cf79f8eaee434740535220b6b973febf')
+# "Display Info Server" (UsfDispInfoServer): HAL DisplayInfoService::Connect
+# (sensors.usf.so 0x25190 -> 0x161f8); the server's copy is libusf 0x3a430.
+UUID_DISPLAY_INFO = bytes.fromhex('a88ec62410402aedcab9a5aad6a2eed2')
+
+# UsfMsgDisplayInfoEvent.status (HAL PopulateStateAndRateInfoFromStringLocked
+# and UsfMsgDisplayInfo::Finish): what the panel is doing.
+DISP_OFF = 0
+DISP_ON = 1
+DISP_LP = 2          # low power / always-on display; the HAL sends refresh 30
+DISP_HBM = 3         # high brightness mode
+DISP_LHBM = 4        # local HBM (fingerprint spot) on; overrides the others
+DISP_STATUS_NAMES = {DISP_OFF: 'off', DISP_ON: 'on', DISP_LP: 'lp', DISP_HBM: 'hbm', DISP_LHBM: 'lhbm'}
+DEFAULT_OP_HZ = 120  # what the HAL sends when the panel has no op_hz node
 
 # usf::UsfSensorType (subset; full table in USF-PROTOCOL.md)
 SENSOR_TYPE_NAMES = {
@@ -565,6 +586,92 @@ def encode_registry_set_req(path, props):
                                        for k, v in props])])
 
 
+# DisplayInfo (id 1001) payload, usf::UsfMsgDisplayInfoEvent.  Types from the
+# server's verifier (libusf 0x6bf70..0x6c088), meanings from the HAL builder
+# UsfMsgDisplayInfo::Finish (sensors.usf.so 0x22480) and the server's log line
+# "brightness:%u refresh_rate:%u te2_rate:%u status:%u display_id:%u".
+DISPLAY_INFO_FIELDS = [
+    # slot, kind, name
+    (0, 'u32', 'brightness'),    # panel DBV, the DCS 0x51 value (backlight brightness)
+    (1, 'u8', 'status'),         # DISP_*
+    (2, 'u32', 'refresh_rate'),  # Hz: the panel mode's rate, 0 when off, 30 in LP
+    (3, 'u8', 'display_id'),     # panel index, 0 = primary
+    (4, 'f32', 'leakage'),       # panel light reaching the ALS (from the histogram), else 0
+    (5, 'f32', 'luma'),          # mean histogram luma over the sensor's window, else 0
+    (6, 'u32', 'op_hz'),         # panel operation rate, Hz (120 without an op_hz node)
+    (7, 'u32', 'te2_rate'),      # TE2 rate, Hz; only with registry is_te2_node_enabled (not cheetah)
+]
+
+
+def encode_display_info_req(brightness, status, refresh_rate, display_id=0, leakage=0.0,
+                            luma=0.0, op_hz=DEFAULT_OP_HZ, te2_rate=0):
+    """UsfMsgDisplayInfoEvent, the payload of request 1001 to the display info
+    server.  Like the HAL's builder (no force_defaults) it leaves zero fields
+    out; the AoC reads a missing field as 0."""
+    values = {'brightness': brightness, 'status': status, 'refresh_rate': refresh_rate,
+              'display_id': display_id, 'leakage': leakage, 'luma': luma, 'op_hz': op_hz,
+              'te2_rate': te2_rate}
+    return build_table([(slot, kind, values[name] or None) for slot, kind, name in DISPLAY_INFO_FIELDS])
+
+
+def decode_display_info_req(p):
+    """Used by the self-tests and the simulator."""
+    t = Table.root(p)
+    return {name: t.scalar(slot, kind, 0.0 if kind == 'f32' else 0) for slot, kind, name in DISPLAY_INFO_FIELDS}
+
+
+def _strtol(s):
+    m = re.match(r'\s*([+-]?\d+)', s)
+    return int(m.group(1)) if m else 0
+
+
+def display_state_from_backlight(state, lhbm=0):
+    """(status, refresh_rate) as the HAL derives them from the text of
+    /sys/class/backlight/panelN-backlight/state, e.g. "On: 1440x3120@120"
+    (DisplayInfoService::PopulateStateAndRateInfoFromStringLocked, 0x22b30):
+    the first of "HBM", "On", "Off", "LP" found anywhere wins, in that order.
+    HBM and On take the number after the first '@' (60 when there is no '@'),
+    Off sends 0 and LP 30.  lhbm is local_hbm_mode; >= 1 reports DISP_LHBM
+    whatever the state (UsfMsgDisplayInfo::Finish).  None if nothing matched,
+    in which case the HAL keeps its previous values."""
+    if 'HBM' in state:
+        status = DISP_HBM
+    elif 'On' in state:
+        status = DISP_ON
+    elif 'Off' in state:
+        status, rate = DISP_OFF, 0
+    elif 'LP' in state:
+        status, rate = DISP_LP, 30
+    else:
+        return None
+    if status in (DISP_HBM, DISP_ON):
+        at = state.find('@')
+        rate = _strtol(state[at + 1:]) if at >= 0 else 60
+    if lhbm >= 1:
+        status = DISP_LHBM
+    return status, rate
+
+
+# SensorHal::AddPanelInfosToRegistry (sensors.usf.so 0x311e0) writes these with
+# RegistrySet to /dev/display_info/<panel> before the .reg scripts are loaded.
+# panel_name is the first word of .../primary-panel/panel_name mapped through
+# this table (static initialiser 0x3dd20); anything else becomes "panel-a".
+PANEL_REGISTRY_NAMES = dict.fromkeys(
+    ('boe-nt37290', 'nt37290', 'google-bigsurf', 'google-ct3b', 'google-ct3d', 'google-tk4b',
+     'google-tg4b', 'google-tg4c', 'google-fleb'), 'panel-b')
+
+
+def panel_registry_props(panel_name, serial=None, is_original=True, ext_info=None):
+    """[(name, value)] for RegistrySet("/dev/display_info/N", ...) as the HAL
+    builds them: panel_name mapped to the registry's panel-a/panel-b subtree
+    name, the serial (or "unknown"), "1" when IDisplay reports the panel as
+    ORIGINAL, and "0x" + the first word of panel_extinfo (or "0")."""
+    return [('panel_name', PANEL_REGISTRY_NAMES.get(panel_name, 'panel-a')),
+            ('panel_serial', serial or 'unknown'),
+            ('panel_is_original', '1' if is_original else '0'),
+            ('panel_ext_info', '0x' + ext_info if ext_info else '0')]
+
+
 # ---------------------------------------------------------------------------
 # Response payload decoders (and encoders for the self-tests / simulator)
 # ---------------------------------------------------------------------------
@@ -832,7 +939,8 @@ class FakeAoc:
     """A tiny AoC stand-in built only from this module's encoders."""
 
     def __init__(self):
-        self.handles = {UUID_SENSOR_MGR: 2, UUID_TIME: 3, UUID_REGISTRY: 4}
+        self.handles = {UUID_SENSOR_MGR: 2, UUID_TIME: 3, UUID_REGISTRY: 4, UUID_DISPLAY_INFO: 5}
+        self.display_info = None
         self.sensors = {10: {'name': 'LSM6DSV Accelerometer', 'type': 1, 'vendor': 'STMicro',
                              'max_range': 78.4532, 'resolution': 0.0023928226, 'min_period_ns': 2404000,
                              'max_period_ns': 1000000000, 'fifo_reserved': 3000, 'fifo_max': 3000,
@@ -879,6 +987,13 @@ class FakeAoc:
             sid = Table.root(p).scalar(0, 'u32')
             self.active.pop(sid, None)
             return resp(0 if sid else 7)
+        if mid == REQ_DISPLAY_INFO and h == self.handles[UUID_DISPLAY_INFO]:
+            # UsfDispInfoServer::ProcessDisplayInfo: status 5 without a
+            # payload, else an empty OK response.
+            if p is None:
+                return resp(5)
+            self.display_info = decode_display_info_req(p)
+            return resp(0)
         return resp(7)
 
     def tick(self):
@@ -1009,6 +1124,13 @@ class UsfClient:
     def registry_set(self, reg_handle, path, props):
         self.checked(REQ_REGISTRY_SET, reg_handle, encode_registry_set_req(path, props))
 
+    def display_info(self, disp_handle, brightness, status, refresh_rate, **kw):
+        """Report the panel state to the display info server (handle from
+        get_server(UUID_DISPLAY_INFO)).  The AoC answers with an empty OK;
+        the HAL waits up to 5 s for it."""
+        self.checked(REQ_DISPLAY_INFO, disp_handle,
+                     encode_display_info_req(brightness, status, refresh_rate, **kw))
+
 
 # ---------------------------------------------------------------------------
 # Self tests
@@ -1043,6 +1165,7 @@ def self_test(verbose=False):
         REQ_STOP_SAMPLING: encode_stop_sampling_req(7),
         REQ_GET_TIME: None,
         REQ_REGISTRY_GET: encode_registry_get_req('/'),
+        REQ_DISPLAY_INFO: encode_display_info_req(372, DISP_ON, 60, leakage=1.432487, luma=97.5),
     }
     for mid, p in payloads.items():
         msg = encode_request(mid, 0x1234 + mid, 42, p)
@@ -1140,6 +1263,55 @@ def self_test(verbose=False):
     check(rc == 0 and REQ_REGISTRY_GET in sent_ids and REQ_GET_TIME in sent_ids, 'opt-in reads')
     check(decode_registry_get_resp(build_table([(0, 'tables', [[(0, 'bytes', b'loaded\0'), (1, 'bytes', b'1\0')]])]))
           == [('loaded', '1')], 'registry get resp')
+
+    # DisplayInfo (1001): every slot round-trips through the Table decoder
+    di = dict(brightness=2047, status=DISP_LHBM, refresh_rate=120, display_id=1, leakage=0.25,
+              luma=128.0, op_hz=60, te2_rate=120)
+    p = encode_display_info_req(**di)
+    verify_flatbuffer(p)
+    check(decode_display_info_req(p) == di, 'display info round trip %r' % decode_display_info_req(p))
+    # ... at the slots, widths and types UsfDispInfoServer::ProcessDisplayInfo
+    # reads (libusf 0x6bf70..0x6c088): 0,2,6,7 u32; 1,3 u8; 4,5 f32.  The
+    # fields must lie inside the table and must not overlap.
+    t = Table.root(p)
+    width = {'u32': 4, 'u8': 1, 'f32': 4}
+    spans = []
+    for slot, kind, name in DISPLAY_INFO_FIELDS:
+        fo = t._field(slot)
+        check(fo >= 4 and fo + width[kind] <= t.obj_size, 'display info slot %d inside table' % slot)
+        check((t.pos + fo) % width[kind] == 0, 'display info slot %d aligned' % slot)
+        spans.append((fo, fo + width[kind]))
+        raw = struct.unpack_from('<' + {'u32': 'I', 'u8': 'B', 'f32': 'f'}[kind], p, t.pos + fo)[0]
+        check(raw == di[name], 'display info raw slot %d' % slot)
+    spans.sort()
+    check(all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), 'display info fields overlap')
+    # the stock values seen in the AoC log; zero fields are left out like the HAL does
+    p = encode_display_info_req(372, DISP_ON, 60)
+    t = Table.root(p)
+    check([t.has(s) for s in range(8)] == [True, True, True, False, False, False, True, False],
+          'display info omitted zero slots')
+    check(decode_display_info_req(p) == dict(brightness=372, status=1, refresh_rate=60, display_id=0,
+                                             leakage=0.0, luma=0.0, op_hz=120, te2_rate=0), 'display info defaults')
+    check(not Table.root(encode_display_info_req(0, DISP_OFF, 0, op_hz=0)).has(0), 'display info all zero')
+    # inside a request envelope: msg id 1001, and the payload is intact
+    m = encode_request(REQ_DISPLAY_INFO, 9, 5, p)
+    env = decode_envelope(decode_msg(m)[1])
+    check(env['id'] == 1001 and env['handle_or_status'] == 5 and env['payload'] == p, 'display info envelope')
+    check(m.find(p) % 8 == 0, 'display info payload placement')
+    # backlight state text -> (status, refresh rate), as the HAL parses it
+    for text, lhbm, want in (('On: 1440x3120@120\n', 0, (DISP_ON, 120)), ('HBM: 1440x3120@60', 0, (DISP_HBM, 60)),
+                             ('On', 0, (DISP_ON, 60)), ('Off\n', 0, (DISP_OFF, 0)), ('LP\n', 0, (DISP_LP, 30)),
+                             ('On: 1440x3120@120', 1, (DISP_LHBM, 120)), ('???', 0, None)):
+        check(display_state_from_backlight(text, lhbm) == want, 'backlight state %r' % text)
+    check(panel_registry_props('sdc-s6e3hc4')[0] == ('panel_name', 'panel-a')
+          and panel_registry_props('boe-nt37290', ext_info='a2')[::3]
+          == [('panel_name', 'panel-b'), ('panel_ext_info', '0xa2')], 'panel registry props')
+    # against the simulated AoC
+    c = UsfClient(DryRunTransport(simulate=True, quiet=True))
+    dh = c.get_server(UUID_DISPLAY_INFO)
+    c.display_info(dh, 285, DISP_ON, 120, leakage=1.47)
+    check(c.tr.sim.display_info['brightness'] == 285 and c.tr.sim.display_info['refresh_rate'] == 120
+          and abs(c.tr.sim.display_info['leakage'] - 1.47) < 1e-6, 'display info via client')
     print('self-test: %d checks passed' % ok)
     return 0
 
@@ -1162,11 +1334,17 @@ def device_cdt():
     return (product << 16) | (stage << 12) | (major << 8) | (minor << 4) | variant
 
 
-def load_registry(c, dirs, cdt, out=sys.stdout):
+def load_registry(c, dirs, cdt, out=sys.stdout, panel_props=None):
     """What Android's sensor HAL does once per AoC boot (SensorHal::LoadRegistry):
     every *.reg script of each directory, in order, as RegistryLoadScript, then
-    "/" loaded=1. It writes only the AoC's registry, in its RAM."""
+    "/" loaded=1. It writes only the AoC's registry, in its RAM.
+    panel_props, e.g. panel_registry_props("sdc-s6e3hc4"), is written to
+    /dev/display_info/0 first, as SensorHal::Connect does with
+    AddPanelInfosToRegistry right before LoadRegistry."""
     reg = c.get_server(UUID_REGISTRY)
+    if panel_props:
+        c.registry_set(reg, '/dev/display_info/0', panel_props)
+        print('registry /dev/display_info/0: %s' % ', '.join('%s=%s' % kv for kv in panel_props), file=out)
     for d in dirs:
         for name in sorted(os.listdir(d)):
             path = os.path.join(d, name)

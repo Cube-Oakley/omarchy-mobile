@@ -77,12 +77,30 @@ The TMD3719 sits under the panel. The AoC gives its light in three ways:
 | TMD3719 Ambient Light (type 9), continuous | Every conversion, about 27 a second, whatever period is asked for. |
 | Auto Brightness (type 48, Google) | One reading a second. `vals[1]` follows the room within seconds. `vals[0]` is slower and holds its level when the room darkens. |
 
-The proxy serves `vals[1]` of Auto Brightness as `LightLevel`. That worked
-until about 16:50 on 2026-09-29. Since then the TMD3719 has converted nothing,
-for light or proximity (see the [status](../docs/status.md)). The AoC logs a
-watchdog (`status:0`) and "Sync delay shouldn't be less than 0 after
-adjustment" whenever it is enabled. The stock registry syncs its readings to
-the panel (`te2_alignment`, `sync_delay_ns`, EM cycles, `min_fps=30`). None of them
-sees the panel's own light: 1% and full brightness read the same 61.6 lux.
+The proxy serves `vals[1]` of Auto Brightness as `LightLevel`.
+
+## The display state
+
+The TMD3719 times its conversions to the panel: the stock registry sets
+`te2_alignment`, `sync_delay_ns`, EM cycles per frame and `min_fps=30`, and the
+AoC's driver sets the chip's VSYNC rate and the proximity burst delay from the
+refresh rate. Android's sensor HAL tells the AoC the display state with a
+DisplayInfo request (id 1001) to the "Display Info Server"; its format is in
+[USF-PROTOCOL.md](USF-PROTOCOL.md) §10. Without it the chip never converts: the
+AoC logs `TMD3719: Watchdog[...]: status:0` (the chip's STATUS register) and
+"Sync delay shouldn't be less than 0 after adjustment" on every enable, and
+light and proximity return nothing. That was the stall seen from 2026-09-29.
+Why the chip converted earlier that day with no DisplayInfo is not known.
+
+`usf_backend.py` now sends it, as the HAL does: status on or off from the DSI
+connector's `dpms`, the panel's DBV from the `pixel-panel` backlight, 120 Hz
+when `pixel_scanout.panel120` is set, and `op_hz` 120. It sends at start,
+before light or proximity starts sampling, and on any change, polled once a
+second while either samples. Verified on 2026-09-30: light followed the room
+(45-67 lux) and the AoC ran its proximity baseline calibration within seconds
+of the first DisplayInfo.
+
+Neither reading sees the panel's own light: 1% and full brightness read the
+same 61.6 lux.
 The Pixel's device profile therefore sets `panelLux` to 0, where the OnePlus's
 is 190.

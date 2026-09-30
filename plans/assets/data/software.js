@@ -286,7 +286,7 @@ PAGE_SOFTWARE = {
                   + "to the call. Answered from it, user-confirmed.",
               ref: "devices/oneplus7pro/docs/calling-20260927.md" },
             { n: "In-call proximity screen cover", s: "ok",
-              on: { pixel7pro: { s: "no", note: "The shell helper is the same, but the Pixel's proximity chip has not converted since September 29, so the cover cannot trigger.",
+              on: { pixel7pro: { s: "partial", note: "The shell helper is the same, and the Pixel's proximity chip converts again since September 30; the cover has not been tried in a call yet.",
                                  ref: "devices/pixel7pro/sensors/README.md" } },
               note: "During an earpiece call the shell blanks the screen and swallows touches while proximity reads "
                   + "near, so a cheek cannot end the call; user-confirmed at the ear.",

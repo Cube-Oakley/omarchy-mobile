@@ -109,10 +109,10 @@ HW.pixel7pro = {
               + "stock battery model was restored (5,002 mAh instead of the 3,000 mAh default), which "
               + "recalculated the percentage from 100 to 92 %.",
           ref: "devices/pixel7pro/kernel/battery/README.md" },
-        { n: "Charging", s: "partial", cap: "charging",
+        { n: "Charging", s: "ok", cap: "charging",
           note: "1.5 A from USB instead of the bootloader's 500 mA, and the stock step-charging tables up to a "
-              + "4.45 V float (the bootloader's 4.35 V had stopped it at 92 %): charging past 92 % at +1.0 A is "
-              + "verified, a full 100 % is not yet observed. The charge limit works; it pauses at 45 °C.",
+              + "4.45 V float (the bootloader's 4.35 V had stopped it at 92 %): it now charges to 100 % "
+              + "(5,016 mAh at 4.42 V). The charge limit works; it pauses at 45 °C.",
           ref: "devices/pixel7pro/kernel/battery/README.md" },
         { n: "Fast charging", s: "no", cap: "fastcharge",
           note: "5 V only: no USB PD and no BC1.2 port detection, so the 1.5 A limit applies to any port.",
@@ -255,13 +255,13 @@ HW.pixel7pro = {
         { n: "Barometric pressure (ICP20100)", s: "partial",
           note: "Reads a plausible 1010.5 hPa; nothing uses it yet.", ref: "devices/pixel7pro/sensors/README.md" },
         { n: "Ambient light sensor (TMD3719)", s: "partial", cap: "light",
-          note: "Automatic brightness followed the room on September 29 until about 16:50, when the chip stopped "
-              + "converting for light and proximity; reboots and a rail reset did not revive it. The display "
-              + "sync it expects is the suspect; automatic brightness waits on it.",
-          ref: "devices/pixel7pro/docs/status.md" },
+          note: "Reports the room again (45–67 lux, updating live) since the proxy sends the AoC the display state "
+              + "the chip syncs to (a DisplayInfo request, recovered from the stock HAL); that was the September 29 "
+              + "stall. Automatic brightness in the shell still needs a check by hand.",
+          ref: "devices/pixel7pro/sensors/README.md" },
         { n: "Proximity sensor (TMD3719)", s: "partial", cap: "proximity",
-          note: "Near and far checked by hand on September 29, before the same chip stopped converting; the "
-              + "in-call screen cover cannot trigger until it is back.",
+          note: "Converting again with the display state sent, with the screen on or off (reads far, baseline "
+              + "calibration runs). Near and far were checked by hand on September 29; the recheck is pending.",
           ref: "devices/pixel7pro/sensors/README.md" },
         { n: "Rear light, flicker and spectral sensor (VD6282)", s: "no",
           note: "On the AoC's buses; not used.", ref: "devices/pixel7pro/sensors/README.md" },

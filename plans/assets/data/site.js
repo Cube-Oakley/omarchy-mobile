@@ -55,7 +55,7 @@ SITE = {
     + "<b>Integration → Foundations to decide</b>.",
     "<b>Ship order.</b> Both phones now boot from internal storage, text and make VoLTE calls. On the Pixel "
     + "7 Pro the order is deeper SoC sleep (SICD and a real deep suspend), cameras, proximity and ambient "
-    + "light (the TMD3719 stall), GPS, and confirming a charge to 100 %. On the OnePlus 7 Pro it is a "
+    + "light (the TMD3719 stall) and GPS. On the OnePlus 7 Pro it is a "
     + "measured sleep drain, then the CX/MX sleep votes for its deepest state, sleeping on the charger, call "
     + "volume on the keys and MMS. The sequence still moves with each result."
   ]

@@ -102,7 +102,9 @@ from the bootloader's DT at load:
 - A charger that already finished restarts after its float goes up.
 
 Measured on September 30, at 22.5 °C: the float went from 4.35 V to 4.45 V, the
-charger left DONE and charged at +1.0 A from 92 %.
+charger left DONE and charged at +1.0 A from 92 %. About 70 minutes later the
+gauge read 100 % (5,016 of 5,016 mAh) at 4.42 V, with the charger still
+tapering in constant voltage at +0.37 A.
 
 **Input limit (CNFG_09).** The bootloader leaves 0x13: 500 mA under AutoIBUS.
 In that mode the charger holds a computer port at 500 mA whatever CHGIN_ILIM

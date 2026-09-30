@@ -63,15 +63,13 @@ this kernel ([aoc](../kernel/aoc/README.md)).
   - Rotation follows the phone both ways (checked by hand).
   - Light comes from Google's auto-brightness sensor, once a second. It sees
     none of the panel's own light, so the Pixel profile sets `panelLux` to 0.
-  - **Open:** since about 16:50 on 2026-09-29 the TMD3719 (light and
-    proximity) has not converted. The AoC logs a watchdog (`status:0`) and
-    "Sync delay shouldn't be less than 0 after adjustment" on each enable.
-    Reboots, a power-on reset of its rails, a display cycle, full brightness
-    and a constantly redrawing screen did not bring it back. It worked
-    earlier the same day. Its readings are synced to the panel (the stock
-    registry sets TE2 alignment, EM cycles and `min_fps`), so the panel's TE2
-    or display state the Android HAL feeds the AoC are the suspects.
-    Automatic brightness waits on it.
+  - **Fixed 2026-09-30:** from about 16:50 on 2026-09-29 the TMD3719 (light
+    and proximity) did not convert. It times its conversions to the panel and
+    needs the display state (on/off, DBV, refresh rate) that Android's sensor
+    HAL sends the AoC as a DisplayInfo request. The proxy now sends it
+    ([sensors](../sensors/README.md#the-display-state)); light and proximity
+    report again after a clean reboot, including with the screen off.
+    Automatic brightness and near/far still need a check by hand.
 - **RTC alarm:** the S2MPG12's alarm 0 now wakes the phone from s2idle
   ([rtc](../kernel/rtc/README.md)), so `rtcwake` works and suspend can be
   tested unattended. Four suspend/wake cycles passed with the AoC, audio,

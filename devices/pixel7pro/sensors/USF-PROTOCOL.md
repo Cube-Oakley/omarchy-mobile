@@ -53,6 +53,12 @@ code) and `vsum.py` (summarises inlined FlatBuffers verifiers).
   that happens. Without it, expect an empty or virtual-only sensor list. This
   document describes those messages (§7). `usf.py` does not send them, because
   it is limited to read-only requests.
+* **Display state.** The under-display TMD3719 (light and proximity) is timed
+  to the panel. The HAL tells the AoC the panel's brightness (DBV), on/off/AOD
+  state, refresh rate and operation rate with DisplayInfo (id 1001) to the
+  display info server, at start and on every change. Before the registry
+  load, it also writes the panel's name, serial and "original" flag to
+  `/dev/display_info/0` (§10).
 
 ---
 
@@ -188,9 +194,10 @@ Each server's `ProcessReq` dispatches on the id [V at the cited address]:
 | 32 | Suez | `UsfSuezServer` 0xc4d10 |
 | 33 / 34 | ShMemTransportInit / Deinit | `UsfShMemTransportMgrServer` 0xb7a90 |
 | 35 | DebugGetBuffer | `UsfDebugServer` 0x68fe0 |
+| 37 | ReportSensorActive (subscribe to a sensor's active/inactive changes; AoC side only) | sensor, sent by the HAL's `ProxMonitorService::SendReq` [HAL 0x2c24c] (§10.7) |
 | 300 | ContextEvent | `UsfEventServer` 0x6f230 |
 | 800–804 | Start/Stop/Data/Status/Repeated data injection | `UsfSensor` |
-| 1001 | DisplayInfo | `UsfDispInfoServer` 0x6bca0 |
+| 1001 | DisplayInfo (§10) | `UsfDispInfoServer` 0x6bca0 |
 | 1007 | GetSensorListStatus | `UsfSensorMgrServer` |
 
 The "UsfMsgType" values that the task asked for map as follows. The protocol
@@ -226,6 +233,7 @@ has no separate *response* ids and no separate "event" request.
 | DMA | `d1601cffab4decfba96f09b6c254bd06` | `UsfDmaMgr` (do not use) |
 | shmem transport | `fa8e2a84234a79376879369cc51aa914` | shmem path (unavailable) |
 | suez | `ae756f064c4f5a3bbcc39f8da106efc3` | `UsfSuezClient` |
+| display info | `a88ec62410402aedcab9a5aad6a2eed2` | HAL `DisplayInfoService::Connect` [HAL 0x25190 → 0x161f8]; server copy [V 0x6c4a4 → 0x3a430] |
 
 ### FRAG (outer type 3): `usf::UsfMsgFrag`
 
@@ -542,16 +550,18 @@ A compact accel batch with 2 samples (type 9):
 ## Using `usf.py`
 
 ```
-python3 usf.py --self-test            # 60 offline round-trip checks (encoders <-> decoders, fragments, batch, flow)
+python3 usf.py --self-test            # 107 offline checks (encoders <-> decoders, fragments, batch, flow, DisplayInfo)
 python3 usf.py --dry-run              # print hex of every request; a built-in fake AoC answers
 python3 usf.py [/dev/acd-com.google.usf] [--rate 50] [--duration 3] [--type 1] [--index 0] [-v]
 python3 usf.py --check-registry       # also does the read-only RegistryGet("/") to see whether loaded=1
 python3 usf.py --get-time             # also does the read-only GetTime (sensor-core clock vs host CLOCK_BOOTTIME)
 ```
 
-`encode_request()` refuses any msg_id outside {3, 1, 5, 4, 8, 9, 21, 25}. The
-last two are only sent with the opt-in flags. StopSampling is always sent,
-even if the sampling loop is interrupted.
+`encode_request()` refuses any msg_id outside {3, 1, 5, 4, 8, 9, 21, 25, 22,
+24, 1001}. The command line sends 21 and 25 only with the opt-in flags and
+22/24 only with `--load-registry`; 1001 (DisplayInfo) is for callers such as
+`pixel-sensor-proxy`, through `UsfClient.display_info()`. StopSampling is
+always sent, even if the sampling loop is interrupted.
 
 ## 7. The registry (why the sensor list may be empty) — not implemented
 
@@ -606,3 +616,266 @@ sites; the meanings are **[I]**: 0 OK · 2 generic failure · 3 size/overflow ·
   and ignores them; libusf would route them to local servers.
 * The registry prerequisite (§7) is the most likely reason for an empty
   sensor list on a non-Android host.
+* DisplayInfo (§10) was recovered from the HAL (sender) and libusf's copy of
+  the server. How the AoC's TMD3719 driver uses each value is known only from
+  its log strings in `aoc.bin`; that code was not disassembled. It is untested
+  whether reporting the display state brings back a stalled TMD3719.
+
+---
+
+## 10. Display info (id 1001): the panel state the TMD3719 needs
+
+Recovered from `sensors.usf.so` (`usf::DisplayInfoService`,
+`SensorHal::AddPanelInfosToRegistry`, `usf::ProxMonitorService`) and from the
+server copy in `libusf.so` (`usf::UsfDispInfoServer`). `DisplayInfoService` is
+only built into the HAL; `usf.py` now has the encoder
+(`encode_display_info_req`, `UsfClient.display_info`).
+
+### 10.1 Why the TMD3719 needs it
+
+The stock registry times the under-display TMD3719 to the panel:
+`/dev/tmd3719/0` has `sync_delay_ns` and `te2_alignment=1`; `.../als` has
+`EM_cycle_count_60Hz`, `itime_table_brightness`/`itime_table` (integration time
+by DBV) and the histogram/leakage settings; `.../prox` has
+`burst_delay_30hz/60hz/120hz/aod` and `min_fps=30`. The AoC can only choose
+among those with the panel state that the HAL reports. The AoC firmware
+(`/vendor/firmware/aoc.bin`) contains the same server and a TMD3719 driver
+that consumes these reports. That is known from its log strings only
+(**[I]**, not disassembled):
+
+| `aoc.bin` string | what it says about the inputs |
+|---|---|
+| `USF: brightness:%u refresh_rate:%u te2_rate:%u status:%u display_id:%u` | same server code as libusf's copy (§10.2) |
+| `USF: TMD3719: Failed to register display info event listener, err = %d` | the TMD3719 driver listens for DisplayInfo |
+| `USF: TMD3719: dbv:%d leakage:%f refresh_rate:%d status:%d op_hz:%d [%d]` | logged per report on stock (e.g. `dbv:372 leakage:1.432487 refresh_rate:60 status:1 op_hz:120`) |
+| `USF: TMD3719: Apply NS mode ALS delay: %d` / `Apply HS mode ALS delay: %d` | `op_hz` selects the ALS delay (60 Hz NS or 120 Hz HS operation) |
+| `USF: TMD3719: No burst delay setting that matches the current FPS(%d)` | the refresh rate selects the prox `burst_delay_*hz` |
+| `USF: TMD3719: Failed to update VSYNC frequency. (%d)`, `HealthCheck-VSYNC_FREQ misconfigured (%x != %x)` | the chip's VSYNC frequency register is set from the refresh rate |
+| `USF: TMD3719: [ALS]sync_delay_adjustment: %lld`, `Sync delay shouldn't be less than 0 after adjustment.` | the sync delay is adjusted per refresh rate/EM cycle; stock logs `1217995`, Linux logs the error |
+| `USF: TMD3719: Watchdog[l:%d p:%d s:%d]: status:%x enable:%x/%x!` | the `status` in the watchdog line is the chip's STATUS register (hex), not the display state |
+| `USF: TMD3719: Panel name is %s`, `Panel serial is %s`, `panel_is_original is %d`, `Panel max refresh rate is %d`, `No node found for '%s' panel name.` | reads `/dev/display_info/0` (§10.6) and the `/dev/tmd3719/0/<panel_name>` subtree |
+| `USF: TMD3719: Panel is original but serial(cur:%s, fac:%s) don't match.`, `Panel is not original but serial(%s) match.`, `Applying factory-calibrated parameters for ALS.` / `for PROX.` | the factory calibration (from persist) is checked against `panel_serial` and `panel_is_original` |
+
+Until now the Linux side sent none of it, so the AoC ran without a refresh
+rate, DBV or operation rate (**[I]**: presumably all 0).
+
+### 10.2 Transport
+
+| What | Detail | Evidence |
+|---|---|---|
+| server | "Display Info Server", UUID `a88ec62410402aedcab9a5aad6a2eed2`. Look it up with GetServer (id 3) on handle 1. | HAL `Connect` [HAL 0x25190 → 0x161f8]; `UsfDispInfoServerMgr::Init` copies the same UUID into the server and names it [V 0x6c4a4 → 0x3a430, 0x6c4e0] |
+| request | `UsfMsg{type 1 REQ}`, envelope `{0: 1001, 1: req_id, 2: display info server handle, 3: UsfMsgDisplayInfoEvent}` | msg id [HAL 0x22a64 `mov w1,#0x3e9` → voffset 4]; handle = `DisplayInfoService`+0 [HAL 0x21ff0 → voffset 8]; payload [HAL 0x229ec..0x22a1c, then `UsfReq::Finish`] |
+| dispatch | `ProcessReq` sends id 1001 to `ProcessDisplayInfo` and everything else to the base server (Echo, else status 8) | [V 0x6bca0] |
+| response | RESP, status 0, **no payload**. A missing or malformed payload returns status 5 (`SendErrorResp`). | [V 0x6c08c `SendResp` with an empty `UsfServerResp`; 0x6be4c; 0xad764..0xad778] |
+| wait | `SendSyncRequest` with a 5 s timeout; the response payload is ignored | [HAL 0x220bc..0x220d4: x2 = NULL, x3 = 0x12a05f200] |
+| effect | the server logs the values, builds a `UsfDispEvent` and dispatches it to the display-event listeners | [V 0x6c1a8, 0x6c34c..0x6c3c4] |
+| channel | wake channel: the non-wakeup byte `UsfReq`+9 stays 0 | [HAL 0x21eac zeroes it]; meaning of +9 from §1c |
+
+### 10.3 Payload: `usf::UsfMsgDisplayInfoEvent`
+
+The table name comes from `UsfFbb<UsfMsgDisplayInfoEventBuilder>` [HAL
+0x25cd0]. Types are from the server's verifier [V 0x6bf70..0x6c088]: slots 0,
+2, 4, 5, 6 and 7 are 4 bytes, slots 1 and 3 are 1 byte. Names are from the
+server log line [V 0x6c1a8, 0x6c220], the HAL dump labels
+(`DisplayInfoContent::DumpInfo` [HAL 0x20258..0x20328]) and the AoC log line.
+
+| slot | voffset | type | name | meaning, units, values | HAL source | evidence |
+|---|---|---|---|---|---|---|
+| 0 | 4 | uint32 | brightness | panel DBV: the brightness register value (DCS 0x51). The stock AoC log shows values from 31 to 372. | `strtol` of `/sys/class/backlight/panel0-backlight/brightness` [HAL 0x216e8], read again at each histogram tick [HAL 0x219e4] | [V 0x6bfb4, 0x6c0f8 `brightness:%u`]; [HAL 0x224ac] |
+| 1 | 6 | uint8 | status | 0 off, 1 on, 2 LP (AOD/doze), 3 HBM, 4 LHBM (local HBM on) | the backlight `state` text (§10.4); 4 whenever `local_hbm_mode` ≥ 1 | [V 0x6bfd0 (1 byte), 0x6c178 `status:%u`]; [HAL 0x226d0..0x22714, 0x22950] |
+| 2 | 8 | uint32 | refresh_rate | Hz of the current mode; 0 when off; 30 in LP | the number after `@` in `state` (60 if there is none) | [V 0x6bfec, 0x6c128]; [HAL 0x2255c, 0x22df8] |
+| 3 | 10 | uint8 | display_id | panel index: 0 primary, 1 secondary. It is `SendInfoReq`'s argument. | – | [V 0x6c008 (1 byte), 0x6c194]; [HAL 0x220b4 → 0x2277c] |
+| 4 | 12 | float | leakage | the panel's own light reaching the sensor (**[I]**: lux), from `LeakageCalculator` (§10.5); 0 while the histogram is inactive | `LeakageCalculator::Calculate(luma, dbv)` [HAL 0x219fc] | [V 0x6c310, 0x6c220 `leakage:%f`]; [HAL 0x22840] |
+| 5 | 14 | float | luma | mean bin index of the display histogram over the sensor's window, Σ i·bin[i] / Σ bin[i] (**[I]**: 0–255); `histo_fallback_luma` (128.0) when the histogram counts no pixels; 0 while inactive | IDisplay histogram API [HAL 0x24eec..0x24f1c, 0x24f4c] | [V 0x6c324, `luma:%f`]; [HAL 0x228c8] |
+| 6 | 16 | uint32 | op_hz | panel operation rate in Hz (120 HS, 60 NS) | `strtol` of `/sys/class/drm/card0/device/primary-panel/op_hz` [HAL 0x21844]; **120** when that node is missing [HAL 0x215a4] | [V 0x6c05c (4 bytes); libusf's copy keeps one byte, 0x6c338/0x6c3ac]; [HAL 0x2266c]; AoC log `op_hz:120` |
+| 7 | 18 | uint32 | te2_rate | TE2 rate in Hz | `.../primary-panel/te2_rate_hz`, read only when the ALS node has `is_te2_node_enabled` ≥ 1 [HAL 0x20c10, 0x2147c, 0x21754]. Cheetah's registry does not set it, so stock never sends this field. | [V 0x6c078, 0x6c164 `te2_rate:%u`]; [HAL 0x225ec] |
+
+The HAL's builder has `force_defaults` off, so it **leaves out fields that are
+0** [HAL 0x224b0/0x224ec, 0x21e70]. The server reads a missing field as 0
+[V 0x6c100..0x6c19c]. `encode_display_info_req` does the same.
+
+### 10.4 How the HAL gets the state (`PopulateStateAndRateInfoFromStringLocked`)
+
+`DisplayInfoContent`, one per panel at `DisplayInfoService`+0x88+0x30·p [HAL
+0x21f64..0x21fe4]: +0 time (s), +8 time (ms, `CLOCK_REALTIME_COARSE`; for the
+dump only), +0x10 DBV, +0x14 LHBM, +0x18 RR, +0x1c TE2, +0x20 status, +0x24
+leakage, +0x28 luma, +0x2c op_hz.
+
+The text of `/sys/class/backlight/panel<p>-backlight/state` is parsed like this
+[HAL 0x22b30]. The first test that matches anywhere in the text wins:
+
+| text contains | status | refresh_rate |
+|---|---|---|
+| `HBM` | 3 | `strtol` after the first `@`, 60 if there is no `@` |
+| `On` | 1 | the same |
+| `Off` | 0 | 0 |
+| `LP` | 2 | 30 |
+| none | unchanged | unchanged |
+
+The stock panel driver's text is presumably `On: 1440x3120@120`,
+`HBM: 1440x3120@60`, `LP` or `Off` (**[I]**: inferred from the parser). The
+matching AoC log lines show `status:1 refresh_rate:60/120` when on and
+`status:2 refresh_rate:30` in AOD. `local_hbm_mode` (0/1) is kept separately.
+`UsfMsgDisplayInfo::Finish` sends status 4 whenever it is ≥ 1, even with the
+panel off [HAL 0x226d0]. `usf.display_state_from_backlight()` mirrors the
+parser.
+
+### 10.5 When it is sent
+
+* **Start.** `SensorHal::Init` runs `Connect` (registry, §7), then
+  `ProxMonitorService::Init`, then the sensor list, then
+  `DisplayInfoService::Init` [HAL 0x2dd44..0x2ddc8]. `Init` does
+  GetServer(display info), then sets a one-shot 500 ms timer [HAL
+  0x2551c..0x25554]. The timer runs `ParseRegistryFile`. If at least one panel
+  has an ALS, it then runs `UpdateSensorSetting` and the
+  `DisplayStateMonitor` thread; otherwise it runs
+  `DisplayStateMonitorSimple`, which only tracks panel 0's state and never
+  sends [HAL 0x20850..0x208b8, 0x21be0].
+* **`ParseRegistryFile`** [HAL 0x20930] reads the AoC registry (RegistryGet)
+  for p = 0, 1, stopping at the first node without `attached_alsp`:
+  1. `/dev/display_info/<p>`: `attached_alsp` (cheetah: `/dev/tmd3719/0`)
+     and `panel_name`.
+  2. `<alsp>`: `is_fac_cal` and `is_te2_node_enabled`.
+  3. `itime_table_brightness` and the `histo_*` settings, from
+     `<alsp>/<panel_name>/als` when that exists, else from `<alsp>/als`.
+* **`UpdateSensorSetting`** [HAL 0x210e0] writes the `itime_table_brightness`
+  string (cheetah: `100 200 300 400 2048`) to
+  `/sys/class/backlight/panel<p>-backlight/als_table`. The stock panel driver
+  then signals `brightness` only when the DBV crosses one of those values
+  (**[I]**).
+* **`DisplayStateMonitor`** [HAL 0x212b0] polls (`POLLPRI`, sysfs notify) the
+  `brightness`, `state`, `local_hbm_mode` and `op_hz` files of each panel
+  (and `te2_rate_hz` when enabled), plus the exit pipe. A sysfs file that has
+  not been read yet polls as ready, so the first pass reads everything and
+  sends the **initial report** (**[I]**: kernfs behaviour). Each file that
+  fires updates the content and marks the panel changed [HAL
+  0x216c0..0x21848]. Then, for each panel:
+  1. The histogram runs while the status is on, HBM or LHBM, `histo_enable`
+     is set and DBV ≤ `histo_max_brightness` (2047). The poll timeout is then
+     `histo_polling_interval` (50 ms) [HAL 0x215f0..0x21640, 0x218ec..0x21930].
+  2. Each tick: luma = `RequestHistogram(p)`, DBV read again, leakage =
+     `LeakageCalculator::Calculate(luma, DBV)`. Leakage and luma are 0 while
+     the histogram is inactive.
+  3. When |leakage − last| ≥ max(`histo_min_change_value`,
+     last·`histo_min_change_rate`) (0.01 and 1 %), the content is updated and
+     the panel marked changed [HAL 0x21a64..0x21ab4].
+  4. Every changed panel gets `SendInfoReq(p)` [HAL 0x21ad0..0x21afc].
+* **`SendInfoReq(uint8 p)`** [HAL 0x21e00]: `p` is the panel index and
+  becomes `display_id`. It returns 0 without sending when not connected
+  [HAL 0x21f3c]. Otherwise it timestamps the content, adds it to a 250-entry
+  history (dump only), copies it into the message and sends it.
+* **After an AoC restart**, `Reconnect` looks the server up again and at once
+  sends the last state of every panel, then re-reads the registry and rewrites
+  `als_table` [HAL 0x25670..0x25780].
+
+In short: once at start, then on each change of brightness, display state,
+refresh rate, LHBM or op_hz, and up to 20 times a second while the histogram
+leakage estimate moves by ≥ 1 %. The stock AoC log shows reports 30–60 ms
+apart during a brightness ramp.
+
+`LeakageCalculator` (registry comments, [HAL 0x26340]): leakage =
+luma_term(luma) · dbv_term(DBV). Each term is picked by DBV range from
+`histo_luma_eqN` / `histo_dbv_eqN` = `start-dbv end-dbv type coeffs…`, where
+type 0 is c0 + c1·x + c2·x² + … and type 1 is c0 + c1·ln(x + c2). An optional
+per-device calibration then scales it.
+
+### 10.6 Panel info in the registry (`AddPanelInfosToRegistry`)
+
+`SensorHal::Connect`: if `"/"` does not have `loaded=1`, it calls
+`AddPanelInfosToRegistry` (errors are only logged), then `LoadRegistry` (the
+`.reg` scripts, then `"/" loaded=1`) [HAL 0x2ed14..0x2ed68]. So the panel
+properties go in **first**, with RegistrySet (id 22) to the registry server
+through `RegistryHelper::SetProps` [HAL 0x41c80: `mov w1,#0x16`, registry UUID
+0x16468]. The server creates the node (`AddNodeWithPath` [V 0x815e0]). The
+script's `+/dev/display_info/0` block (`panel_max_rr=120`,
+`attached_alsp=/dev/tmd3719/0`) then adds to the same node.
+
+For p = 0, then 1: RegistrySet(`/dev/display_info/<p>`, 4 properties, 1 s
+timeout) [HAL 0x313e8..0x31488; key table 0x51490]. A missing
+`secondary-panel/panel_name` ends the loop quietly. A missing primary
+`panel_name` returns error 7 [HAL 0x31504..0x31530].
+
+| property | value | source |
+|---|---|---|
+| `panel_name` | `panel-b` for `boe-nt37290`, `nt37290`, `google-bigsurf`, `google-ct3b`, `google-ct3d`, `google-tk4b`, `google-tg4b`, `google-tg4c` and `google-fleb`; `panel-a` for anything else, including an empty name | first word of `/sys/class/drm/card0/device/primary-panel/panel_name` [HAL 0x386f0; map from the static initialiser 0x3dd20; default 0x38988..0x389c8] |
+| `panel_serial` | first word of `.../primary-panel/serial_number`; `unknown` if it is missing or empty | [HAL 0x38ad0, 0x31320..0x31364] |
+| `panel_is_original` | `1` if `IDisplay::getPanelCalibrationStatus` returns 0 (ORIGINAL), else `0`. The default is 2, so `0` when IDisplay is unavailable. | [HAL 0x31374..0x31474, IDisplay vtable +0xa0; the same call logs `panel_cal_status` in `PanelIsRlModule` 0x383a0]; enum names **[I]** |
+| `panel_ext_info` | `0x` + first word of `.../primary-panel/panel_extinfo`; `0` if it is missing or empty | [HAL 0x38d10] |
+
+`/dev/tmd3719/0/panel-b` exists in `cheetah_dvt.reg`: it holds the BOE
+panel's `sync_delay_ns`, ALS scale, gain, `itime` and histogram/leakage tables
+and prox burst delays and scales. This phone's panel is Samsung
+`sdc-s6e3hc4` (kernel command line in the stock bugreport), so it maps to
+`panel-a`. That subtree does not exist, so the base `/dev/tmd3719/0` values
+apply. According to its log strings (§10.1), the AoC reads all four
+properties, and it checks `panel_is_original` and `panel_serial` against the
+factory calibration before applying it (**[I]**).
+`usf.panel_registry_props()` builds the list, and
+`load_registry(..., panel_props=...)` writes it before the scripts.
+
+### 10.7 `ProxMonitorService`: minimum refresh while proximity is active
+
+For sensors named `TMD3719 Proximity` or `TMD3733 Proximity` [HAL 0x2b388,
+0x2b3ac], the service:
+
+1. Reads `min_fps` from the prox node. Valid values are 30–120, otherwise 60;
+   cheetah has 30 [HAL 0x2bbd8, 0x2bc84..0x2bcb0].
+2. Finds the panel whose `attached_alsp` matches [HAL 0x2bcc0..0x2bf80].
+3. Sends ReportSensorActive (id 37, empty payload) to the prox sensor's handle
+   [HAL 0x2c24c].
+
+The response, and later EVENTs, carry
+`UsfMsgSensorActiveState {0: uint32 sensor handle, 1: uint32 state}`, with
+state 0 kInactive, 1 kActive, 2 kUnknown [HAL 0x2c8e0; names 0x51450]. The
+bugreport shows the matching `Received REPORT_SENSOR_ACTIVE_STATE_CHANGES
+event from 'TMD3719 Proximity' with new state:kActive!`.
+
+When the combined state changes [HAL 0x2ca74..0x2cacc, 0x2cb10]:
+
+| prox | HAL calls on the display |
+|---|---|
+| active | `IDisplay::setMinIdleRefreshRate(min_fps)` (vtable +0x88) and `setRefreshRateThrottle(1000 ms)` (+0x90) |
+| inactive | both with 0 |
+
+Nothing about this goes to the AoC. **Requirement for Linux:** while proximity
+is sampling, the panel must not idle below `min_fps` (30 Hz), because the prox
+bursts are timed to frames (`burst_delay_*hz`). A panel that stays at a fixed
+60/120 Hz meets it.
+
+### 10.8 What a Linux client has to send
+
+1. Optional, only when the registry is not loaded yet: RegistrySet
+   `/dev/display_info/0` with `panel_registry_props(<first word of the panel
+   name>, serial, is_original, ext_info)`, **before** the `.reg` scripts and
+   `"/" loaded=1` (`load_registry(..., panel_props=...)`). For this phone,
+   `panel_name` is `panel-a`. `panel_serial` and `panel_is_original=1`
+   presumably decide whether the AoC applies the factory ALS/prox calibration
+   (**[I]**).
+2. After the registry is loaded and the sensors are enumerated:
+   `D = get_server(UUID_DISPLAY_INFO)`.
+3. At once, send `display_info(D, brightness=<DBV>, status=<1 on | 0 off |
+   2 AOD>, refresh_rate=<60|120; 0 off; 30 LP>, op_hz=120, display_id=0)`,
+   with leakage and luma 0 (no histogram). On this port the DBV is the
+   `pixel-panel` backlight's `brightness`, which is written straight to DCS
+   0x51. Send `op_hz=60` only if the panel runs in NS mode.
+4. Send it again on every change of DBV, on/off/AOD, refresh rate or op_hz.
+   After an AoC restart, look `D` up again and resend the current state, as
+   `Reconnect` does.
+5. Expect a RESP with status 0 and no payload.
+
+### 10.9 Example bytes (generated by `usf.py`; server handle 5, req_id 7)
+
+DisplayInfo `{brightness 372, status 1 (on), refresh_rate 60, op_hz 120,
+leakage 1.432487}` (120 bytes):
+```
+  0000  10 00 00 00 00 00 00 00 08 00 0c 00 08 00 04 00   UsfMsg
+  0010  08 00 00 00 08 00 00 00 01 00 00 00 58 00 00 00   type=1 REQ | data len 0x58
+  0020  10 00 00 00 0c 00 14 00 10 00 0c 00 08 00 04 00   envelope
+  0030  0c 00 00 00 10 00 00 00 05 00 00 00 07 00 00 00   handle=5 | req_id=7
+  0040  e9 03 00 00 30 00 00 00 18 00 00 00 00 00 12 00   msg_id=1001 | payload 0x30 B | root→0x18 | vtable 18 B (7 slots)
+  0050  18 00 14 00 07 00 10 00 00 00 0c 00 00 00 08 00   table 24 B; slot0@+20 slot1@+7 slot2@+16 slot3 - slot4@+12 slot5 - slot6@+8
+  0060  12 00 00 00 00 00 00 01 78 00 00 00 bc 5b b7 3f   soffset | status=1 | op_hz=120 | leakage=1.432487
+  0070  3c 00 00 00 74 01 00 00                           refresh_rate=60 | brightness=372
+```
+The HAL's builder places the fields in a different order, so the offsets in
+the vtable differ; the decoded values are the same.
