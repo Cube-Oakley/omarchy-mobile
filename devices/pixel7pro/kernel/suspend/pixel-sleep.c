@@ -29,6 +29,7 @@
  */
 #include <linux/arm-smccc.h>
 #include <linux/cpu_pm.h>
+#include <linux/delay.h>
 #include <linux/debugfs.h>
 #include <linux/firmware/samsung/exynos-acpm-protocol.h>
 #include <linux/fs.h>
@@ -39,6 +40,8 @@
 #include <linux/workqueue.h>
 
 #include "pixel-sleep-common.h"
+#include "pixel-sleep-gpio.h"
+#include "pixel-sleep-usi.h"
 
 /* pixel-cpupm.c, EXPORT_SYMBOL_GPL: while on, pixel-cpupm writes no
  * CPU_INFORM (stock exynos-cpupm ignores CPU_PM_ENTER once suspended,
@@ -66,6 +69,20 @@ MODULE_PARM_DESC(gate_cpucl, "Touch CMU_CPUCL1/2 only while that cluster is on (
 static bool lpm_init_pmu;
 module_param(lpm_init_pmu, bool, 0444);
 MODULE_PARM_DESC(lpm_init_pmu, "At load, write the stock lpm_init PMU durations that differ (default 0: report only)");
+static bool pd_restore = true;
+module_param(pd_restore, bool, 0644);
+MODULE_PARM_DESC(pd_restore, "After an exit, write back the domain save-list values that changed (default 1; lists with PLL waits are only compared)");
+static bool pd_restore_noc;
+module_param(pd_restore_noc, bool, 0644);
+MODULE_PARM_DESC(pd_restore_noc, "Also write back the interconnect (NOCL*) domain lists (default 0: compare only)");
+static unsigned int hsi2_cycle;
+module_param(hsi2_cycle, uint, 0644);
+MODULE_PARM_DESC(hsi2_cycle, "Test: with pm_test=core and dry_run=0, power HSI2 off and on at arm as stock's domain driver does: 1 with the DTZPC save/restore calls, 2 without (default 0)");
+static bool disp_off;
+module_param(disp_off, bool, 0644);
+MODULE_PARM_DESC(disp_off, "Test: power DPU and DISP off at arm and on at resume, as stock's genpd does before SYS_SLEEP (the display needs a reboot afterwards)");
+static long hsi2_smc_ret;
+module_param(hsi2_smc_ret, long, 0444);
 static bool verbose;
 module_param(verbose, bool, 0644);
 MODULE_PARM_DESC(verbose, "Print every logged write after resume");
@@ -146,9 +163,9 @@ static const char * const ws2_name[14] = {	/* gs201.dtsi:450-464 */
 };
 
 /* Write log: every write this module performs or replaces. */
-enum { L_ARM, L_ENTER, L_EXIT, L_EARLY, L_RESTORE, L_UNDO, L_RESUME, L_LPM };
+enum { L_ARM, L_ENTER, L_EXIT, L_EARLY, L_RESTORE, L_UNDO, L_RESUME, L_LPM, L_PD };
 static const char * const list_name[] = {
-	"arm", "enter", "exit", "early", "restore", "undo", "resume", "lpm_init",
+	"arm", "enter", "exit", "early", "restore", "undo", "resume", "lpm_init", "pd",
 };
 
 enum { A_DONE, A_DRY, A_GATED, A_COND, A_ERR };
@@ -176,6 +193,14 @@ static struct {
 	unsigned int save_ok, save_skip[5];
 	unsigned int restore_n, restore_diff, restore_writes, restore_gated;
 	unsigned int list_done, list_dry, list_gated;
+	u32 pd_saved;				/* bit per ps_pd_lists[] entry */
+	int hsi2_cycled;			/* 1 done, <0 the step that failed */
+	int disp_state;			/* 1 off at arm, 2 back on; <0 failed step */
+	bool s2mpu_saved[2];
+	u32 s2mpu_val[2], s2mpu_found[2];
+	unsigned int s2mpu_restored;
+	u16 pd_diff[PS_PD_LISTS_N];
+	unsigned int pd_writes, pd_off;
 } rec;
 
 static bool pm_test_core;
@@ -184,6 +209,7 @@ static bool armed;		/* read by the CPU_PM notifier */
 
 static u32 save_val[PS_SAVE_N];
 static bool need_restore[PS_SAVE_N];
+static u32 pd_val[PS_PD_SAVE_N];
 
 static struct ps_flexpmu flexpmu;
 static bool flexpmu_ok;
@@ -386,6 +412,277 @@ static void run_restore(void)
 	}
 }
 
+/* pmucal_local_disable()/enable() save and restore, pmucal_local.c:63,119,
+ * for every domain that is on at arm: SYS_SLEEP powers them down without
+ * the domain driver (stock powers HSI0, DPU, DISP, EH and BO off through
+ * genpd before it, and has no domain driver for HSI2 or the NOCs). After an
+ * exit, every changed value is logged; with pd_restore it is written back,
+ * except in lists with PLL waits (compare only) and, without pd_restore_noc,
+ * the interconnect lists.
+ */
+static void pd_save(void)
+{
+	unsigned int l, i;
+
+	BUILD_BUG_ON(PS_PD_LISTS_N > 32);
+	rec.pd_saved = 0;
+	for (l = 0; l < PS_PD_LISTS_N; l++) {
+		const struct ps_pd_list *d = &ps_pd_lists[l];
+
+		if (!(ps_pmu_read(d->status) & BIT(0)))
+			continue;
+		for (i = d->first; i < d->first + d->n; i++) {
+			if (ps_block_gate(ps_pd_save[i].blk) != PS_OK)
+				break;
+			pd_val[i] = readl(ps_reg(&ps_pd_save[i]));
+		}
+		if (i == d->first + d->n)
+			rec.pd_saved |= BIT(l);
+	}
+}
+
+/* S2MPU CTRL0 only (offset 0, s2mpu-regs.h:3,28-31; bases
+ * gs201-s2mpu.dtsi:146-157; any other S2MPU register has reset the SoC).
+ * The bootloader leaves both units disabled (0). A power-cycled domain
+ * brings its S2MPU back at the reset value, which stops the domain's DMA
+ * until configured; stock's pKVM restores it when the domain powers up.
+ * Restored in the syscore resume, before any device resumes.
+ */
+static const struct {
+	u32 pa;
+	u16 pd_status;
+	const char *name;
+} s2mpu[2] = {
+	{ 0x11880000, 0x2104, "S2MPU_HSI1" },
+	{ 0x145e0000, 0x2184, "S2MPU_HSI2" },
+};
+static void __iomem *s2mpu_va[2];
+
+static void s2mpu_save(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < 2; i++) {
+		rec.s2mpu_saved[i] = s2mpu_va[i] && (ps_pmu_read(s2mpu[i].pd_status) & BIT(0));
+		if (rec.s2mpu_saved[i])
+			rec.s2mpu_val[i] = readl(s2mpu_va[i]);
+	}
+}
+
+static void s2mpu_restore(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < 2; i++) {
+		if (!rec.s2mpu_saved[i] || !(ps_pmu_read(s2mpu[i].pd_status) & BIT(0)))
+			continue;
+		rec.s2mpu_found[i] = readl(s2mpu_va[i]);
+		if (rec.s2mpu_found[i] == rec.s2mpu_val[i] || rec.dry)
+			continue;
+		writel(rec.s2mpu_val[i], s2mpu_va[i]);
+		rec.s2mpu_restored++;
+	}
+}
+
+/* Whether the exit list writes this register: after an exit the list's
+ * value stands (the NOC and HSI2 sysreg DRCG enables), as in stock, where
+ * no domain driver restores those domains afterwards.
+ */
+static bool exit_writes(const struct ps_seq *e)
+{
+	unsigned int i;
+
+	for (i = 0; i < PS_EXIT_N; i++)
+		if (ps_seq_pa(&ps_exit[i]) == ps_seq_pa(e) &&
+		    (ps_exit[i].type == PS_WRITE || ps_exit[i].type == PS_COND_WRITE))
+			return true;
+	return false;
+}
+
+/* Stock's genpd power-off and power-on of HSI2 (exynos-pd.c with
+ * pmucal_local.c:40-130): save list (done by pd_save), DTZPC save through
+ * the monitor (exynos-pd_el3.c:16-38; SMC_CMD_PREPARE_PD_ONOFF 0x82000410,
+ * EXYNOS_GET_IN_PD_DOWN 0 / EXYNOS_WAKEUP_PD_DOWN 1, RUNTIME_PM_TZPC_GROUP
+ * 2, exynos-el3_mon.h:16-19; pd_hsi2 need_smc 0x14410204,
+ * gs201-pm-domains.dtsi:75), hsi2_off, hsi2_on (flexpmu_cal_local_gs201.h:
+ * 600-603, 659-663), DTZPC restore, then the save list written back. A test
+ * of what SYS_SLEEP does to HSI2, without entering the firmware.
+ */
+#define SMC_PD_ONOFF		0x82000410
+#define HSI2_TZPC		0x14410204
+#define PMU_HSI2_CONFIG		0x2180
+#define PMU_HSI2_STATUS		0x2184
+#define CMU_CONTROLLER_OPTION	0x0800
+
+static bool hsi2_wait(u32 want)
+{
+	unsigned int i;
+
+	for (i = 0; i < 10000; i++) {
+		if ((ps_pmu_read(PMU_HSI2_STATUS) & BIT(0)) == want)
+			return true;
+		udelay(1);
+	}
+	return false;
+}
+
+static int hsi2_power_cycle(void)
+{
+	struct arm_smccc_res res;
+	unsigned int l, i;
+	void __iomem *opt = ps_va[PS_BLK_CMU_HSI2] + CMU_CONTROLLER_OPTION;
+
+	for (l = 0; l < PS_PD_LISTS_N; l++)
+		if (!strcmp(ps_pd_lists[l].name, "hsi2"))
+			break;
+	if (l == PS_PD_LISTS_N || !(rec.pd_saved & BIT(l)))
+		return -1;
+	if (hsi2_cycle == 1) {
+		arm_smccc_smc(SMC_PD_ONOFF, 0, HSI2_TZPC, 2, 0, 0, 0, 0, &res);
+		hsi2_smc_ret = res.a0;
+		if (res.a0)
+			return -2;
+	}
+	/* Step markers reach the log only with printk.console_suspend=N. */
+	pr_emerg("pixel-sleep: HSI2 cycle: controller option %08x\n", readl(opt));
+	writel(readl(opt) & ~BIT(24), opt);
+	pr_emerg("pixel-sleep: HSI2 cycle: powering off (config %08x)\n",
+		 ps_pmu_read(PMU_HSI2_CONFIG));
+	if (pmu_write(L_ARM, 0, PMU_HSI2_CONFIG, ps_pmu_read(PMU_HSI2_CONFIG) & ~BIT(0)))
+		return -3;
+	if (!hsi2_wait(0))
+		return -4;
+	pr_emerg("pixel-sleep: HSI2 cycle: off (status %08x), powering on\n",
+		 ps_pmu_read(PMU_HSI2_STATUS));
+	if (pmu_write(L_ARM, 0, PMU_HSI2_CONFIG, ps_pmu_read(PMU_HSI2_CONFIG) | BIT(0)))
+		return -5;
+	if (!hsi2_wait(1))
+		return -6;
+	pr_emerg("pixel-sleep: HSI2 cycle: on (status %08x)\n", ps_pmu_read(PMU_HSI2_STATUS));
+	if (hsi2_cycle == 1) {
+		arm_smccc_smc(SMC_PD_ONOFF, 1, HSI2_TZPC, 2, 0, 0, 0, 0, &res);
+		hsi2_smc_ret = res.a0;
+		if (res.a0)
+			return -7;
+	}
+	for (i = ps_pd_lists[l].first; i < ps_pd_lists[l].first + ps_pd_lists[l].n; i++) {
+		if (i == ps_pd_lists[l].first)
+			pr_emerg("pixel-sleep: HSI2 cycle: first restore %#010x\n",
+				 ps_seq_pa(&ps_pd_save[i]));
+		writel(pd_val[i], ps_reg(&ps_pd_save[i]));
+	}
+	pr_emerg("pixel-sleep: HSI2 cycle: CMU restored\n");
+	return 1;
+}
+
+/* Stock genpd off/on for the display domains (DPU inside DISP):
+ * exynos_pd_tz_save/restore through the monitor (gs201-pm-domains.dtsi
+ * need_smc 0x1C010204, 0x1C210204), then dpu_off/disp_off or disp_on/dpu_on
+ * (flexpmu_cal_local_gs201.h), and the domain save lists written back.
+ */
+static const struct {
+	const char *name;
+	u16 config;
+	u8 cmu_blk;
+	u32 tzpc;
+} disp_pds[2] = {
+	{ "dpu", 0x2200, PS_BLK_CMU_DPU, 0x1c010204 },
+	{ "disp", 0x2280, PS_BLK_CMU_DISP, 0x1c210204 },
+};
+
+static bool pd_wait(u16 status, u32 want)
+{
+	unsigned int i;
+
+	for (i = 0; i < 10000; i++) {
+		if ((ps_pmu_read(status) & BIT(0)) == want)
+			return true;
+		udelay(1);
+	}
+	return false;
+}
+
+static int disp_power_off(void)
+{
+	struct arm_smccc_res res;
+	unsigned int i;
+
+	for (i = 0; i < 2; i++) {
+		void __iomem *opt = ps_va[disp_pds[i].cmu_blk] + CMU_CONTROLLER_OPTION;
+
+		arm_smccc_smc(SMC_PD_ONOFF, 0, disp_pds[i].tzpc, 2, 0, 0, 0, 0, &res);
+		if (res.a0)
+			return -1 - 10 * i;
+		writel(readl(opt) & ~BIT(24), opt);
+		if (pmu_write(L_ARM, 0, disp_pds[i].config, ps_pmu_read(disp_pds[i].config) & ~BIT(0)))
+			return -2 - 10 * i;
+		if (!pd_wait(disp_pds[i].config + 4, 0))
+			return -3 - 10 * i;
+	}
+	return 1;
+}
+
+static int disp_power_on(void)
+{
+	struct arm_smccc_res res;
+	unsigned int i, l, k;
+
+	for (i = 2; i-- > 0;) {
+		if (pmu_write(L_RESUME, 0, disp_pds[i].config, ps_pmu_read(disp_pds[i].config) | BIT(0)))
+			return -4 - 10 * i;
+		if (!pd_wait(disp_pds[i].config + 4, 1))
+			return -5 - 10 * i;
+		arm_smccc_smc(SMC_PD_ONOFF, 1, disp_pds[i].tzpc, 2, 0, 0, 0, 0, &res);
+		if (res.a0)
+			return -6 - 10 * i;
+		for (l = 0; l < PS_PD_LISTS_N; l++) {
+			if (strcmp(ps_pd_lists[l].name, disp_pds[i].name) || !(rec.pd_saved & BIT(l)))
+				continue;
+			for (k = ps_pd_lists[l].first; k < ps_pd_lists[l].first + ps_pd_lists[l].n; k++)
+				writel(pd_val[k], ps_reg(&ps_pd_save[k]));
+		}
+	}
+	return 2;
+}
+
+static void pd_restore_all(void)
+{
+	unsigned int l, i;
+	u32 cur;
+
+	for (l = 0; l < PS_PD_LISTS_N; l++) {
+		const struct ps_pd_list *d = &ps_pd_lists[l];
+		bool write = !rec.dry && !rec.early && READ_ONCE(pd_restore) &&
+			     !(d->flags & PS_PD_WAITS) &&
+			     (!(d->flags & PS_PD_NOC) || READ_ONCE(pd_restore_noc));
+
+		if (!(rec.pd_saved & BIT(l)))
+			continue;
+		if (!(ps_pmu_read(d->status) & BIT(0))) {
+			rec.pd_off++;
+			continue;
+		}
+		for (i = d->first; i < d->first + d->n; i++) {
+			const struct ps_seq *e = &ps_pd_save[i];
+
+			if (ps_block_gate(e->blk) != PS_OK)
+				break;
+			cur = readl(ps_reg(e));
+			if (cur == pd_val[i])
+				continue;
+			rec.pd_diff[l]++;
+			if (!write || exit_writes(e)) {
+				log_write(L_PD, e->line, ps_seq_pa(e), cur, pd_val[i], cur, A_DRY);
+				continue;
+			}
+			writel(pd_val[i], ps_reg(e));
+			rec.pd_writes++;
+			log_write(L_PD, e->line, ps_seq_pa(e), cur, pd_val[i], readl(ps_reg(e)),
+				  A_DONE);
+		}
+	}
+}
+
 static bool eint_denied(unsigned int bit)
 {
 	unsigned int i;
@@ -581,6 +878,18 @@ static int ps_suspend(void *data)
 	/* exynos_pm_syscore_suspend(), exynos-pm.c:303-311. */
 	if (flexpmu_ok)
 		ps_flexpmu_read(&flexpmu, &rec.c_pre);
+	/* The consumers' stock pin power-down states, then
+	 * samsung_pinctrl_suspend(): the banks that lose power in SYS_SLEEP.
+	 */
+	psg_apply_pdn(!rec.dry);
+	psg_save();
+	pd_save();
+	s2mpu_save();
+	psu_save();
+	if (hsi2_cycle && rec.pm_test_core && !rec.dry && !real_sleep)
+		rec.hsi2_cycled = hsi2_power_cycle();
+	if (disp_off && !rec.dry)
+		rec.disp_state = disp_power_off();
 	rec.armed = true;
 	WRITE_ONCE(armed, true);
 	armed_count++;
@@ -605,6 +914,14 @@ static void ps_resume(void *data)
 		return;
 	rec.armed = false;
 	WRITE_ONCE(armed, false);
+	if (rec.disp_state == 1)
+		rec.disp_state = disp_power_on();
+
+	/* samsung_pinctrl_resume() runs before exynos-pm's resume releases pad
+	 * retention (the exit list's TOP_OUT writes). In a dry run it only counts.
+	 */
+	psg_restore(!rec.dry);
+	s2mpu_restore();
 
 	/* exynos_show_wakeup_reason(), exynos-pm.c:177-231. */
 	rec.wake_stat = ps_pmu_read(PMU_WAKEUP_STAT);
@@ -644,6 +961,8 @@ static void ps_resume(void *data)
 		exit_count++;
 	}
 	run_restore();					/* pmucal_system.c:132, 200 */
+	pd_restore_all();		/* genpd power-on of each domain, resume_noirq */
+	psu_restore(!rec.dry);		/* exynos-usi and the bus drivers' resume */
 
 	if (ps_pmu_read(PMU_WAKEUP_INT_EN) != rec.pre_int_en)
 		pmu_write(L_RESUME, 0, PMU_WAKEUP_INT_EN, rec.pre_int_en);
@@ -752,6 +1071,28 @@ static void report_attempt(void)
 			rec.c_pre.sleep_early, rec.c_post.sleep_early,
 			rec.c_pre.sleep_mif_down, rec.c_post.sleep_mif_down,
 			rec.c_post.mif_always_on, (rec.c_pre.sw_flag1 >> 16) & 0xff);
+	pr_info("pixel-sleep: pin power-down states differing %u, written %u\n",
+		psg.pdn_differed, psg.pdn_written);
+	pr_info("pixel-sleep: GPIO banks saved %u, registers differing %u, restored %u, skipped %u\n",
+		psg.saved_banks, psg.differed, psg.restored, psg.skipped);
+	for (i = 0; i < PS_PD_LISTS_N; i++)
+		if (rec.pd_saved & BIT(i))
+			pr_info("pixel-sleep: domain %s: %u of %u saved registers changed\n",
+				ps_pd_lists[i].name, rec.pd_diff[i], ps_pd_lists[i].n);
+	pr_info("pixel-sleep: domain registers written %u, domains off at resume %u\n",
+		rec.pd_writes, rec.pd_off);
+	for (i = 0; i < 2; i++)
+		if (rec.s2mpu_saved[i])
+			pr_info("pixel-sleep: %s CTRL0 %08x before, %08x after resume\n",
+				s2mpu[i].name, rec.s2mpu_val[i], rec.s2mpu_found[i]);
+	pr_info("pixel-sleep: S2MPU CTRL0 restored %u\n", rec.s2mpu_restored);
+	pr_info("pixel-sleep: USIs saved %u, lost %u, restored %u\n",
+		psu.saved_n, psu.lost, psu.written);
+	if (rec.disp_state)
+		pr_info("pixel-sleep: display domains off/on: %d\n", rec.disp_state);
+	if (rec.hsi2_cycled)
+		pr_info("pixel-sleep: HSI2 power cycle %s (%d)\n",
+			rec.hsi2_cycled > 0 ? "done" : "FAILED", rec.hsi2_cycled);
 	pr_info("pixel-sleep: save read %u, skipped cond %u pd %u cluster %u; restore %u, differed %u, written %u, gated %u\n",
 		rec.save_ok, rec.save_skip[PS_SKIP_COND], rec.save_skip[PS_SKIP_PD],
 		rec.save_skip[PS_SKIP_CLUSTER], rec.restore_n, rec.restore_diff,
@@ -759,12 +1100,25 @@ static void report_attempt(void)
 	pr_info("pixel-sleep: list writes done %u, dry %u, gated %u, SMC errors %u, verify %u bad, log %u (+%u lost)\n",
 		rec.list_done, rec.list_dry, rec.list_gated, rec.smc_err, rec.verify_bad,
 		wlog_n, wlog_lost);
-	/* Without verbose: every non-performed write, and performed restore,
-	 * exit and undo writes (restores are only logged when they differed).
+	/* Changed domain registers first: they identify what a power-down
+	 * lost. Then, without verbose: every non-performed write, and performed
+	 * restore, exit and undo writes (restores only when they differed).
 	 */
+	for (i = 0; i < wlog_n && shown < 24; i++) {
+		const struct wlog *w = &wlog[i];
+
+		if (w->list != L_PD)
+			continue;
+		shown++;
+		pr_info("pixel-sleep: pd line %u %#010x %08x -> %08x (after %08x) %s\n",
+			w->line, w->pa, w->before, w->value, w->after, act_name[w->act]);
+	}
+	shown = 0;
 	for (i = 0; i < wlog_n; i++) {
 		const struct wlog *w = &wlog[i];
 
+		if (w->list == L_PD)
+			continue;
 		if (!verbose && w->act == A_DONE && w->list != L_RESTORE &&
 		    w->list != L_EXIT && w->list != L_UNDO)
 			continue;
@@ -830,6 +1184,11 @@ static int last_show(struct seq_file *m, void *v)
 		   rec.save_skip[PS_SKIP_CLUSTER], rec.save_skip[PS_SKIP_EXCLUDED]);
 	seq_printf(m, "restore %u differed %u written %u gated %u\n", rec.restore_n,
 		   rec.restore_diff, rec.restore_writes, rec.restore_gated);
+	for (i = 0; i < PS_PD_LISTS_N; i++)
+		if (rec.pd_saved & BIT(i))
+			seq_printf(m, "domain %s saved %u changed %u\n", ps_pd_lists[i].name,
+				   ps_pd_lists[i].n, rec.pd_diff[i]);
+	seq_printf(m, "domain writes %u off at resume %u\n", rec.pd_writes, rec.pd_off);
 	seq_printf(m, "lists done %u dry %u gated %u smc_err %u readback_bad %u verify_bad %u\n",
 		   rec.list_done, rec.list_dry, rec.list_gated, rec.smc_err, rec.readback_bad,
 		   rec.verify_bad);
@@ -880,6 +1239,8 @@ static long lpm_check(void *arg)
 
 static void ps_cleanup(void)
 {
+	unsigned int i;
+
 	debugfs_remove_recursive(dbg_dir);
 	if (acpm_idle)
 		symbol_put(exynos_acpm_is_idle);
@@ -890,6 +1251,11 @@ static void ps_cleanup(void)
 		iounmap(gpio_far);
 	if (gpio_alive)
 		iounmap(gpio_alive);
+	psg_unmap();
+	psu_unmap();
+	for (i = 0; i < 2; i++)
+		if (s2mpu_va[i])
+			iounmap(s2mpu_va[i]);
 	ps_unmap_blocks();
 }
 
@@ -903,9 +1269,11 @@ static int __init pixel_sleep_init(void)
 	ret = ps_map_blocks();
 	if (ret)
 		return ret;
+	s2mpu_va[0] = ioremap(s2mpu[0].pa, 0x1000);
+	s2mpu_va[1] = ioremap(s2mpu[1].pa, 0x1000);
 	gpio_alive = ioremap(GPIO_ALIVE_PA, 0x1000);
 	gpio_far = ioremap(GPIO_FAR_ALIVE_PA, 0x1000);
-	if (!gpio_alive || !gpio_far) {
+	if (!gpio_alive || !gpio_far || psg_map() || psu_map()) {
 		ret = -ENOMEM;
 		goto err;
 	}

@@ -97,3 +97,7 @@ The optional executable `~/.config/omarchy-mobile/suspend` supports `--check`,
 sleep without arguments, and `--wake-after SECONDS` for supervised tests. A
 nonzero readiness result retains display-only behavior and logs its reason.
 The adapter owns hardware checks, resume/input recovery and sleep permissions.
+The optional executable `~/.config/omarchy-mobile/display-hook` is called with
+`on` when the screen lights and `off` when it goes dark or to the always-on
+display, in the background; the Pixel's hook tells its modem to stop optional
+reports while nobody looks.

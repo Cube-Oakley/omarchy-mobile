@@ -1,6 +1,18 @@
 # Cameras: hardware map and bring-up plan (September 30)
 
-Host-only research. The phone was not touched. Nothing here has been run yet.
+**Status (2026-09-30, evening): milestones (a), (b) and (c) are done for the
+ultrawide.** It is powered, streams 2016×1508 RAW10 on CSIS link 2 /
+DC-PHY 2+3, and its raw frames land in memory through WDMA context 0. Below
+are the two answers this plan lacked, with the procedure in
+[kernel/camera](../kernel/camera/README.md#first-frame-ultrawide):
+- **Wiring:** link 2 and DC-PHY 2+3.
+- **GS201 routing:** SYSREG_CSIS 0x430 = link, and `CSIS_SC_CON0..2` (0x408,
+  0x40c, 0x410) non-zero. GS101's context mux and 0x488 enable do not apply.
+
+The CAM DVFS also has to be raised from 67 to 400 MHz. Next is (d).
+
+The rest of this document is the original host-only research from the
+morning, before the phone was touched.
 
 **Recommendation:** start with the **ultrawide**. It is a Sony **IMX386**, not
 the IMX381 the earlier report assumed: its logged chip ID is 0x0386. The

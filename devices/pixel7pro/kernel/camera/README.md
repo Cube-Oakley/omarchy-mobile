@@ -1,13 +1,18 @@
-# Camera power
+# Camera power and first frames
 
 `pixel-camera-power.c` powers the four cameras the way the stock DT's LWIS
 sensor nodes do. It is milestone (a) of the
 [camera plan](../../docs/camera-plan-20260930.md): power a sensor and read its
-chip ID. Nothing here streams yet. The camera power domains (pd_csis, pd_pdp)
-stay off, and the module touches no register inside them.
+chip ID. The module touches no register inside the camera power domains
+(pd_csis, pd_pdp).
 
 `cam-id.py` reads a chip ID over i2c-dev. The camera buses come from
 `pixel-hsi2c-cam` ([i2c](../i2c/README.md)).
+
+Milestones (b) and (c), a running CSIS link and a raw frame in memory, use
+four more bring-up tools (see [First frame](#first-frame-ultrawide)):
+`cam-stream.py`, `pixel-csis-iso.c`, `csis-probe.py` and
+`pixel-csis-capture.c`, plus `raw2png.py` on the host.
 
 The module replaces the first test module, `pixel-cam-pmic`. That module only
 raised the SLG51002's enable lines.
@@ -150,6 +155,203 @@ What a failure means:
   answering. Check `status`: STATUS VOUT_OK, the reset DAT and the MCLK CON.
 - **`ETIMEDOUT`**: the bus pins or the controller are not driving the bus.
 
+## First frame (ultrawide)
+
+On 2026-09-30 the IMX386 delivered its first raw frames into memory on this
+kernel: 2016×1508 RAW10 at 60 fps, CSIS link 2, WDMA context 0. They show
+the room the phone faced.
+
+### Procedure
+
+The camera domains must stay on at boot. Create
+`/var/lib/omarchy-mobile/camera-dev` and reboot: the boot script then leaves
+`csis` and `pdp` out of the `pixel-pd-off` list. There is no genpd power-on
+path yet. Then, after the chip ID test's power-up (`uw/power` = 1):
+
+```
+insmod pixel-csis-iso.ko                     # DC-PHY isolation bypass, CAM DVFS 400 MHz
+python3 cam-stream.py uw init_PD_212.txt mode_0x919860_2016x1508_73.txt
+python3 csis-probe.py setup 2 2 --rate 1481  # link 2, DC-PHY 2+3, 4 lanes
+python3 csis-probe.py status 2               # want int0 0, int1 0x6, frm counting
+mount -t debugfs none /sys/kernel/debug      # if not mounted
+insmod pixel-csis-capture.ko
+cat /sys/kernel/debug/pixel-csis-capture/status
+cat /sys/kernel/debug/pixel-csis-capture/frame > /root/uw.raw
+rmmod pixel_csis_capture
+```
+
+On the host, `raw2png.py uw.raw uw.png` gives a half-size RGB view (RGGB,
+black level 64).
+
+`cam-up.sh` and `cam-down.sh` script the same steps from `/root/tools`:
+- `cam-up.sh` loads what is missing, powers the UW, plays the tables with
+  8× gain at 30 fps, and sets up and checks link 2;
+- `cam-down.sh` stops the link and the sensor and powers the UW down.
+
+The sensor tables come from the user's own stock camera HAL and are never
+committed (camera plan, section 2). The mode's own exposure is 1779 of 1799
+lines (about 16 ms at 60 fps) at 1× analog gain. Indoors, that leaves about
+50 DN above black. For a test, raise the analog gain (0x0204/0x0205, gain
+1024 / (1024 − code), so 0x0380 = 8×). For more exposure, double the frame
+length (0x0340/0x0341 = 0x0e0e, 30 fps) and the coarse integration time
+(0x0202/0x0203 = 0x0dfa). Write these inside a group hold (0x0104).
+
+### Autofocus
+
+The UW has an AF actuator: an AKM AK737x at hsi2c_3 0x0f
+(`act-slenderman-sandworm`). It runs on L12S + SLG51002 LDO4 (2.9 V), which
+the UW power-up now switches on as well.
+
+`cam-af.py POS` wakes it (mode register 0x02 = 0) and moves the lens to
+POS, 0–4095, written as POS << 4 to registers 0x00/0x01 (the AK7375
+protocol). Two quirks:
+- asleep, it reads `00 ff ff ff`;
+- the first write after waking NACKs unless it waits a few ms.
+
+A contrast sweep found the focus. `pixel-csis-capture keep=1` left the DMA
+running while the lens stepped. The score is the Laplacian variance of the
+center of one green plane:
+
+| Position | 0–800 | 1050 | 1250 | 1400 | 1550 | 2000 | 4000 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Score | 207–216 | 282 | 496 | **590** | 466 | 213 | 176 |
+
+The scene was a desk about 0.5–1 m away. Below about 1000 the lens does not
+seem to move off its stop.
+
+### What each piece does
+
+- **`cam-stream.py`** plays the register tables over i2c-dev, writes
+  0x0100 = 1 and polls the IMX386 frame counter (0x0005). `--stop` writes
+  0x0100 = 0. `--set REG=VAL …` writes single registers inside a group hold:
+  after the tables, or on their own while streaming.
+- **`pixel-csis-iso.c`**:
+  - sets the shared DC-PHY isolation bypass, PMU 0x3ebc bit 0, through the
+    PMU SMC;
+  - votes the ACPM CAM DVFS clock to 400 MHz, as LWIS does when a camera
+    opens.
+
+  CAM boots at 67 MHz. At that rate the 4-lane link showed ECC, CRC and
+  overflow errors and the resolution-mismatch bits. At 400 MHz the link runs
+  clean. Unloading restores both.
+- **`csis-probe.py`**:
+  - releases the PHY resets in SYSREG_CSIS 0x500, before any PHY access (a
+    PHY in reset hangs the bus);
+  - replays the stock HAL's D-PHY sequence, as the Pixel 6 port recovered
+    it;
+  - sets up the link: 4 lanes, VC0 RAW10, quad pixel mode, 2016×1508.
+
+  `status` reads only status registers. Our ultrawide sits on **link 2 and
+  DC-PHY 2+3** (a 4-lane pair). It was found with the sensor streaming, by
+  setting up one PHY bank at a time.
+- **`pixel-csis-capture.c`**:
+  - allocates a 32-bit DMA buffer and fills it with a pattern;
+  - resets and enables the WDMA, bypasses the EBUF and sets the link's
+    pixel align;
+  - routes the link (below), programs context 0, channel 0 (format 6 = 10 bits
+    in 16, slot 0 only) and waits for two frame ends;
+  - reports how many words changed;
+  - on unload, puts SYSREG_CSIS back and frees the buffer.
+
+  `tpg=1` feeds the WDMA from its own test pattern generator. `keep=1` leaves
+  the channel running, so the debug counters can be read live.
+
+### GS201 differs from the Pixel 6 port here
+
+The Pixel 6's CSIS recipe (EBUF bypass, IP_PROCESSING, frame pointer, slot 0
+only, pixel align) carries over unchanged. The routing does not:
+
+| SYSREG_CSIS | GS101 (Pixel 6 port) | GS201 (measured) |
+| --- | --- | --- |
+| 0x430 | link of WDMA slot 0 | link that feeds the WDMA; every context sees it. Without it, no frame start arrives |
+| 0x408/0x40c/0x410 | WDMA context → slot mux | the HAL's `CSIS_SC_CON0..2`, "PDP MUX", 3 bits each. At their reset value 0 the WDMA receives frame and line syncs but **no pixel data**. Any non-zero value in all three lets it through |
+| 0x488 | per-(link, slot) data enable | no effect |
+
+With SC_CON at 0, the failure looked like a bus problem:
+- frame start and end interrupts on time;
+- `ACT_CTRL` active on slot 0;
+- LASTDATA and LASTADDR errors (GS201 DMA INT bits 14 and 15);
+- not one word of the pattern changed.
+
+Three readings narrowed it down:
+- the CSIS SysMMUs read disabled (CTRL 0x24) and the S2MPUs read
+  CTRL0 = 0;
+- the test pattern generator filled the whole buffer;
+- the WDMA debug counters (DEBUG_EN 0x100; HDCNT at 0x154 = lines 31:16,
+  data 15:0) showed lines arriving with a data count of 0.
+
+The HAL's register table (`liblyric_hwl.so`, 48-byte {block, name, offset}
+entries) names only SC_CON0..2 in SYSREG_CSIS. It also confirms that the
+GS201 WDMA common block follows the Exynos 2100 layout
+(`csis_cmn_dma_cfg_csis1` = 0x48).
+
+Programming the EBUF instead of bypassing it, as the HAL does, moved a little
+data but stalled before any frame start reached the WDMA. Bypass is the
+working path.
+
+## The other three cameras
+
+Measured 2026-09-30 with `experimental=1`, `pixel-hsi2c-cam buses=1,2,3,4`
+and each sensor powered on its own.
+
+| | Front 3J1 | Tele GM5 | Main GN1 |
+| --- | --- | --- | --- |
+| Chip ID | 0x30A1 ✓ | 0x08D5 ✓ | 0x08E1 ✓ |
+| Tables | init 368 + mode 1920×1368 | soft reset + init `default` 4047 + mode 2016×1512 (279, emulated out of the HAL) | soft reset and clock enable + `init_a` 1565 + mode 2016×1136 |
+| Streams (0x0005) | 60 fps | 60 fps | 120 fps |
+| CSIS | **link 0, DC-PHY 0**, D-PHY 4 lanes, ~1665 Mb/s | **link 4, DC-PHY 4**, C-PHY | **link 1, DC-PHY 1**, C-PHY |
+| Frames in memory | **yes** | no | no |
+
+### Front
+
+- Bayer order: GRBG (Intel's `s5k3j1.c`).
+- The 3J1 sends 4224 words ahead of each image on VC0: PDAF-like samples,
+  then embedded data (values 0–30).
+  - The link passes them to the WDMA, which writes them back to back with
+    the image.
+  - So the image starts 2 rows and 384 pixels into the buffer, and the link
+    reports an H-size mismatch.
+  - `raw2png.py --offset 4224` skips them.
+  - A driver has to move them to another VC or another WDMA channel, or turn
+    them off at the sensor.
+- The mode's own exposure is tiny. For a picture, set coarse integration
+  0x0202 near the frame length and analog gain 0x0204 (0x0020 = 1×) with
+  `--set`.
+- The first frame was dark and blurred. The fixed-focus front camera was
+  facing something close.
+
+### Tele and main: C-PHY not decoding yet
+
+Both Samsung sensors write 0x0118 = 0x0104, against 0x0102 on the D-PHY
+3J1, and they decode only in `csis-probe.py --cphy` mode. The HAL writes
+0x6028 = 0x4000, 0x6010 = 1 and 0x6226 = 1 (clock enable) in code, ahead of
+the tables (Pixel 6 `s5kgn1.c`). `samsung_reset_clk.txt` does the same from
+a table.
+
+With the Pixel 6 port's C-PHY receive values:
+
+| Trios (sensor 0x0114 and link) | What the link and WDMA see |
+| --- | --- |
+| 3 | FS/FE decode. CRC and malformed-CRC errors on every frame, plus invalid HS codes on lane 2. No lines reach the WDMA |
+| 2 or 1 | FS/FE decode with no errors. VRESOL mismatch and lost FS/FE flags. Still no lines |
+
+C-PHY repeats the packet header on every trio and stripes the payload across
+them. Here short packets work and long ones never land. That points at the
+receive side, not the sensors:
+- GS201's DC-PHY C-PHY settings, which the GS201 HAL writes from code and
+  GS201's vendor `phy-exynos-mipi.c` leaves as TODO;
+- or a trio order or polarity setting.
+
+The next step is to decode the HAL's C-PHY branch from `liblyric_hwl.so`.
+The Pixel 6 port did the same for GS101.
+
+The GM5 modes were not exported before. `ext_kraken.py` (session scratch)
+emulates the HAL function at 0x905a88. It yields:
+- 4032×3024 (1530 writes);
+- 4032×2272, 2016×1136 and 2016×1512 (279 writes each).
+
+All four use an OP PLL of 0x030e = 3 and 0x0310 = 220 or 249.
+
 ## Safety
 
 - The module touches only registers named above: CMU_TOP, PERIC0 pins, the
@@ -166,6 +368,11 @@ What a failure means:
 - L12S also feeds the laser AF (`stmvl53l1`) and the OIS/AF devices. Nothing
   else drives them on this kernel.
 - Power sensors down before suspending. The module has no suspend handling.
+- The streaming tools need pd_csis and pd_pdp on, which only the camera-dev
+  boot flag gives. `csis-probe.py` releases a PHY's reset before touching
+  it. Its `status` and `pixel-csis-capture` read only documented status and
+  debug registers. Undefined offsets in the CSIS DMA block read 0xdeadc0de
+  rather than hanging, but no tool sweeps them.
 - Registers and sequences come from:
   - Google's gs201 `slg51002-core.c`, `slg51002-regulator.c`, `slg51002.h`;
   - `s2mpg13-regulator.c`, `s2mpg13-register.h`, `s2mpg1x-gpio-gs201.c`;

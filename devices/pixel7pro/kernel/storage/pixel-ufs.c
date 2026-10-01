@@ -12,7 +12,10 @@
  * dev_reset=1 pulses the device's RST_N before host enable and in error
  * recovery, as the vendor driver does, instead of inheriting the device in
  * the bootloader's session.
+ * deep_link_off=1 (with both) handles deep suspend as stock does: the link
+ * goes off and the device powers down; the host is re-initialized on resume.
  */
+#include <linux/arm-smccc.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
@@ -23,6 +26,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/suspend.h>
 #include <scsi/scsi_host.h>
 #include <ufs/ufshcd.h>
 #include <ufs/ufshci.h>
@@ -49,6 +53,19 @@ MODULE_PARM_DESC(system_hibern8, "Opt in to calibrated HS Hibern8 during system 
 static uint hibern8_entries, hibern8_exits;
 module_param(hibern8_entries, uint, 0444);
 module_param(hibern8_exits, uint, 0444);
+static bool deep_link_off;
+module_param(deep_link_off, bool, 0644);
+MODULE_PARM_DESC(deep_link_off, "Deep suspend: link off and device power-down, full host re-initialization on resume (needs vendor_cal and dev_reset)");
+static uint smu_call = 2;
+module_param(smu_call, uint, 0644);
+MODULE_PARM_DESC(smu_call, "After HSI2 lost power: 2 SMC SMU(INIT) (default), 1 SMC FMP_SMU_RESUME, 0 none");
+static long smu_ret;
+module_param(smu_ret, long, 0444);
+static uint reinits, reinits_lost;
+module_param(reinits, uint, 0444);
+MODULE_PARM_DESC(reinits, "Completed re-initializations after link off");
+module_param(reinits_lost, uint, 0444);
+MODULE_PARM_DESC(reinits_lost, "... of which found the host configuration lost (power-cycled)");
 
 /* An HS change was asked for, and one completed: a probe that fails in
  * between failed the change itself, not the inherited-link handoff.
@@ -66,7 +83,38 @@ static u64 pixel_dma_mask = DMA_BIT_MASK(64);
 #define GS201_CMU_HSI2		0x14400000
 #define GS201_OSC_HZ		24576000UL
 
-/* Vendor HCI register driving the device's RST_N (ufs-vs-regs.h). */
+/* Stock gs201-ufs.dtsi: ufs-iocc (SYSREG_HSI2 0x710, mask 3, value 3) and
+ * ufs-phy-iso (PMU 0x3ec8 bit 0; 1 = isolation bypassed). PMU writes go
+ * through the secure monitor, as exynos_pmu_update() does on GS201.
+ */
+#define GS201_SYSREG_HSI2	0x14420000
+#define SYSREG_UFS_IOCC		0x710
+#define UFS_IOCC		0x3
+#define GS201_PMU_UFS_PHY	0x18063ec8
+#define GS201_SMC_PRIV_REG	0x82000504
+#define PMUREG_WRITE		1
+/* The UFS DMA filter (SMU) resets with HSI2 and then blocks every data
+ * transfer (descriptors still work: NOP OUT passes, READ never completes).
+ * SMU(INIT) through the monitor sets it up again; FMP_SMU_RESUME returns 0
+ * but changes nothing here, as the bootloader, not the kernel, initialized it.
+ * SIP fast SMC64 0x1860 FMP_SMU_RESUME and 0x1850 SMU (INIT 0), SMU_EMBEDDED
+ * 0 (mainline ufs-exynos.c:1349-1360, exynos_ufs_fmp_resume()).
+ */
+#define SMC_FMP_SMU_RESUME	0xc2001860
+#define SMC_SMU			0xc2001850
+
+/* The device's VCC: a fixed regulator enabled by gpp0-1, active high
+ * (gs201-ufs.dtsi ufs_fixed_vcc; PERIC0 GPIO 0x10840000, CON +0, DAT +4).
+ * Stock's level 5 switches it off with the link (ufshcd_vreg_set_lpm), so
+ * the device powers down cleanly when VCCQ (L8S, PMIC pin-controlled) drops
+ * in SYS_SLEEP, and powers up again on resume.
+ */
+#define GS201_GPP0		0x10840000
+#define GPP0_VCC		BIT(1)
+
+/* Vendor HCI registers (ufs-vs-regs.h). */
+#define HCI_SW_RST		0x50
+#define UFS_SW_RST_MASK		(BIT(1) | BIT(0))
 #define HCI_GPIO_OUT		0x70
 #define HCI_CLKSTOP_CTRL		0xb0
 #define HCI_FORCE_HCS		0xb4
@@ -87,10 +135,32 @@ static u64 pixel_dma_mask = DMA_BIT_MASK(64);
 #define UNIP_PA_DBG_OPTION_SUITE_1	0x39a8
 #define UNIP_PA_DBG_OPTION_SUITE_2	0x39b4
 
+/* The host configuration exynos_ufs_config_host() programs after its
+ * software reset, and related vendor controls, as the bootloader left them:
+ * TO_CNT_DIV, 1US_TO_CNT, VENDOR_SPECIFIC_IE, UTRL/UTMRL_NEXUS_TYPE,
+ * E2EFC_CTRL, IDLE_TIMER_CONFIG, DATA_REORDER, MAX_DOUT_DATA_SIZE,
+ * UNIPRO_APB_CLK_CTRL, AXIDMA_RWDATA_BURST_LEN, WRITE_DMA_CTRL,
+ * ERROR_EN_PA/DL/N/T/DME, UFSHCI_V2P1_CTRL, REQ_HOLD_EN, CLKSTOP_CTRL,
+ * FORCE_HCS, UFS_AXI_DMA_IF_CTRL, UFS/IOP_ACG_DISABLE, MPHY_REFCLK_SEL.
+ * PRDT sizes are set in link startup; RST_N by the device reset.
+ */
+static const u16 hci_cfg[] = {
+	0x08, 0x0c, 0x3c, 0x40, 0x44, 0x48, 0x58, 0x60, 0x64, 0x68, 0x6c, 0x74,
+	0x78, 0x7c, 0x80, 0x84, 0x88, 0x8c, 0xac, 0xb0, 0xb4, 0xf8, 0xfc, 0x100,
+	0x108,
+};
+
 struct pixel_ufs {
 	void __iomem *vendor;
 	void __iomem *unipro;
 	void __iomem *pma;
+	void __iomem *sysreg;
+	void __iomem *pmu_phy;
+	void __iomem *gpp0;
+	bool vcc_off;	/* this driver switched the device's VCC off */
+	u32 hci_boot[ARRAY_SIZE(hci_cfg)];
+	bool reinit;	/* the link was turned off: re-initialize the host */
+	bool diag_linked;	/* the first link's registers were logged */
 	u32 mclk;
 	u8 lanes;
 	bool hs;	/* the change being made is to an HS mode */
@@ -351,6 +421,7 @@ static int gs201_mclk(struct device *dev, u32 *rate)
 static int pixel_init(struct ufs_hba *hba)
 {
 	struct pixel_ufs *p;
+	unsigned int i;
 	int ret;
 
 	p = devm_kzalloc(hba->dev, sizeof(*p), GFP_KERNEL);
@@ -400,6 +471,176 @@ static int pixel_init(struct ufs_hba *hba)
 			return dev_err_probe(hba->dev, -EINVAL, "unexpected RST_N state %#x\n", gpio);
 		dev_info(hba->dev, "device reset before host enable\n");
 	}
+	if (vendor_cal && dev_reset) {
+		p->sysreg = devm_ioremap(hba->dev, GS201_SYSREG_HSI2, 0x1000);
+		p->pmu_phy = devm_ioremap(hba->dev, GS201_PMU_UFS_PHY & PAGE_MASK, PAGE_SIZE);
+		if (!p->sysreg || !p->pmu_phy)
+			return -ENOMEM;
+		p->pmu_phy += GS201_PMU_UFS_PHY & ~PAGE_MASK;
+		/* VCC switching only with gpp0-1 an output driven high. */
+		p->gpp0 = devm_ioremap(hba->dev, GS201_GPP0, 0x10);
+		if (p->gpp0 && ((readl(p->gpp0) >> 4) & 0xf) == 1 &&
+		    (readl(p->gpp0 + 4) & GPP0_VCC)) {
+			dev_info(hba->dev, "VCC on gpp0-1\n");
+		} else {
+			dev_warn(hba->dev, "unexpected VCC pin state; VCC stays on\n");
+			p->gpp0 = NULL;
+		}
+		for (i = 0; i < ARRAY_SIZE(hci_cfg); i++)
+			p->hci_boot[i] = readl(p->vendor + hci_cfg[i]);
+		dev_info(hba->dev, "IOCC %#x, PHY isolation bypass %u\n",
+			 readl(p->sysreg + SYSREG_UFS_IOCC), readl(p->pmu_phy) & 1);
+	}
+	return 0;
+}
+
+static void pixel_diag(struct ufs_hba *hba, const char *when);
+
+/* exynos_ufs_ctrl_phy_pwr(): PMU 0x3ec8 bit 0, through the monitor. */
+static int pixel_phy_bypass(struct ufs_hba *hba, bool bypass)
+{
+	struct pixel_ufs *p = ufshcd_get_variant(hba);
+	struct arm_smccc_res res;
+	u32 v = readl(p->pmu_phy);
+
+	if (!!(v & 1) == bypass)
+		return 0;
+	v = bypass ? v | 1 : v & ~1;
+	arm_smccc_smc(GS201_SMC_PRIV_REG, GS201_PMU_UFS_PHY, PMUREG_WRITE, v, 0, 0, 0, 0, &res);
+	if (res.a0 || !!(readl(p->pmu_phy) & 1) != bypass) {
+		dev_err(hba->dev, "PHY isolation %s failed (%ld)\n",
+			bypass ? "bypass" : "enable", (long)res.a0);
+		return -EIO;
+	}
+	return 0;
+}
+
+/* One line of registers around a re-initialization, for diagnosis: vendor
+ * HCI clock controls, REFCLK select and RST_N; UniPro registers the
+ * calibration writes; PHY common and lane-0 registers it writes, and both
+ * lanes' calibration-done status (0xce0 bit 3, PMA_CAL_WAIT). All are in
+ * the tables above; the UFSHCI UIC error codes clear on read.
+ */
+static void pixel_diag(struct ufs_hba *hba, const char *when)
+{
+	struct pixel_ufs *p = ufshcd_get_variant(hba);
+
+	dev_info(hba->dev,
+		 "diag %s: hci b4=%x b0=%x 108=%x 70=%x hcs=%x uic pa=%x dl=%x unipro 44=%x 39a8=%x 3178=%x 4818=%x pma a4=%x 10c=%x f0=%x 118=%x 804=%x 8b4=%x ce0=%x/%x\n",
+		 when, readl(p->vendor + HCI_FORCE_HCS), readl(p->vendor + HCI_CLKSTOP_CTRL),
+		 readl(p->vendor + 0x108), readl(p->vendor + HCI_GPIO_OUT),
+		 ufshcd_readl(hba, REG_CONTROLLER_STATUS),
+		 ufshcd_readl(hba, REG_UIC_ERROR_CODE_PHY_ADAPTER_LAYER),
+		 ufshcd_readl(hba, REG_UIC_ERROR_CODE_DATA_LINK_LAYER),
+		 readl(p->unipro + UNIP_DBG_PRD), readl(p->unipro + UNIP_PA_DBG_OPTION_SUITE_1),
+		 readl(p->unipro + 0x3178), readl(p->unipro + 0x4818),
+		 readl(p->pma + 0x0a4), readl(p->pma + 0x10c), readl(p->pma + 0x0f0),
+		 readl(p->pma + 0x118), readl(p->pma + PMA_LANE(0x804, 0)),
+		 readl(p->pma + PMA_LANE(0x8b4, 0)), readl(p->pma + PMA_LANE(0xce0, 0)),
+		 readl(p->pma + PMA_LANE(0xce0, 1)));
+}
+
+/* __exynos_ufs_suspend(): with the link off, hold the device in reset
+ * and isolate the PHY. Only system PM turns the link off here.
+ */
+static int pixel_suspend(struct ufs_hba *hba, enum ufs_pm_op op,
+			 enum ufs_notify_change_status status)
+{
+	struct pixel_ufs *p = ufshcd_get_variant(hba);
+
+	if (status != POST_CHANGE || op != UFS_SYSTEM_PM || !ufshcd_is_link_off(hba) ||
+	    !p->pmu_phy)
+		return 0;
+	writel(0, p->vendor + HCI_GPIO_OUT);
+	p->reinit = true;
+	if (p->gpp0) {
+		writel(readl(p->gpp0 + 4) & ~GPP0_VCC, p->gpp0 + 4);
+		p->vcc_off = true;
+	}
+	return pixel_phy_bypass(hba, false);
+}
+
+/* __exynos_ufs_resume() -> exynos_ufs_config_externals(): PHY isolation
+ * bypass and IO coherency, before the core re-initializes the host. SYS_SLEEP
+ * resets SYSREG_HSI2; this driver maps the device DMA-coherent, so no
+ * request may run until IOCC is back. The UniPro clock must also be the one
+ * the calibration was computed for.
+ */
+static int pixel_resume(struct ufs_hba *hba, enum ufs_pm_op op)
+{
+	struct pixel_ufs *p = ufshcd_get_variant(hba);
+	u32 iocc, mclk;
+	bool lost;
+	int ret;
+
+	if (!p->reinit)
+		return 0;
+	if (p->vcc_off) {
+		/* VCC up before the device reset in host enable. */
+		writel(readl(p->gpp0 + 4) | GPP0_VCC, p->gpp0 + 4);
+		p->vcc_off = false;
+		usleep_range(10000, 11000);
+	}
+	/* SYS_SLEEP resets SYSREG_HSI2 with the domain: IOCC reads 0x10. */
+	lost = (readl(p->sysreg + SYSREG_UFS_IOCC) & UFS_IOCC) != UFS_IOCC;
+	ret = pixel_phy_bypass(hba, true);
+	if (ret)
+		return ret;
+	iocc = readl(p->sysreg + SYSREG_UFS_IOCC);
+	if ((iocc & UFS_IOCC) != UFS_IOCC)
+		writel(iocc | UFS_IOCC, p->sysreg + SYSREG_UFS_IOCC);
+	if ((readl(p->sysreg + SYSREG_UFS_IOCC) & UFS_IOCC) != UFS_IOCC) {
+		dev_err(hba->dev, "IOCC did not take (%#x)\n", readl(p->sysreg + SYSREG_UFS_IOCC));
+		return -EIO;
+	}
+	ret = gs201_mclk(hba->dev, &mclk);
+	if (!ret && mclk != p->mclk) {
+		dev_err(hba->dev, "UniPro clock %u Hz after resume, calibrated for %u\n",
+			mclk, p->mclk);
+		ret = -EIO;
+	}
+	if (ret)
+		return ret;
+	if (lost && smu_call) {
+		struct arm_smccc_res res;
+
+		if (smu_call == 2)
+			arm_smccc_smc(SMC_SMU, 0, 0, 0, 0, 0, 0, 0, &res);
+		else
+			arm_smccc_smc(SMC_FMP_SMU_RESUME, 0, 0, 0, 0, 0, 0, 0, &res);
+		smu_ret = res.a0;
+		dev_info(hba->dev, "SMU %s: %ld\n", smu_call == 2 ? "init" : "resume",
+			 (long)res.a0);
+	}
+	if (lost)
+		reinits_lost++;
+	dev_info(hba->dev, "resume from link off: HSI2 %s, IOCC was %#x\n",
+		 lost ? "power-cycled" : "kept", iocc);
+	pixel_diag(hba, "resume");
+	return 0;
+}
+
+/* exynos_ufs_hce_enable_notify() PRE_CHANGE after a link-off suspend:
+ * exynos_ufs_init_host() (software reset, host configuration), then
+ * exynos_ufs_dev_hw_reset().
+ */
+static int pixel_hce(struct ufs_hba *hba, enum ufs_notify_change_status status)
+{
+	struct pixel_ufs *p = ufshcd_get_variant(hba);
+	unsigned int i;
+	u32 v;
+
+	if (status != PRE_CHANGE || !p->reinit)
+		return 0;
+	writel(UFS_SW_RST_MASK, p->vendor + HCI_SW_RST);
+	if (readl_poll_timeout_atomic(p->vendor + HCI_SW_RST, v, !(v & UFS_SW_RST_MASK), 10, 1000))
+		dev_err(hba->dev, "host software reset timed out\n");
+	for (i = 0; i < ARRAY_SIZE(hci_cfg); i++)
+		writel(p->hci_boot[i], p->vendor + hci_cfg[i]);
+	p->h8_calibrated = false;
+	writel(0, p->vendor + HCI_GPIO_OUT);
+	udelay(5);
+	writel(1, p->vendor + HCI_GPIO_OUT);
 	return 0;
 }
 
@@ -423,6 +664,8 @@ static int pixel_link(struct ufs_hba *hba, enum ufs_notify_change_status status)
 			writel(0x90913c1c, p->unipro + UNIP_PA_DBG_OPTION_SUITE_1);
 			writel(0xe01c115f, p->unipro + UNIP_PA_DBG_OPTION_SUITE_2);
 			apply(hba, pre_link, ARRAY_SIZE(pre_link), 0);
+			if (p->reinit)
+				pixel_diag(hba, "pre-link");
 		}
 		ret = ufshcd_dme_get(hba, UIC_ARG_MIB(T_CONNECTIONSTATE), &state);
 		if (ret)
@@ -445,6 +688,14 @@ static int pixel_link(struct ufs_hba *hba, enum ufs_notify_change_status status)
 		writel(0xc, p->vendor);
 		writel(0xc, p->vendor + 4);
 		writel(0xa, p->vendor + 0x60);
+		if (vendor_cal && (p->reinit || !p->diag_linked)) {
+			pixel_diag(hba, p->reinit ? "relinked" : "linked");
+			p->diag_linked = true;
+		}
+		if (p->reinit) {
+			p->reinit = false;
+			reinits++;
+		}
 	}
 	return 0;
 }
@@ -614,15 +865,21 @@ static int pixel_suspend_prepare(struct device *dev)
 {
 	struct ufs_hba *hba = dev_get_drvdata(dev);
 	bool enable = READ_ONCE(system_hibern8);
+	bool off = READ_ONCE(deep_link_off) && pm_suspend_target_state == PM_SUSPEND_MEM;
 
-	if (enable && (!vendor_cal || hba->pwr_info.pwr_rx != FAST_MODE ||
-		       hba->pwr_info.pwr_tx != FAST_MODE ||
-		       hba->pwr_info.lane_rx != 2 || hba->pwr_info.lane_tx != 2))
+	if (off && (!vendor_cal || !dev_reset))
+		return -EOPNOTSUPP;
+	if (enable && !off && (!vendor_cal || hba->pwr_info.pwr_rx != FAST_MODE ||
+			       hba->pwr_info.pwr_tx != FAST_MODE ||
+			       hba->pwr_info.lane_rx != 2 || hba->pwr_info.lane_tx != 2))
 		return -EOPNOTSUPP;
 	/* The WLUN child enters Hibern8 before the parent's suspend callback.
 	 * Select its level in prepare, before any device starts suspending.
+	 * Deep suspend powers HSI2 down in SYS_SLEEP: stock's level 5
+	 * (ufs-exynos.c exynos_ufs_override_hba_params), device power-down
+	 * and link off.
 	 */
-	hba->spm_lvl = enable ? UFS_PM_LVL_1 : UFS_PM_LVL_0;
+	hba->spm_lvl = off ? UFS_PM_LVL_5 : enable ? UFS_PM_LVL_1 : UFS_PM_LVL_0;
 	return ufshcd_suspend_prepare(dev);
 }
 
@@ -643,6 +900,9 @@ static const struct ufs_hba_variant_ops pixel_ops = {
 	.setup_xfer_req = pixel_xfer,
 	.device_reset = pixel_device_reset,
 	.hibern8_notify = pixel_hibern8,
+	.hce_enable_notify = pixel_hce,
+	.suspend = pixel_suspend,
+	.resume = pixel_resume,
 };
 
 static int pixel_probe(struct platform_device *pdev)

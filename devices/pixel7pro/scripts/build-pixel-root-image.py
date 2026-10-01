@@ -68,6 +68,9 @@ def main():
         'usr/local/sbin/pixel-wifi-ssh': ('scripts/pixel-wifi-ssh.py', 0o755),
         'etc/NetworkManager/dispatcher.d/50-pixel-wifi-ssh': ('scripts/pixel-wifi-ssh-dispatcher.sh', 0o755),
         'usr/local/sbin/pixel-reboot': ('scripts/pixel-reboot.sh', 0o755),
+        'usr/local/sbin/pixel-suspend': ('scripts/pixel-suspend.py', 0o755),
+        'usr/local/sbin/pixel-wifi-restart': ('scripts/pixel-wifi-restart.sh', 0o755),
+        'usr/local/sbin/pixel-display-hook': ('scripts/pixel-display-hook.py', 0o755),
         'etc/NetworkManager/conf.d/10-pixel.conf': ('adapter/network/NetworkManager-pixel.conf', 0o644),
         'usr/share/alsa/ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf':
             ('audio/ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf', 0o644),

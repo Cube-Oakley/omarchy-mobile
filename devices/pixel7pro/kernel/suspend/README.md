@@ -158,6 +158,15 @@ copies the tables entry for entry from `flexpmu_cal_system_gs201.h`:
   `cmu_id` in `gs201-pm-domains.dtsi`.
 - **The output also lists the power registers.** It emits every PD STATUS
   register with its source line (`ps_pd[]`, 38 entries).
+- **It also copies the power-domain save lists.** Stock saves each
+  `pmucal_pd_list[].save` array in `flexpmu_cal_local_gs201.h` before powering
+  the domain off and restores it after powering it on
+  (`pmucal_local.c:63,119`). The generator emits their SAVE_RESTORE entries
+  in order as `ps_pd_save` (1,023 entries, 24 domains; "line" is in the local
+  file) with `ps_pd_lists[]`. The debug READs are left out. The HSI0, DISP,
+  TPU and AUR lists also wait for a PLL lock, which the runtime does not do,
+  so those four are flagged `PS_PD_WAITS` and only compared. Each entry's
+  block must be gated on its own domain's STATUS.
 
 ### Register access rules (both modules)
 
@@ -259,6 +268,9 @@ order, so `ps_suspend()` runs before `cpu_pm_suspend()`, and
    WAKEUP_STAT is recorded but not compared, because it latches live wake
    events.
 8. Record the FLEXPMU counters.
+9. Write the stock pin power-down states of the HSI1/HSI2 pins (see
+   `pixel-sleep-gpio.h`), then save the GPIO banks of the domains that power
+   down, and every domain save list whose domain is on.
 
 A CPU_PM notifier at `INT_MIN` priority re-reads `CPU_INFORM[0]` when
 `cpu_pm_suspend()` sends CPU_PM_ENTER, the last step before PSCI
@@ -270,11 +282,19 @@ SYSTEM_SUSPEND. If the value is no longer 4, the notifier fails the suspend.
 2. Decide early wakeup or exit, as described under early and exit detection.
 3. Write `CPU_INFORM[0] = 0`. Stock does this in CPU_PM_EXIT
    (`pmucal_cpu.c:32`), before exynos-pm resumes.
-4. Run `early_sleep` or `exit_sleep`, then restore the save list with
+4. Restore the GPIO banks, before the exit list releases pad retention (as
+   stock's pin controller does from its earlier syscore resume).
+5. Run `early_sleep` or `exit_sleep`, then restore the save list with
    `pmucal_rae_restore_seq()` semantics.
-5. Restore INT_EN and the EINT masks to their pre-suspend values, and verify
+6. After an exit, compare every saved domain list and log each changed
+   register. With `pd_restore=1` (default) the saved value is written back,
+   except in `PS_PD_WAITS` lists and, unless `pd_restore_noc=1`, the NOCL
+   lists. This stands in for genpd's power-on of each domain in stock
+   `resume_noirq`; HSI2 and the NOCs have no stock domain driver, so their
+   lists are the part to watch.
+7. Restore INT_EN and the EINT masks to their pre-suspend values, and verify
    them.
-6. Call `pixel_cpupm_system_sleep(false)`.
+8. Call `pixel_cpupm_system_sleep(false)`.
 
 **Preconditions, in every mode:**
 - CPU 0 is the only online CPU.
@@ -329,6 +349,14 @@ retention is the safer guess.
 | `gate_cpucl` | 1 | Gate CMU_CPUCL1/2 on the cluster |
 | `lpm_init_pmu` | 0 | At load, write the differing stock PMU durations |
 | `verbose` | 0 | Log every write |
+| `pd_restore` | 1 | After an exit, write back changed domain save-list values |
+| `pd_restore_noc` | 0 | Also for the NOCL lists |
+| `hsi2_cycle` | 0 | Test: with `pm_test=core` and `dry_run=0`, power HSI2 off and on at arm (stock's domain sequence; 1 also asks the monitor for DTZPC save/restore, which it refuses for HSI2) |
+
+Besides the stock lists, the module saves at arm and restores on resume: the
+GPIO banks and pin power-down states (`pixel-sleep-gpio.h`), the domain
+save lists, S2MPU_HSI1/HSI2 CTRL0 (both come back enabled, blocking DMA) and
+the USIs in use (`pixel-sleep-usi.h`, after the CMU restore).
 
 The counters `attempts`, `armed_count`, `refused`, `aborted`, `early_count`
 and `exit_count` are read-only. `/sys/kernel/debug/pixel-sleep/last` holds
@@ -357,6 +385,39 @@ Results on 2026-09-30:
   (MAILBOX_AOC2AP) does not stick. Other attempts were refused by cpif or by
   the modem PCIe link being up; stock would use SYS_SLEEP_HSI1ON (mode 13)
   for the latter, which is not implemented.
+- **Stage 2** (`pm_test=core`, new pixel-mct at boot): the MCT resume self-test
+  ran in each armed cycle with no errors; pinned 0.5 s sleeps took 0.506-0.509 s
+  on every CPU afterwards.
+- **Stage 3c** (`real_sleep=1` under `pm_test=core`): every real-sleep
+  precondition held with Wi-Fi unloaded (its PHY isolated, 0x3ec4 = 0),
+  secondaries off, G3D off, the stock `lpm_init` PMU durations written
+  (`lpm_init_pmu=1`) and ACPM idle; two armed cycles took the early path with
+  verify clean, UFS Hibern8 cycled, and Wi-Fi reloaded and reconnected.
+  pixel-pcie's `system_link_off` refuses deep suspends (it is s2idle-only), so
+  Wi-Fi has to be unloaded for SYS_SLEEP until that path accepts deep. The
+  retention opmodes (kernel/suspend/pixel-pmic-opmode.c `retention=1`) are
+  set.
+- **Stage 4** (first real firmware entry, attended, USB unplugged, Wi-Fi
+  unloaded, root remounted read-only first): PSCI SYSTEM_SUSPEND entered the
+  stock SYS_SLEEP and returned through `exit_sleep`, verify clean. The
+  firmware counted `sleep_soc_down` 0 -> 1 and `sleep_mif_down` 0 -> 1: the
+  memory interface went down and DRAM kept its contents (with the retention
+  opmodes set). The 40-second RTC alarm woke it through the PMIC
+  (WAKEUP2_STAT bit 13, VGPIO2PMU_EINT, although WAKEUP2_INT_EN does not
+  enable that bit). All CPUs came back, the timers ran, and 9 of the 314
+  restored clock registers had lost their values. Two things did not survive:
+  - UFS: the HSI2 domain was power-cycled, and Hibern8 exit timed out
+    (`-110`). The runner found root unreadable and rebooted, as designed.
+  - The modem: cpif saw PHONE_ACTIVE low right after wake and declared a CP
+    crash. The GPIO banks of power-cycled domains (HSI1's gph0/gph1 carry the
+    CP control lines) were not restored before pad retention was released;
+    stock's pinctrl driver saves and restores them.
+  The modem's startup guard then had to be archived and the phone rebooted.
+- **Stage 5** (the pin power-down states, GPIO banks and domain lists added;
+  UFS link off; see docs/suspend-20260930.md): entered and exited again with
+  8 pin states written, 52 GPIO registers and 1 CMU_HSI2 register restored.
+  HSI2 was power-cycled; UFS link startup failed after it, and the modem
+  crashed after the 2.2 s the UFS retries held resume.
 
 **Stage 0 (audit).** Mount debugfs if needed, then run the audit twice. The
 first run covers only ALIVE, TOP, MIF and the CPUs:

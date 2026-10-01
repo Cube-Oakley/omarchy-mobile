@@ -144,6 +144,9 @@ if [[ -n $device ]]; then
     if [[ -f "$device/power-suspend.sh" ]]; then
         install -m755 "$device/power-suspend.sh" "$config/omarchy-mobile/suspend"
     fi
+    if [[ -f "$device/display-hook.sh" ]]; then
+        install -m755 "$device/display-hook.sh" "$config/omarchy-mobile/display-hook"
+    fi
     if [[ -f "$device/wallpaper-apply.sh" ]]; then
         install -m755 "$device/wallpaper-apply.sh" "$config/omarchy-mobile/wallpaper-apply"
     fi

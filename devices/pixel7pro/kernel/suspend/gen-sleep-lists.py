@@ -5,13 +5,20 @@
 Input (GPL-2.0-only, Copyright (c) 2021 Samsung Electronics Co., Ltd.), from
 LineageOS android_kernel_google_gs201 @ 40ff934 (see STOCK_COMMIT):
   drivers/soc/google/cal-if/gs201/flexpmu_cal_system_gs201.h  (the lists)
-  drivers/soc/google/cal-if/gs201/flexpmu_cal_local_gs201.h   (PD STATUS)
+  drivers/soc/google/cal-if/gs201/flexpmu_cal_local_gs201.h   (PD STATUS, save lists)
   drivers/soc/google/cal-if/gs201/flexpmu_cal_cpu_gs201.h     (CPU STATUS)
 
 Output: the SYS_SLEEP enter/save/exit/early lists and pmucal_lpm_init, entry
 for entry, with the stock access types (enum pmucal_seq_acctype values,
 pmucal_common.h:19-38), masks, values and condition registers unchanged, each
 tagged with its source line. Nothing is reordered, merged or dropped.
+
+Also the per-domain save lists (pmucal_pd_list[].save in the local file),
+which stock saves before powering a domain off and restores after powering it
+on (pmucal_local.c:63,119). Only their SAVE_RESTORE entries are emitted, in
+order, tagged with their line in the local file; the debug READs are left out,
+and a list with a WAIT or CHECK_SKIP (a PLL lock wait) is flagged
+PS_PD_WAITS so the runtime only compares it.
 
 Every register base is resolved against BLOCKS below, which records the PMU
 power domain that must be on before the block may be touched and how stock
@@ -138,6 +145,24 @@ BLOCKS = {
     0x25a40000: ('SYSREG_AUR', 0x2984, OTHER, -1, 'AUR_STATUS'),
     0x27f00000: ('CMU_G3D', 0x1e04, OTHER, -1, 'G3D_STATUS (stock COND)'),
     0x27f20000: ('SYSREG_G3D', 0x1e04, OTHER, -1, 'G3D_STATUS (stock COND, exit)'),
+    # Power-domain CMUs, only in the per-domain save lists (PD_SAVE below).
+    0x11000000: ('CMU_HSI0', 0x2084, OTHER, -1, 'HSI0_STATUS, pd_hsi0'),
+    0x14400000: ('CMU_HSI2', 0x2184, OTHER, -1, 'HSI2_STATUS, pd_hsi2'),
+    0x17000000: ('CMU_EH', 0x1c04, OTHER, -1, 'EH_STATUS, pd_eh'),
+    0x1a400000: ('CMU_CSIS', 0x2404, OTHER, -1, 'CSIS_STATUS, pd_csis'),
+    0x1a800000: ('CMU_G3AA', 0x2584, OTHER, -1, 'G3AA_STATUS, pd_g3aa'),
+    0x1aa00000: ('CMU_PDP', 0x2484, OTHER, -1, 'PDP_STATUS, pd_pdp'),
+    0x1ac00000: ('CMU_IPP', 0x2604, OTHER, -1, 'IPP_STATUS, pd_ipp'),
+    0x1b000000: ('CMU_DNS', 0x2504, OTHER, -1, 'DNS_STATUS, pd_dns'),
+    0x1b400000: ('CMU_ITP', 0x2684, OTHER, -1, 'ITP_STATUS, pd_itp'),
+    0x1b700000: ('CMU_MCSC', 0x2704, OTHER, -1, 'MCSC_STATUS, pd_mcsc'),
+    0x1bc00000: ('CMU_TNR', 0x2804, OTHER, -1, 'TNR_STATUS, pd_tnr'),
+    0x1c000000: ('CMU_DPU', 0x2204, OTHER, -1, 'DPU_STATUS, pd_dpu'),
+    0x1c200000: ('CMU_DISP', 0x2284, OTHER, -1, 'DISP_STATUS, pd_disp'),
+    0x1c600000: ('CMU_G2D', 0x2304, OTHER, -1, 'G2D_STATUS, pd_g2d'),
+    0x1c800000: ('CMU_MFC', 0x2384, OTHER, -1, 'MFC_STATUS, pd_mfc'),
+    0x1ca00000: ('CMU_BO', 0x2884, OTHER, -1, 'BO_STATUS, pd_bo'),
+    0x1d000000: ('CMU_GDC', 0x2784, OTHER, -1, 'GDC_STATUS, pd_gdc'),
 }
 
 ENTRY = re.compile(r'PMUCAL_SEQ_DESC\((.*)\)\s*,?\s*$', re.S)
@@ -201,7 +226,7 @@ def parse_arrays(text):
         if not buf:
             start = no
         buf += line + '\n'
-        if buf.rstrip().endswith('),'):
+        if buf.rstrip().endswith('),') and buf.count('(') == buf.count(')'):
             m = ENTRY.match(buf.strip())
             if not m:
                 raise ValueError('line %d: not a PMUCAL_SEQ_DESC entry' % start)
@@ -236,6 +261,34 @@ def status_regs(local, cpu, system_lines):
     # HSI1 has no cal-if local PD; stock uses its STATUS as the save condition.
     no = next(n for n, l in system_lines if '0x18060000, 0x2104,' in l)
     out.setdefault(0x2104, ('HSI1_STATUS', SYSTEM, no))
+    return out
+
+
+def pd_save_lists(local):
+    """[(pd, status offset, flags, [(line, fields)])] from pmucal_pd_list."""
+    half = local.split('#else', 1)[0]
+    arrays = parse_arrays(half)
+    out = []
+    for m in re.finditer(r'PMUCAL_PD_DESC\(PD_\w+, "blkpwr_(\w+)", (\w+), (\w+), (\w+), (\w+)\)',
+                         half):
+        pd, save, status = m.group(1), m.group(3), m.group(5)
+        st = arrays[status]
+        if len(st) != 1 or st[0][1][0] != 'PMUCAL_READ' or value(st[0][1][2]) != 0x18060000:
+            raise ValueError('%s: unexpected status array' % status)
+        flags = []
+        rows = []
+        for line, f in arrays[save]:
+            if f[0] in ('PMUCAL_SAVE_RESTORE', 'PMUCAL_COND_SAVE_RESTORE'):
+                rows.append((line, f))
+            elif f[0] in ('PMUCAL_WAIT', 'PMUCAL_CHECK_SKIP'):
+                if 'PS_PD_WAITS' not in flags:
+                    flags.append('PS_PD_WAITS')
+            elif f[0] != 'PMUCAL_READ':
+                raise ValueError('line %d: %s in a save list' % (line, f[0]))
+        if pd.startswith('nocl'):
+            flags.append('PS_PD_NOC')
+        if rows:
+            out.append((pd, value(st[0][1][3]), flags, rows))
     return out
 
 
@@ -293,6 +346,26 @@ def generate(srcdir):
                 used[cbase] = max(used.get(cbase, 0), coff + 4)
             rows.append((line, typ, name, base, off, mask, val, cbase, coff, cmask, cval))
         lists[cname] = (stock, rows)
+
+    pd_lists = []
+    for pd, status, flags, ents in pd_save_lists(texts[LOCAL]):
+        rows = []
+        for line, f in ents:
+            name = f[1].strip('"')
+            base, off, mask, val = (value(x) for x in f[2:6])
+            cbase, coff, cmask, cval = (value(x) for x in f[6:10])
+            if base not in BLOCKS:
+                raise ValueError('local line %d: base %#x has no BLOCKS entry' % (line, base))
+            if BLOCKS[base][1] != status:
+                raise ValueError('local line %d: %s is not gated on %s STATUS %#x'
+                                 % (line, BLOCKS[base][0], pd, status))
+            if cbase and cbase != 0x18060000:
+                raise ValueError('local line %d: condition outside PMU' % line)
+            if f[0] == 'PMUCAL_COND_SAVE_RESTORE' and not cbase:
+                raise ValueError('local line %d: COND without a condition register' % line)
+            used[base] = max(used.get(base, 0), off + 4)
+            rows.append((line, f[0], name, base, off, mask, val, cbase, coff, cmask, cval))
+        pd_lists.append((pd, status, flags, rows))
 
     # Mapping for the PD STATUS reads and the fixed ALIVE registers.
     used[0x18060000] = max(used.get(0x18060000, 0), 0x4000)
@@ -354,8 +427,33 @@ def generate(srcdir):
         w('};')
         w('#define %s_N %d' % (cname.upper(), len(rows)))
         w('')
+    w('/* Per-domain save lists: the SAVE_RESTORE entries of each pmucal_pd_list')
+    w(' * save array in %s ("line" is in that file), in order. */' % LOCAL)
+    w('static const struct ps_seq ps_pd_save[] __maybe_unused = {')
+    first, table = 0, []
+    for pd, status, flags, rows in pd_lists:
+        for (line, typ, name, base, off, mask, val, cbase, coff, cmask, cval) in rows:
+            cb = index[cbase] if cbase else 'PS_NO_BLOCK'
+            w('\tPS_SEQ(%s, %s, %d, %#06x, %#010x, %#010x, %s, %#06x, %#010x, %#010x, %d),'
+              % (typ.replace('PMUCAL_', 'PS_'), c_str(name), index[base], off, mask, val,
+                 cb, coff, cmask, cval, line))
+        table.append((pd, status, first, len(rows), flags, rows[0][0]))
+        first += len(rows)
+    w('};')
+    w('#define PS_PD_SAVE_N %d' % first)
+    w('')
+    w('/* Domain, PMU STATUS, first entry, entries, flags, first line. */')
+    w('static const struct ps_pd_list ps_pd_lists[] __maybe_unused = {')
+    for pd, status, start, n, flags, line in table:
+        w('\t{ "%s", %#06x, %d, %d, %s, %d },'
+          % (pd, status, start, n, ' | '.join(flags) or '0', line))
+    w('};')
+    w('#define PS_PD_LISTS_N %d' % len(table))
+    w('')
     w('#endif')
-    return '\n'.join(o) + '\n', {k: len(v[1]) for k, v in lists.items()}
+    counts = {k: len(v[1]) for k, v in lists.items()}
+    counts['ps_pd_save'] = first
+    return '\n'.join(o) + '\n', counts
 
 
 def main():

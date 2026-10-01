@@ -72,6 +72,18 @@ struct ps_pd {
 
 #define PS_NO_BLOCK 0xff
 
+#define PS_PD_WAITS	BIT(0)	/* stock list waits for a PLL: compare only */
+#define PS_PD_NOC	BIT(1)	/* an interconnect domain */
+
+/* A power domain's save list: ps_pd_save[first .. first + n). */
+struct ps_pd_list {
+	const char *name;
+	u16 status;
+	u16 first, n;
+	u8 flags;
+	u16 line;
+};
+
 struct ps_seq {
 	const char *name;
 	u32 mask, value;

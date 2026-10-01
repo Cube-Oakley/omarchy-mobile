@@ -38,6 +38,15 @@ state=$XDG_RUNTIME_DIR/omarchy-mobile-crt.state
 ambient_flag=$XDG_RUNTIME_DIR/omarchy-mobile-ambient
 asleep_flag=$XDG_RUNTIME_DIR/omarchy-mobile-ambient-asleep
 
+# The device's optional screen hook: display-hook on|off tells hardware
+# outside the display whether the screen is lit (the Pixel's modem then
+# stops or resumes its optional reports). It runs in the background.
+hook=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-mobile/display-hook
+screen_hook() {
+    [[ -x $hook ]] || return 0
+    "$hook" "$1" >/dev/null 2>&1 </dev/null &
+}
+
 dpms() {
     hyprctl eval "hl.dispatch(hl.dsp.dpms({ action = \"$1\" }))"
 }
@@ -82,6 +91,7 @@ if [[ $action == on && -f $ambient_flag ]]; then
     ambient false || true
     sleep 0.3
     crt on || dpms enable
+    screen_hook on
     exit 0
 fi
 # A real off from the always-on display leaves it first.
@@ -97,12 +107,14 @@ case $action in
     off)
         crt off || true
         dpms disable
+        screen_hook off
         ;;
     ambient)
         crt off || true
         dpms_on || dpms enable
         ambient true
         touch "$ambient_flag"
+        screen_hook off
         ;;
     ambient-sleep)
         [[ -f $ambient_flag ]] || exit 0
@@ -128,5 +140,6 @@ case $action in
         fi
         printf '%s\n' "$now" > "$stamp"
         crt on || dpms enable
+        screen_hook on
         ;;
 esac

@@ -20,6 +20,31 @@ POWER = Path('/sys/power')
 RTC = Path('/sys/class/rtc/rtc0')
 SOCKET = '/run/omarchy-mobile-telephony/socket'
 DISPLAY = '/root/.local/bin/omarchy-mobile-display'
+WIFI_PCI = '0000:01:00.0'
+WIFI_RESTART = '/usr/local/sbin/pixel-wifi-restart'
+
+
+def wifi_answers():
+    """Whether the BCM4389 firmware still answers a query. After some s2idle
+    resumes its control ring fills and every request fails; the device then
+    refuses each later suspend (D3 entry times out), so the phone never
+    sleeps again. `iw ... info` reports txpower only when the firmware
+    answers brcmfmac's qtxpower query; power_save comes from cfg80211's
+    cache and proves nothing. A D3 timeout in the recent kernel log counts
+    as no answer too."""
+    net = Path('/sys/bus/pci/devices', WIFI_PCI, 'net')
+    names = [n.name for n in net.iterdir()] if net.is_dir() else []
+    if not names:
+        return True
+    try:
+        log = subprocess.run(['dmesg'], capture_output=True, text=True, timeout=15).stdout
+        if 'Timeout on response for entering D3' in '\n'.join(log.splitlines()[-80:]):
+            return False
+        info = subprocess.run(['iw', 'dev', names[0], 'info'], capture_output=True,
+                              text=True, timeout=15)
+        return info.returncode == 0 and 'txpower' in info.stdout
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def read(path):
@@ -145,10 +170,14 @@ def suspend(seconds, keep_dark, allow_charging):
     prerequisites(allow_charging)
     alarm = None
     changed_screen = False
+    prior = None
     cleanup_errors = []
     try:
         if not keep_dark:
             display(False)
+        # The display hook keeps the modem's screen state with the display;
+        # put back what it was (still off while the screen stays dark).
+        prior = request('power-status').get('screen_on')
         changed_screen = True  # Restore even if a request was only partly accepted.
         request('screen-state', on=False)
         os.sync()
@@ -162,7 +191,12 @@ def suspend(seconds, keep_dark, allow_charging):
         except OSError as error:
             device = read(POWER / 'suspend_stats/last_failed_dev')
             step = read(POWER / 'suspend_stats/last_failed_step')
-            raise RuntimeError(f'Suspend refused by {device or "a wake event"} ({step})') from error
+            note = ''
+            if device == WIFI_PCI and not wifi_answers():
+                restarted = subprocess.run([WIFI_RESTART], capture_output=True, timeout=120)
+                note = '; Wi-Fi firmware hung, ' + (
+                    'restarted' if restarted.returncode == 0 else 'restart failed')
+            raise RuntimeError(f'Suspend refused by {device or "a wake event"} ({step}){note}') from error
         slept = time.clock_gettime(time.CLOCK_BOOTTIME) - before[0] - (time.monotonic() - before[1])
         result = dict(woke=wake_reason(), slept=round(max(0, slept), 3))
     finally:
@@ -170,7 +204,7 @@ def suspend(seconds, keep_dark, allow_charging):
         if alarm:
             cleanups.append(alarm.restore)
         if changed_screen:
-            cleanups.append(lambda: request('screen-state', on=True))
+            cleanups.append(lambda: request('screen-state', on=prior is not False))
         if not keep_dark:
             cleanups.append(lambda: display(True))
         for cleanup in cleanups:

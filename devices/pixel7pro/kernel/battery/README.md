@@ -136,3 +136,14 @@ back.
 - Learned-state persistence and recovery of the historical cycle count.
 - No interrupts: a 10 s poll sends the uevents.
 - No USB PD: input is 5 V only.
+
+## Measurement aids (October 1, 2026)
+
+- `input_off=1` puts the charger in mode 0 (buck off): with USB connected the
+  system runs from the battery and the gauge reads its drain. Clearing it puts
+  the charger back in buck mode, and normal charging control resumes on the
+  next poll (10 s). Only modes 4 and 5 are ever switched to 0.
+- `coulomb` (read-only) returns the gauge's coulomb counter QH:QL, raw and in
+  nAh. `charge_now` (RepCap) moves in 2 mAh steps; QL adds 16 bits, so a
+  few minutes of sleep can be measured. Checked against `current_now`: 1.313
+  mAh in 10 s while charging at 464 mA.

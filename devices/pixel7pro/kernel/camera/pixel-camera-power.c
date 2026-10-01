@@ -160,8 +160,16 @@ struct step {
 #define CLK(us)		{ MCLK, 0, us }
 
 /* The stock DT's power-up-seqs / power-down-seqs and their delays. */
-static const struct step uw_up[] = { R(L12S, 0), R(LDO6, 0), R(LDO2, 1000), CLK(1000), RST(10000) };
-static const struct step uw_down[] = { RST(1000), CLK(1000), R(LDO2, 0), R(LDO6, 0), R(L12S, 1000) };
+/*
+ * The UW's AF actuator (act-slenderman-sandworm, AK737x at hsi2c_3 0x0f) is a
+ * separate LWIS device on L12S + LDO4 with no delays; it rides on the sensor.
+ */
+static const struct step uw_up[] = {
+	R(L12S, 0), R(LDO4, 0), R(LDO6, 0), R(LDO2, 1000), CLK(1000), RST(10000)
+};
+static const struct step uw_down[] = {
+	RST(1000), CLK(1000), R(LDO2, 0), R(LDO6, 0), R(LDO4, 0), R(L12S, 1000)
+};
 static const struct step front_up[] = { R(L12S, 0), R(LDO8, 0), R(SGPIO4, 1000), CLK(1000), RST(8000) };
 static const struct step front_down[] = { RST(0), CLK(1000), R(SGPIO4, 0), R(LDO8, 0), R(L12S, 1000) };
 static const struct step main_up[] = {

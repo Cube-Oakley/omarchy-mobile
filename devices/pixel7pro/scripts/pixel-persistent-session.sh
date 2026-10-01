@@ -88,8 +88,12 @@ pixel_module pixel-mct ||
 pixel_module pixel-cpupm ||
     echo 'C2 idle hints unavailable; CPUs keep spinning on rejected C2.' >&2
 # The bootloader powers on the camera pipeline, TPU, codecs, G2D, EH and AUR;
-# nothing here uses them (kernel/pd).
-insmod /proc/1/root/lib/modules/pixel/pixel-pd-off.ko off=all ||
+# nothing here uses them (kernel/pd). Camera development (the camera-dev flag)
+# keeps CSIS and PDP, the capture path, as the bootloader left them.
+pd_off=all
+[[ -e /var/lib/omarchy-mobile/camera-dev ]] &&
+    pd_off=tpu,aur,bo,mfc,g2d,eh,dns,itp,ipp,g3aa,mcsc,gdc,tnr
+insmod /proc/1/root/lib/modules/pixel/pixel-pd-off.ko off=$pd_off ||
     echo 'Unused power domains left on.' >&2
 # The thermal path must be active before enabling CPU scaling and the GPU.
 zones=(/sys/class/thermal/thermal_zone*/temp)

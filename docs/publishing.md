@@ -195,3 +195,12 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   Google's GPL flexpmu tables) and the PMIC opmode module, after the same
   checks. No vendor binaries, firmware, camera tables, logs or position data
   are included; the only address added is 127.0.0.1.
+
+- September 30, night: synced the Pixel's real SYS_SLEEP work (storage, buses
+  and the modem back after sleep: UFS VCC switching, the S2MPU and SMU
+  restore, the USI and pin power-down restore, the display-domain test), the
+  coulomb counter and charger-off current measurement, the display hook, and
+  the camera capture path: the first raw frames from the ultrawide (with
+  autofocus) and the front camera, plus the CSIS wiring and C-PHY status of
+  the main and tele cameras. The checks above found nothing to remove. No
+  camera tables, camera frames, vendor binaries or logs are included.

@@ -139,6 +139,7 @@
 #define CHG_DETAILS_02		0xb7
 #define CHG_CNFG_00		0xb9
 #define CHG_MODE		GENMASK(3, 0)
+#define CHG_MODE_OFF		0x0
 #define CHG_MODE_BUCK		0x4
 #define CHG_MODE_CHG_BUCK	0x5
 #define CHG_CNFG_02		0xbb
@@ -154,6 +155,8 @@
 #define CHG_CNFG_19		0xcc
 
 #define FG_AIN			0x27
+#define FG_QH			0x4d	/* coulomb counter, capacity LSB */
+#define FG_QL			0x4e	/* ... and its low 16 bits */
 /* TGain and TOff of every battery model in the stock DT (fg-params) */
 #define NTC_TGAIN		(-4783)
 #define NTC_TOFF		7866
@@ -176,6 +179,9 @@ enum { THM_COLD_SUSPEND, THM_COOL, THM_NORMAL, THM_WARM, THM_HOT_SUSPEND };
 
 static uint input_limit_ma = 1500;
 module_param(input_limit_ma, uint, 0644);
+static bool input_off;
+module_param(input_off, bool, 0644);
+MODULE_PARM_DESC(input_off, "Measurement: charger mode 0 with USB present, so the system runs from the battery and the gauge reads its drain (clear to resume)");
 MODULE_PARM_DESC(input_limit_ma, "USB input current limit to set when USB is present (100-1500, 0: leave)");
 
 enum { CHG_DTLS_PREQUAL, CHG_DTLS_CC, CHG_DTLS_CV, CHG_DTLS_TO, CHG_DTLS_DONE,
@@ -213,6 +219,7 @@ struct pixel_battery {
 	int end_threshold;
 	bool limited;
 	bool hot;
+	bool forced_off;	/* input_off put the charger in mode 0 */
 	bool model_failed;
 };
 
@@ -510,6 +517,42 @@ static int fg_charge_uah(struct pixel_battery *b, u16 val, int *uah)
 	return 0;
 }
 
+/* The gauge's coulomb counter QH:QL, 1/65536 of the capacity LSB, as the
+ * raw value and in nAh: fine enough to measure minutes of sleep, where
+ * charge_now (RepCap) moves in 2 mAh steps.
+ */
+static struct pixel_battery *coulomb_battery;
+
+static int coulomb_get(char *buf, const struct kernel_param *kp)
+{
+	struct pixel_battery *b = READ_ONCE(coulomb_battery);
+	u16 qh, ql, qh2, period;
+	s32 raw;
+	int ret;
+
+	if (!b)
+		return -ENODEV;
+	ret = fg_read(b, FG_QH, &qh);
+	ret = ret ?: fg_read(b, FG_QL, &ql);
+	ret = ret ?: fg_read(b, FG_QH, &qh2);
+	if (!ret && qh2 != qh) {
+		qh = qh2;
+		ret = fg_read(b, FG_QL, &ql);
+	}
+	ret = ret ?: fg_read(b, FG_TASKPERIOD, &period);
+	if (ret)
+		return ret;
+	if (period != 0x1680 && period != 0x2d00)
+		return -ENODATA;
+	raw = (s32)((u32)qh << 16 | ql);
+	return sysfs_emit(buf, "%d %lld\n", raw,
+			  div_s64((s64)raw * (period == 0x2d00 ? 2000000 : 1000000), 65536));
+}
+
+static const struct kernel_param_ops coulomb_ops = { .get = coulomb_get };
+module_param_cb(coulomb, &coulomb_ops, NULL, 0444);
+MODULE_PARM_DESC(coulomb, "Coulomb counter QH:QL: raw and nAh (read-only)");
+
 static int fg_time(struct pixel_battery *b, u8 reg, int *seconds)
 {
 	u16 val;
@@ -794,6 +837,20 @@ static void charger_update(struct pixel_battery *b)
 	if (chg_read(b, CHG_CNFG_00, &cnfg) || fg_read(b, FG_REPSOC, &soc))
 		goto out;
 	mode = FIELD_GET(CHG_MODE, cnfg);
+	if (READ_ONCE(input_off)) {
+		if ((mode == CHG_MODE_BUCK || mode == CHG_MODE_CHG_BUCK) &&
+		    !chg_write(b, CHG_CNFG_00, (cnfg & ~CHG_MODE) | CHG_MODE_OFF)) {
+			b->forced_off = true;
+			dev_info(b->dev, "input off: running from the battery\n");
+		}
+		goto out;
+	}
+	if (b->forced_off && mode == CHG_MODE_OFF &&
+	    !chg_write(b, CHG_CNFG_00, (cnfg & ~CHG_MODE) | CHG_MODE_BUCK)) {
+		b->forced_off = false;
+		mode = CHG_MODE_BUCK;
+		dev_info(b->dev, "input on again\n");
+	}
 	if (mode != CHG_MODE_BUCK && mode != CHG_MODE_CHG_BUCK)
 		goto out;
 	capacity = (soc + 128) >> 8;
@@ -1013,6 +1070,7 @@ static int pixel_battery_probe(struct platform_device *pdev)
 		return PTR_ERR(b->usb);
 
 	platform_set_drvdata(pdev, b);
+	WRITE_ONCE(coulomb_battery, b);
 	ret = devm_device_add_group(dev, &pixel_model_group);
 	if (ret)
 		return ret;
@@ -1026,6 +1084,8 @@ static void pixel_battery_remove(struct platform_device *pdev)
 {
 	struct pixel_battery *b = platform_get_drvdata(pdev);
 	u8 cnfg;
+
+	WRITE_ONCE(coulomb_battery, NULL);
 
 	cancel_delayed_work_sync(&b->poll);
 	if (b->boot_cnfg_00 == 0xff)

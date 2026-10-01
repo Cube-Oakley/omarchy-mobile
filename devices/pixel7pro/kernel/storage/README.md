@@ -5,6 +5,47 @@ bootloader configuration. It is an experimental bring-up driver, not complete
 GS201 platform support: the bootloader still owns the clocks. Runtime suspend,
 automatic Hibern8, inline encryption and clock scaling are disabled.
 
+## Deep suspend with the link off (September 30, 2026)
+
+Stage 4 of the SYS_SLEEP bring-up (kernel/suspend) showed that HSI2 is
+powered down in SYS_SLEEP: the Hibern8 link did not come back. Stock uses
+UFS PM level 5 there (`exynos_ufs_override_hba_params`): the device powers
+down, the link goes off, and the host is initialized again on resume.
+`deep_link_off=1` does the same, for deep suspends only, and needs
+`vendor_cal=1 dev_reset=1`:
+
+- Suspend, after the core turns the link off (`__exynos_ufs_suspend`):
+  RST_N low and the PHY isolated (PMU 0x3ec8 bit 0 = 0, written through the
+  secure monitor).
+- Resume, before the core's reset and restore (`__exynos_ufs_resume`):
+  PHY isolation bypassed and IOCC (SYSREG_HSI2 0x710 bits 1:0) set again.
+  The driver maps the device DMA-coherent, so no request may run before
+  IOCC is back. The UniPro clock is read again and must still be the rate
+  the calibration used (kernel/suspend restores CMU_HSI2 from its domain
+  save list).
+- Host enable (`exynos_ufs_hce_enable_notify`): the vendor software reset,
+  the vendor host configuration as the bootloader left it (a probe-time copy
+  of 25 registers), and an RST_N pulse. Link startup then applies the
+  calibration as at boot.
+
+`reinits` and `reinits_lost` count completed re-initializations and those
+that found HSI2 power-cycled (IOCC reset). s2idle is unchanged.
+
+Results: three round trips in a deep suspend under `pm_test=devices` (HSI2
+kept power) re-initialized the host at HS-G4 on both lanes, with a synced
+16 MiB file and a fresh 4 MiB write reading back intact with the cache
+dropped. After a real SYS_SLEEP, where HSI2 was power-cycled, link startup
+failed on all five attempts. With the link-off path, the driver logs one
+`diag` line of host, UniPro and PHY registers after the first link, on
+resume and after each calibration, to find what the power loss leaves out.
+The fixes that followed (kernel/suspend and docs/suspend-20260930.md): the
+device's VCC (gpp0-1) is switched off with the link and on again 10 ms before
+the reset, as stock's level 5 does; after a power loss the monitor's
+`SMU(INIT)` sets up the DMA filter again (`smu_call`, default 2; data
+transfers time out without it); pixel-sleep puts S2MPU_HSI2 back to bypass.
+With these, UFS comes back from real SYS_SLEEP at HS-G4. The FMP descriptor
+call is not made: it selects 128-byte PRDT entries this driver does not use.
+
 ## System-suspend Hibern8 (September 30, 2026)
 
 `system_hibern8=1` opts into UFS PM level 1: the device remains powered and
