@@ -82,19 +82,17 @@ HW.pixel7pro = {
           note: "The modem manager arms an AP watchdog and feeds it, and pixel-wdt-pm pauses and rearms it across "
               + "suspend (a 44.8 s sleep resumed in the same boot). Without the modem bundle both watchdogs stay "
               + "stopped.", ref: "devices/pixel7pro/kernel/watchdog/README.md" },
-        { n: "Suspend / resume (s2idle)", s: "partial", cap: "suspend",
-          note: "The shell sleeps the phone after screen-off while unplugged; the power key, RTC alarms, calls "
-              + "and texts wake it, and Wi-Fi comes back after each wake. Savings are modest (metered rails about "
-              + "0.81–0.85 W across sleeps against 0.94 W awake), it never sleeps on the charger, and unplugged "
-              + "battery life is unmeasured.",
-          ref: "devices/pixel7pro/docs/suspend-20260929.md" },
+        { n: "Suspend / resume", s: "partial", cap: "suspend",
+          note: "The shell sleeps the phone 10 s after the screen goes dark while unplugged, now in SYS_SLEEP "
+              + "(below); the power key, RTC alarms, calls and texts wake it. Wi-Fi and Bluetooth are unloaded "
+              + "while dark and come back for the background check (Wi-Fi) and when the screen lights. It never "
+              + "sleeps on the charger. s2idle remains the fallback when deep sleep isn't available.",
+          ref: "devices/pixel7pro/docs/suspend-20260930.md" },
         { n: "Deepest idle power states (SYS_SLEEP)", s: "partial", cap: "deepsleep",
-          note: "Real SYS_SLEEP works in a test image: storage, buses, USB, Wi-Fi and the modem (still "
-              + "IMS-registered) come back after every sleep. With the modem stopped and the cable in, the phone "
-              + "draws about 63 mA asleep; the "
-              + "touch controller is now held in reset whenever the screen is dark. Not yet the default: the "
-              + "installed boot image lacks the UFS link-off path. Next: an unplugged measurement and the rest of "
-              + "the floor, toward ~25 mA.",
+          note: "The daily sleep since October 1 (installed boot image): storage, buses, USB, GPU, display, "
+              + "cameras, touch and the modem (still IMS-registered) come back after every sleep. Unplugged with the "
+              + "modem registered, a 40-minute run averaged 63.6 mA, against about 300 mA in s2idle; the phone "
+              + "was asleep 95% of the time, and asleep it draws about 50 mA. Next: that floor, toward ~25 mA.",
           ref: "devices/pixel7pro/docs/suspend-20260930.md" },
         { n: "RTC and alarms", s: "ok",
           note: "The S2MPG12 RTC sets the clock about 2 s into boot, and its alarm wakes the phone from s2idle "
@@ -151,7 +149,11 @@ HW.pixel7pro = {
           note: "The panel's brightness register is a backlight device; the shell's slider works and the level "
               + "is restored at session start. Automatic brightness waits on the light sensor.",
           ref: "devices/pixel7pro/docs/status.md" },
-        { n: "Always-on / ambient display", s: "no", note: "Not attempted yet." },
+        { n: "Always-on / ambient display", s: "no",
+          note: "Not checked on the Pixel. The shared ambient clock would keep the panel in its normal mode and "
+              + "the phone awake. Planned: the S6E3HC4's low-power mode, with the SoC in SYS_SLEEP between "
+              + "minute updates.",
+          ref: "docs/mobile-roadmap.md" },
         { n: "Multitouch (Synaptics S3908)", s: "ok", cap: "touch",
           note: "On the SPI0 controller with its attention interrupt: about 240 Hz for 0.12 ms of CPU per frame, "
               + "user-confirmed smooth, with recovery after controller errors. Still a register-level driver, "
@@ -205,8 +207,9 @@ HW.pixel7pro = {
           ref: "devices/pixel7pro/kernel/sleep-v25/README.md" },
         { n: "Bluetooth (BCM4389)", s: "partial", cap: "bluetooth",
           note: "Google's patch firmware over UART18 at 3 Mbaud, BlueZ and PipeWire, started at boot; an LE scan "
-              + "finds nearby devices. Pairing, audio and calls (HFP) are untested by hand, and there is no "
-              + "low-power mode.",
+              + "finds nearby devices. SYS_SLEEP cuts the chip's power, so Bluetooth is unloaded while the "
+              + "screen is dark and reloads (a few seconds) when it lights. Pairing, audio and calls (HFP) are "
+              + "untested by hand, and there is no low-power mode or host wake, so nothing reaches it asleep.",
           ref: "devices/pixel7pro/kernel/bluetooth/README.md" },
         { n: "Cellular modem (Samsung S5300, PCIe)", s: "ok",
           note: "The stock signed firmware boots over PCIe with RAM-only copies of its own NV; the identity and "

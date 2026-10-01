@@ -63,6 +63,78 @@ The priorities below continue to guide the OnePlus and shared software.
    USB peripherals and monitor output are separate milestones. Keep generic
    dock/session behavior in the shared shell and hardware enablement per device.
 
+## Power: off unless needed (October 1)
+
+The user's direction for both phones: keep the phone pleasant while it is in
+use, but power down anything that isn't needed, completely. Done well, that can
+beat Android, which doesn't always turn hardware off when it could. This is a
+plan; each item says what exists today.
+
+**Off means off.** Switching a radio off in the UI powers its chip down: the
+driver is unloaded and the chip's enable line dropped, not just disconnected
+(`nmcli radio wifi off` and `bluetoothctl power off` leave the firmware loaded
+and the chip powered). The shell's toggles call a device hook, as the display
+hook works today, and the device adapter does the hardware part. The Pixel
+already does this for Wi-Fi and Bluetooth around deep sleep
+([suspend notes](../devices/pixel7pro/docs/suspend-20260930.md)), so the
+toggles reuse those paths. The same rule covers everything else:
+- Sensors run only while something has claimed them; the shell already
+  releases rotation and light when the screen goes dark.
+- Cameras power on per stream.
+- Touch is held in reset while the screen is dark.
+- Unused blocks (TPU, codecs, GNSS) stay off.
+- A power audit per state (in use, dark, asleep) shows what is still powered
+  and what it costs, per rail where the hardware has meters (the Pixel's ODPM).
+
+**Background work without polling.** Apps need to wake for work without each
+one waking the phone on its own schedule:
+- Apps ask for a wake time.
+- The sleep policy (`overlay/mobile/sleep.py`) groups requests into shared
+  windows, bringing Wi-Fi up once for all of them, like Android's alarm
+  batching.
+- An app holds the phone awake only while it works (the existing inhibitor
+  files).
+- Real-time delivery comes from one push connection shared by all apps
+  (UnifiedPush, for example through ntfy), kept over mobile data, which stays
+  up in deep sleep. The modem then wakes the phone only when something arrives.
+  Whether an incoming mobile-data packet wakes the Pixel from SYS_SLEEP is
+  still to be tested.
+- The battery page attributes each wake and the time it held the phone up to
+  its source.
+
+The earlier
+[background work plan](../devices/oneplus7pro/docs/background-wake-plan.md)
+has the constraints.
+
+**Always-on display at near-sleep cost.** Today the ambient clock keeps the
+panel in its normal mode, and the phone can't sleep while it shows. The target
+is how stock Android does it:
+- The panel's low-power mode, where it refreshes slowly from its own memory.
+- The SoC in deep sleep between clock updates, waking once a minute to draw
+  the new time.
+- Fully off face down or in a pocket, as now.
+
+The Pixel's panel has this mode, and Google's GPL panel driver has its
+commands; keeping the panel powered through SYS_SLEEP is the main work. The
+OnePlus panel has no low-power mode (stock's commands for it are empty).
+
+**Bluetooth Low Energy at the OS level.** Phone-as-key accessories (a car's
+phone key, for example) need more than classic Bluetooth:
+- LE scanning and connections.
+- GATT client and server through BlueZ's D-Bus API.
+- Advertising.
+- LE Secure Connections pairing.
+- Above all, BLE that keeps working while the phone sleeps: the chip stays
+  powered in its own low-power mode, its host-wake line wakes the phone, and
+  controller-side filters (BlueZ's advertisement monitors) wake it only for a
+  known device. An app can then hold a connection to a paired accessory, with
+  RSSI, through deep sleep.
+
+On the Pixel today the chip is unloaded for deep sleep because SYS_SLEEP cuts
+its power. Keeping it alive needs BT_REG_ON held in sleep, the device-wake and
+host-wake GPIOs, and the chip's low-power mode. Apps that build on this live
+outside this repository.
+
 ## Status bar and appearance
 
 - Vertical battery icon, with the charging lightning bolt inside and percentage

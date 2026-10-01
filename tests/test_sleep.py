@@ -42,6 +42,33 @@ class PolicyTests(unittest.TestCase):
         policy.ready(2000, dark=True, busy=False)
         self.assertTrue(policy.ready(2000 + max(module.HOLD_OTHER, module.GRACE), dark=True, busy=False))
 
+    def test_the_background_check_ends_soon_after_the_network_is_up(self):
+        policy = module.Policy()
+        policy.woke(1000, 'alarm')
+        policy.ready(1000, dark=True, busy=False)
+        policy.online(1012)
+        self.assertFalse(policy.ready(1012 + module.ONLINE_HOLD - 1, dark=True, busy=False))
+        self.assertTrue(policy.ready(1012 + module.ONLINE_HOLD, dark=True, busy=False))
+
+    def test_the_network_never_lengthens_a_hold_or_shortens_other_wakes(self):
+        policy = module.Policy()
+        policy.woke(1000, 'alarm')
+        policy.ready(1000, dark=True, busy=False)
+        policy.online(1000 + module.HOLD['alarm'] - 1)
+        self.assertTrue(policy.ready(1000 + module.HOLD['alarm'], dark=True, busy=False))
+        policy.woke(2000, 'modem')
+        policy.ready(2000, dark=True, busy=False)
+        policy.online(2000)
+        self.assertFalse(policy.ready(2000 + module.HOLD['modem'] - 1, dark=True, busy=False))
+
+    def test_network_state_comes_from_networkmanager(self):
+        for state, online in (('connected', True), ('connecting', False), ('connected (site only)', False)):
+            done = subprocess.CompletedProcess([], 0, state + '\n', '')
+            with patch.object(module.subprocess, 'run', return_value=done):
+                self.assertEqual(module.network_online(), online)
+        with patch.object(module.subprocess, 'run', side_effect=FileNotFoundError()):
+            self.assertFalse(module.network_online())
+
     def test_a_refusal_waits_and_is_logged_once(self):
         policy = module.Policy()
         self.assertTrue(policy.refused(100, 'Unplug before sleeping'))

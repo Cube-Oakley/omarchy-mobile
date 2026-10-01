@@ -370,24 +370,17 @@ static void spi_teardown(void)
     writel(div_saved, cmu+USI0_DIV);
     spi_ready=false;
 }
-static int spi_setup(void)
+/* Divider, USI mode and SPI controller. Also after a deep sleep, which
+ * resets PERIC1's USI0 and leaves the controller reading 0xff. */
+static int spi_program(void)
 {
     u32 v;
-    div_saved=readl(cmu+USI0_DIV);
-    swconf_saved=readl(sysreg);
-    /* The bootloader leaves USI0 unconfigured and undivided. */
-    if ((div_saved & 0xf) || (swconf_saved & 7)) {
-        pr_err("pixel-touch: SPI0 handoff differs (div=%08x swconf=%08x)\n", div_saved, swconf_saved);
-        return -EINVAL;
-    }
     writel((div_saved & ~0xf) | 9, cmu+USI0_DIV);
     if (readl_poll_timeout(cmu+USI0_DIV, v, !(v & BIT(16)), 1, 1000)) {
         writel(div_saved, cmu+USI0_DIV);
         return -ETIMEDOUT;
     }
     writel((swconf_saved & ~7) | BIT(1), sysreg);
-    usicon_saved=readl(spi+USI_CON);
-    usiopt_saved=readl(spi+USI_OPTION);
     writel(usicon_saved & ~BIT(0), spi+USI_CON);
     udelay(1);
     writel((usiopt_saved & ~BIT(2)) | BIT(1), spi+USI_OPTION);
@@ -400,6 +393,22 @@ static int spi_setup(void)
     writel(0x1f, spi+SPI_PENDING_CLR);
     writel(0, spi+SPI_PENDING_CLR);
     spi_ready=true;
+    return 0;
+}
+static int spi_setup(void)
+{
+    int ret;
+    div_saved=readl(cmu+USI0_DIV);
+    swconf_saved=readl(sysreg);
+    /* The bootloader leaves USI0 unconfigured and undivided. */
+    if ((div_saved & 0xf) || (swconf_saved & 7)) {
+        pr_err("pixel-touch: SPI0 handoff differs (div=%08x swconf=%08x)\n", div_saved, swconf_saved);
+        return -EINVAL;
+    }
+    usicon_saved=readl(spi+USI_CON);
+    usiopt_saved=readl(spi+USI_OPTION);
+    ret=spi_program();
+    if (ret) return ret;
     pr_info("pixel-touch: SPI0 controller at 9.98 MHz (USI0 div 10)\n");
     return 0;
 }
@@ -490,12 +499,14 @@ static void release_contacts(void)
     }
     input_mt_sync_frame(input); input_sync(input);
 }
-/* Sleep in short steps so unloading the module is never held up. */
+/* Sleep in short steps so unloading the module, or a system suspend (the
+ * freezer), is never held up. */
 static bool stop_during(unsigned int ms)
 {
     unsigned long end=jiffies+msecs_to_jiffies(ms);
     while (time_before(jiffies,end)) {
         if (kthread_should_stop()) return true;
+        try_to_freeze();
         msleep(50);
     }
     return kthread_should_stop();
@@ -516,6 +527,8 @@ static int recover(void)
                 if (stop_during(200)) return -EINTR;
         }
         ret = changed ? 0 : bus_acquire();
+        /* After a deep sleep the controller has lost its setup. */
+        if (!ret && changed && hwspi && spi_ready) ret=spi_program();
         if (!ret) ret=chip_start();
         if (!ret) return 0;
         pr_warn("pixel-touch: restart failed (%d); retrying in %u ms\n", ret, backoff);

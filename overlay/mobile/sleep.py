@@ -18,7 +18,8 @@ reaches power-button.py once the phone is awake). A call rings through the
 shell, which lights the screen. A text posts its notification and the phone
 sleeps again. The background alarm (prefs sleepCheck, minutes) keeps the
 phone up long enough for Wi-Fi to reconnect and waiting mail or messages to
-arrive.
+arrive: ONLINE_HOLD seconds once NetworkManager is connected, and at most
+the alarm's hold.
 
 Anything may hold the phone awake by putting a file, named for the reason,
 in $XDG_RUNTIME_DIR/omarchy-mobile-sleep-inhibit/.
@@ -37,6 +38,8 @@ GRACE = 10
 # Seconds to stay up after each kind of wake before sleeping again.
 HOLD = {'power-key': 0, 'modem': 15, 'network': 10, 'alarm': 45}
 HOLD_OTHER = 10
+# After the background alarm, this long once the network is up.
+ONLINE_HOLD = 15
 # A refusal (the charger, a low battery) is asked again after this long.
 REFUSED_WAIT = 60
 LOG_LIMIT = 256 * 1024
@@ -89,6 +92,15 @@ def display_dark():
     except (OSError, subprocess.SubprocessError, ValueError):
         return False
     return bool(monitors) and not any(monitor.get('dpmsStatus') for monitor in monitors)
+
+
+def network_online():
+    try:
+        result = subprocess.run(['nmcli', '-t', '-f', 'STATE', 'general'],
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.stdout.strip() == 'connected'
 
 
 def in_call():
@@ -191,6 +203,8 @@ class Policy:
         self.awake_until = 0.0
         self.refused_until = 0.0
         self.refusal = ''
+        # An alarm wake whose hold ends ONLINE_HOLD after the network is up.
+        self.until_online = False
 
     def ready(self, now, dark, busy):
         if not dark:
@@ -210,8 +224,14 @@ class Policy:
     def woke(self, now, reason):
         self.refusal = ''
         self.awake_until = now + HOLD.get(reason, HOLD_OTHER)
+        self.until_online = reason == 'alarm'
         # Darkness counts again from the wake.
         self.dark_since = None
+
+    def online(self, now):
+        if self.until_online:
+            self.until_online = False
+            self.awake_until = min(self.awake_until, now + ONLINE_HOLD)
 
 
 def run():
@@ -228,6 +248,8 @@ def run():
             time.sleep(5)
             continue
         now = time.monotonic()
+        if policy.until_online and network_online():
+            policy.online(now)
         dark = display_dark()
         busy = dark and (in_call() or playing_audio() or bool(inhibitors()))
         if not policy.ready(now, dark, busy):

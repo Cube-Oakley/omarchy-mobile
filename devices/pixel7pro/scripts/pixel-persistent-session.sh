@@ -87,6 +87,22 @@ pixel_module pixel-mct ||
     echo 'MCT broadcast unavailable; one CPU keeps the hrtimer broadcast.' >&2
 pixel_module pixel-cpupm ||
     echo 'C2 idle hints unavailable; CPUs keep spinning on rejected C2.' >&2
+# Deep sleep (kernel/suspend): with a boot image whose pixel-ufs can take the
+# UFS link down, pixel-sleep runs the stock SYS_SLEEP sequence whenever the
+# suspend adapter (pixel-suspend) selects deep sleep. The PMIC keeps the DRAM
+# and AoC supplies on in sleep (retention) and lets the stock sleep rails
+# follow PWREN, except the camera, INT and MIPI/UFS PLL rails, which stop the
+# wake while the display domains stay on. Without it, sleep stays s2idle.
+suspend_modules=/usr/local/lib/omarchy-mobile/suspend
+if [[ -e /sys/module/pixel_ufs/parameters/deep_link_off && -f $suspend_modules/pixel-sleep.ko ]]; then
+    if insmod "$suspend_modules/pixel-pmic-opmode.ko" retention=1 \
+            suspend=LDO13S,LDO18S,LDO3S,LDO1S,BUCK8S,BUCK5S,LDO4M,LDO5M,LDO6M,LDO14M,LDO16M,LDO18M,LDO11M,LDO12M,LDO17M,BUCK2M,BUCK3M,BUCK4M,BUCK1M; then
+        insmod "$suspend_modules/pixel-sleep.ko" budget=0 dry_run=0 real_sleep=1 lpm_init_pmu=1 ||
+            echo 'Deep sleep unavailable; sleeping in s2idle.' >&2
+    else
+        echo 'PMIC sleep modes not set; sleeping in s2idle.' >&2
+    fi
+fi
 # The bootloader powers on the camera pipeline, TPU, codecs, G2D, EH and AUR;
 # nothing here uses them while idle (kernel/pd). CSIS and PDP, the capture
 # path, go off with their state saved, and the camera driver powers them back
@@ -401,16 +417,18 @@ if [[ -S /run/user/0/bus ]]; then
 else
     echo 'No session bus; audio server not started.' >&2
 fi
-# Cameras (kernel/camera): the media core, the dma-buf heaps libcamera's
+# Cameras (kernel/camera): the media core, the system dma-buf heap libcamera's
 # software ISP allocates from, the four camera I2C buses, the camera power
-# sequences and the V4L2 driver (ultrawide, front and main), whose sensor
-# tables are firmware generated from this phone's own camera HAL. Nothing is
-# powered until an app streams. The modules are root copies, not yet in the
-# recovery image; a failure only leaves the cameras off.
+# sequences and the V4L2 driver, whose sensor tables are firmware generated
+# from this phone's own camera HAL. Nothing is powered until an app streams.
+# No CMA heap: libcamera would take the ISP's output buffers (50 MB each at
+# full resolution) from CMA, which the capture DMA needs below 4 GiB. The
+# modules are root copies, not yet in the recovery image; a failure only
+# leaves the cameras off.
 start_cameras() {
     local dir=/usr/local/lib/omarchy-mobile/camera module
     for module in mc videodev videobuf2-common videobuf2-v4l2 videobuf2-memops \
-                  videobuf2-dma-contig system_heap cma_heap; do
+                  videobuf2-dma-contig system_heap; do
         insmod "$dir/$module.ko" || [[ -d /sys/module/${module//-/_} ]] || return
     done
     insmod "$dir/pixel-hsi2c-cam.ko" buses=1,2,3,4 || return

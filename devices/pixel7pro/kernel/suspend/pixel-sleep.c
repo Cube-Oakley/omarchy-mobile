@@ -50,6 +50,8 @@
  */
 extern void pixel_cpupm_system_sleep(bool on);
 
+#define PS_S2MPUS	4	/* the s2mpu[] table below */
+
 static unsigned int budget;
 module_param(budget, uint, 0644);
 MODULE_PARM_DESC(budget, "Deep-suspend attempts allowed; one consumed per attempt (default 0: never armed)");
@@ -196,8 +198,8 @@ static struct {
 	u32 pd_saved;				/* bit per ps_pd_lists[] entry */
 	int hsi2_cycled;			/* 1 done, <0 the step that failed */
 	int disp_state;			/* 1 off at arm, 2 back on; <0 failed step */
-	bool s2mpu_saved[2];
-	u32 s2mpu_val[2], s2mpu_found[2];
+	bool s2mpu_saved[PS_S2MPUS];
+	u32 s2mpu_val[PS_S2MPUS], s2mpu_found[PS_S2MPUS];
 	unsigned int s2mpu_restored;
 	u16 pd_diff[PS_PD_LISTS_N];
 	unsigned int pd_writes, pd_off;
@@ -447,23 +449,34 @@ static void pd_save(void)
  * brings its S2MPU back at the reset value, which stops the domain's DMA
  * until configured; stock's pKVM restores it when the domain powers up.
  * Restored in the syscore resume, before any device resumes.
+ * MISC's and CPUCL0's units are always on while the SoC runs (the stock DT's
+ * "always-on"; pd_status 0), and SYS_SLEEP resets them too (CTRL0 1 after a
+ * deep resume, October 1). GPU's is the GPU domain driver's: that domain is
+ * off when the sleep arms.
  */
 static const struct {
 	u32 pa;
-	u16 pd_status;
+	u16 pd_status;		/* 0: always on */
 	const char *name;
-} s2mpu[2] = {
+} s2mpu[] = {
 	{ 0x11880000, 0x2104, "S2MPU_HSI1" },
 	{ 0x145e0000, 0x2184, "S2MPU_HSI2" },
+	{ 0x101e0000, 0, "S2MPU_MISC" },
+	{ 0x20c70000, 0, "S2MPU_CPUCL0" },
 };
-static void __iomem *s2mpu_va[2];
+static void __iomem *s2mpu_va[PS_S2MPUS];
+
+static bool s2mpu_powered(unsigned int i)
+{
+	return !s2mpu[i].pd_status || (ps_pmu_read(s2mpu[i].pd_status) & BIT(0));
+}
 
 static void s2mpu_save(void)
 {
 	unsigned int i;
 
-	for (i = 0; i < 2; i++) {
-		rec.s2mpu_saved[i] = s2mpu_va[i] && (ps_pmu_read(s2mpu[i].pd_status) & BIT(0));
+	for (i = 0; i < PS_S2MPUS; i++) {
+		rec.s2mpu_saved[i] = s2mpu_va[i] && s2mpu_powered(i);
 		if (rec.s2mpu_saved[i])
 			rec.s2mpu_val[i] = readl(s2mpu_va[i]);
 	}
@@ -473,8 +486,8 @@ static void s2mpu_restore(void)
 {
 	unsigned int i;
 
-	for (i = 0; i < 2; i++) {
-		if (!rec.s2mpu_saved[i] || !(ps_pmu_read(s2mpu[i].pd_status) & BIT(0)))
+	for (i = 0; i < PS_S2MPUS; i++) {
+		if (!rec.s2mpu_saved[i] || !s2mpu_powered(i))
 			continue;
 		rec.s2mpu_found[i] = readl(s2mpu_va[i]);
 		if (rec.s2mpu_found[i] == rec.s2mpu_val[i] || rec.dry)
@@ -1081,7 +1094,7 @@ static void report_attempt(void)
 				ps_pd_lists[i].name, rec.pd_diff[i], ps_pd_lists[i].n);
 	pr_info("pixel-sleep: domain registers written %u, domains off at resume %u\n",
 		rec.pd_writes, rec.pd_off);
-	for (i = 0; i < 2; i++)
+	for (i = 0; i < PS_S2MPUS; i++)
 		if (rec.s2mpu_saved[i])
 			pr_info("pixel-sleep: %s CTRL0 %08x before, %08x after resume\n",
 				s2mpu[i].name, rec.s2mpu_val[i], rec.s2mpu_found[i]);
@@ -1253,7 +1266,7 @@ static void ps_cleanup(void)
 		iounmap(gpio_alive);
 	psg_unmap();
 	psu_unmap();
-	for (i = 0; i < 2; i++)
+	for (i = 0; i < PS_S2MPUS; i++)
 		if (s2mpu_va[i])
 			iounmap(s2mpu_va[i]);
 	ps_unmap_blocks();
@@ -1262,15 +1275,17 @@ static void ps_cleanup(void)
 static int __init pixel_sleep_init(void)
 {
 	struct device_node *np;
+	unsigned int i;
 	int ret;
 
+	BUILD_BUG_ON(ARRAY_SIZE(s2mpu) != PS_S2MPUS);
 	if (!of_machine_is_compatible("google,GS201"))
 		return -ENODEV;
 	ret = ps_map_blocks();
 	if (ret)
 		return ret;
-	s2mpu_va[0] = ioremap(s2mpu[0].pa, 0x1000);
-	s2mpu_va[1] = ioremap(s2mpu[1].pa, 0x1000);
+	for (i = 0; i < PS_S2MPUS; i++)
+		s2mpu_va[i] = ioremap(s2mpu[i].pa, 0x1000);
 	gpio_alive = ioremap(GPIO_ALIVE_PA, 0x1000);
 	gpio_far = ioremap(GPIO_FAR_ALIVE_PA, 0x1000);
 	if (!gpio_alive || !gpio_far || psg_map() || psu_map()) {

@@ -6,14 +6,26 @@ optional signal and dormancy reports while the screen is dark: otherwise it
 sends one about every 1.25 s, each waking its PCIe link. Calls, SMS and
 registration changes still arrive. It also holds the touch controller in reset
 while the screen is dark (pixel_touch_input's sleep parameter; about 5 mA in
-system sleep). Installed as /usr/local/sbin/pixel-display-hook, called by
+system sleep). With deep sleep, which unloads Wi-Fi and Bluetooth, it loads
+them again in the background when the screen lights. Installed as
+/usr/local/sbin/pixel-display-hook, called by
 ~/.config/omarchy-mobile/display-hook."""
 import json
+from pathlib import Path
 import socket
+import subprocess
 import sys
 
 SOCKET = '/run/omarchy-mobile-telephony/socket'
 TOUCH_SLEEP = '/sys/module/pixel_touch_input/parameters/sleep'
+WIFI_RESTART = '/usr/local/sbin/pixel-wifi-restart'
+BT_RESTART = '/usr/local/sbin/pixel-bt-restart'
+BT_SLEEPING = Path('/run/pixel-bt-sleeping')
+
+
+def background(command):
+    subprocess.Popen(['setsid', '-f', *command], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def main():
@@ -24,6 +36,11 @@ def main():
             touch.write('0' if sys.argv[1] == 'on' else '1')
     except OSError:
         pass  # no touch driver loaded
+    if (sys.argv[1] == 'on' and Path('/sys/module/pixel_sleep').exists()
+            and not Path('/sys/module/brcmfmac').exists()):
+        background([WIFI_RESTART, '--start'])
+    if sys.argv[1] == 'on' and BT_SLEEPING.exists():
+        background([BT_RESTART])
     try:
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(8)

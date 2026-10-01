@@ -25,7 +25,10 @@ worked on 2026-10-01:
    `--prefix=/usr/local`.
 
 The software ISP also needs a dma-buf heap: load `system_heap.ko`
-(`CONFIG_DMABUF_HEAPS_SYSTEM=m`) so `/dev/dma_heap/system` exists.
+(`CONFIG_DMABUF_HEAPS_SYSTEM=m`) so `/dev/dma_heap/system` exists. Do not load
+`cma_heap.ko`: libcamera prefers a CMA heap for the ISP's output buffers
+(50 MB each at 4080×3072), which then fills the CMA area the capture DMA needs
+below 4 GiB, and the camera fails to start with ENOMEM.
 
 ## Tuning
 

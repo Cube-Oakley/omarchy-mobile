@@ -24,6 +24,7 @@ ap.add_argument('--direct-scanout', action='store_true', help='build v17 native 
 ap.add_argument('--panel120', action='store_true', help='build v19 guarded 60/120 Hz panel modes and DPMS, implies --direct-scanout')
 ap.add_argument('--persistent-root', action='store_true', help='include UFS/input modules and mount an already installed Pixel root; requires --seconds 0')
 ap.add_argument('--initcall-debug', action='store_true', help='trace kernel initialization in this diagnostic image')
+ap.add_argument('--cma', default='128M', help='default CMA area below 4 GiB (the camera write-DMA is 32-bit)')
 a = ap.parse_args()
 if a.persistent_root:
     if a.seconds != 0:
@@ -77,7 +78,7 @@ if a.usb_network:
 if a.drm:
     cmdline += ' pixel_drm=1'
 if a.direct_scanout:
-    cmdline += ' cma=128M@0-4G'
+    cmdline += f' cma={a.cma}@0-4G'
 if a.panel120:
     # panel_sleep: sleep in while the screen is off, 0.32 W less than display
     # off alone (1.47 against 1.79 W, screen off and idle).
@@ -210,6 +211,8 @@ with (out / 'build.log').open('w') as log:
             ('pixel-cpupm.c', ROOT / 'kernel/cpupm/pixel-cpupm.c'),
             ('pixel-mct.c', ROOT / 'kernel/cpupm/pixel-mct.c'),
             ('pixel-pd-off.c', ROOT / 'kernel/pd/pixel-pd-off.c'),
+            ('pixel-pd.h', ROOT / 'kernel/pd/pixel-pd.h'),
+            ('pixel-pd-lists.h', ROOT / 'kernel/pd/pixel-pd-lists.h'),
             ('pixel-odpm.c', ROOT / 'kernel/odpm/pixel-odpm.c'),
             ('pixel_touch_input.c', ROOT / 'mainline/pixel-touch-input.c'),
             ('pixel-pcie.c', ROOT / 'kernel/pcie/pixel-pcie.c'),

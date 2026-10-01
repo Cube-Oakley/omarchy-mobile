@@ -69,14 +69,57 @@ class TransitionTests(unittest.TestCase):
                 sleep.suspend(60, False, True)
             alarm.return_value.restore.assert_called_once()
             self.assertEqual([c.args for c in display.call_args_list], [(False,), (True,)])
-            self.assertEqual([c.kwargs for c in request.call_args_list], [dict(on=False), dict(on=True)])
+            self.assertEqual([c.kwargs for c in request.call_args_list if c.kwargs],
+                             [dict(on=False), dict(on=True)])
 
     def test_partial_modem_failure_attempts_foreground_restore(self):
         with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'display'), \
-             patch.object(sleep, 'request', side_effect=[TimeoutError(), {}]) as request:
+             patch.object(sleep, 'request', side_effect=[dict(screen_on=True), TimeoutError(), {}]) as request:
             with self.assertRaises(TimeoutError):
                 sleep.suspend(60, True, True)
-            self.assertEqual([c.kwargs for c in request.call_args_list], [dict(on=False), dict(on=True)])
+            self.assertEqual([c.kwargs for c in request.call_args_list if c.kwargs],
+                             [dict(on=False), dict(on=True)])
+
+    def test_quiet_modem_wakes_sleep_again_and_report_the_deep_current(self):
+        sleeps = [dict(woke='modem', slept=50.0, sleep='deep', used_nah=1_000_000),
+                  dict(woke='modem', slept=0.0, sleep='deep-early'),
+                  dict(woke='alarm', slept=40.0, sleep='deep', used_nah=500_000)]
+        with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
+             patch.object(sleep, 'deep_ready', return_value=True), patch.object(sleep, 'deep_watchdog'), \
+             patch.object(sleep, 'wifi_off'), patch.object(sleep, 'bluetooth_off') as bluetooth_off, \
+             patch.object(sleep, 'wifi_on') as wifi_on, patch.object(sleep.os, 'sync'), \
+             patch.object(sleep, 'Alarm'), patch.object(sleep, 'modem_events', return_value=3), \
+             patch.object(sleep, 'deep_sleep', side_effect=sleeps), \
+             patch.object(sleep, 'modem_brought_something', return_value=False):
+            result = sleep.suspend(900, True, False)
+        bluetooth_off.assert_called_once()
+        wifi_on.assert_called_once()
+        self.assertEqual(result, dict(woke='alarm', slept=90.0, sleep='deep', quiet_modem_wakes=2, deep_ma=60.0))
+
+
+class ModemWakeTests(unittest.TestCase):
+    def check(self, events=3, calls=(), marker='same', wakes=None):
+        with patch.object(sleep, 'wake_count', side_effect=wakes), patch.object(sleep.time, 'sleep'), \
+             patch.object(sleep, 'message_marker', return_value=marker), \
+             patch.object(sleep, 'modem_events', return_value=events), \
+             patch.object(sleep, 'request', return_value=dict(calls=list(calls))):
+            return sleep.modem_brought_something('same', 3)
+
+    def test_a_quiet_wake_brings_nothing(self):
+        self.assertFalse(self.check())
+        self.assertFalse(self.check(calls=[dict(state='terminated')]))
+
+    def test_a_text_or_call_is_something(self):
+        self.assertTrue(self.check(events=4))
+        self.assertTrue(self.check(marker='changed'))
+        self.assertTrue(self.check(calls=[dict(state='ringing-in')]))
+
+    def test_a_modem_still_holding_the_phone_awake_is_something(self):
+        self.assertTrue(self.check(wakes=TimeoutError('active')))
+
+    def test_service_counts_only_texts_and_calls(self):
+        with patch.object(sleep, 'request', return_value=dict(indications={'0906': 40, '0d1e': 2, '0d01': 1})):
+            self.assertEqual(sleep.modem_events(), 3)
 
 
 if __name__ == '__main__':

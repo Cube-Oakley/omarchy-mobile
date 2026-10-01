@@ -170,6 +170,16 @@ static const u8 dphy_settle[] = {
 	10, 10, 9, 9, 8, 8, 7, 7, 6, 6,
 };
 
+/* A sensor mode. Mode 0 is the descriptor's own; a camera may have a second,
+ * full-resolution one for stills, with its own tables in
+ * pixel-camera/<name>-<fw>.bin (make-camera-firmware.py). */
+struct pc_mode {
+	u32 width, height;
+	struct v4l2_rect crop;		/* the mode's area of the pixel array */
+	u32 hts, vts, fps;		/* line and frame length, frame rate at vts */
+	const char *fw;			/* firmware suffix; NULL: <name>.bin */
+};
+
 struct pc_desc {
 	const char *name;		/* pixel-camera-power name, firmware file */
 	const char *model;		/* entity name prefix: libcamera's sensor model */
@@ -189,6 +199,14 @@ struct pc_desc {
 	u32 orientation, rotation;
 	u8 lens_addr;			/* AK737x AF actuator on the same bus, or 0 */
 	u32 cam_khz;			/* CAM DVFS while streaming */
+	const struct pc_mode *full;	/* a second, full-resolution mode, or NULL */
+};
+
+/* GN1 4080x3072 (2x2 binned, stock mode 0x140448): the same pixel clock as
+ * the 2016x1136 mode at 30 fps. */
+static const struct pc_mode gn1_full = {
+	.width = 4080, .height = 3072, .crop = { 0, 0, 8160, 6144 },
+	.hts = 5776, .vts = 7546, .fps = 30, .fw = "4080x3072",
 };
 
 static const struct pc_desc descs[] = {
@@ -228,6 +246,7 @@ static const struct pc_desc descs[] = {
 		.orientation = V4L2_CAMERA_ORIENTATION_BACK, .rotation = 90,
 		.lens_addr = 0x0c,
 		.cam_khz = 533000,	/* at 400 MHz the link overflows (ERR_OVER) */
+		.full = &gn1_full,
 	},
 	{
 		.name = "tele", .model = "s5kgm5", .adapter = "Pixel hsi2c_4", .addr = 0x2d,
@@ -281,7 +300,7 @@ struct pc_cam {
 	struct v4l2_subdev sd;
 	struct media_pad sd_pad;
 	struct v4l2_ctrl_handler ctrls;
-	struct v4l2_ctrl *exposure, *gain, *vblank;
+	struct v4l2_ctrl *exposure, *gain, *vblank, *hblank;
 	bool powered;
 	struct v4l2_subdev lens;
 	struct v4l2_ctrl_handler lens_ctrls;
@@ -293,6 +312,7 @@ struct pc_cam {
 	struct mutex vlock;
 	struct list_head bufs;
 	u32 sequence;
+	struct pc_mode mode;		/* the active format's mode */
 };
 
 struct pc_dev {
@@ -318,14 +338,27 @@ struct pc_dev {
  * Mesa refuses to import a dma-buf for libcamera's GPU debayer at less
  * than 64. Packing keeps four frames inside the 128 MB CMA area below
  * 4 GiB, which is all the 32-bit DMA address can reach. */
-static u32 desc_stride(const struct pc_desc *d)
+static u32 mode_stride(const struct pc_mode *m)
 {
-	return ALIGN(d->width * 5 / 4, 64);
+	return ALIGN(m->width * 5 / 4, 64);
 }
 
-static u32 desc_size(const struct pc_desc *d)
+static u32 mode_size(const struct pc_mode *m)
 {
-	return desc_stride(d) * d->height;
+	return mode_stride(m) * m->height;
+}
+
+static unsigned int desc_modes(const struct pc_desc *d)
+{
+	return d->full ? 2 : 1;
+}
+
+static struct pc_mode desc_mode(const struct pc_desc *d, unsigned int i)
+{
+	if (i)
+		return *d->full;
+	return (struct pc_mode){ .width = d->width, .height = d->height, .crop = d->crop,
+				 .hts = d->hts, .vts = d->vts, .fps = d->fps };
 }
 
 /* ---------------- sensor I2C ---------------- */
@@ -370,7 +403,10 @@ static int sensor_load_tables(struct pc_cam *c)
 	size_t i;
 	int ret;
 
-	snprintf(name, sizeof(name), "pixel-camera/%s.bin", c->d->name);
+	if (c->mode.fw)
+		snprintf(name, sizeof(name), "pixel-camera/%s-%s.bin", c->d->name, c->mode.fw);
+	else
+		snprintf(name, sizeof(name), "pixel-camera/%s.bin", c->d->name);
 	ret = request_firmware(&fw, name, c->pc->dev);
 	if (ret) {
 		dev_err(c->pc->dev, "%s: no %s (make-camera-firmware.py): %d\n",
@@ -401,11 +437,12 @@ static struct pc_cam *sd_to_cam(struct v4l2_subdev *sd)
 	return container_of(sd, struct pc_cam, sd);
 }
 
-static void cam_fill_fmt(const struct pc_desc *d, struct v4l2_mbus_framefmt *f)
+static void cam_fill_fmt(const struct pc_desc *d, const struct pc_mode *m,
+			 struct v4l2_mbus_framefmt *f)
 {
 	memset(f, 0, sizeof(*f));
-	f->width = d->width;
-	f->height = d->height;
+	f->width = m->width;
+	f->height = m->height;
 	f->code = d->code;
 	f->field = V4L2_FIELD_NONE;
 	f->colorspace = V4L2_COLORSPACE_RAW;
@@ -416,7 +453,9 @@ static void cam_fill_fmt(const struct pc_desc *d, struct v4l2_mbus_framefmt *f)
 
 static int cam_init_state(struct v4l2_subdev *sd, struct v4l2_subdev_state *state)
 {
-	cam_fill_fmt(sd_to_cam(sd)->d, v4l2_subdev_state_get_format(state, 0));
+	struct pc_cam *c = sd_to_cam(sd);
+
+	cam_fill_fmt(c->d, &c->mode, v4l2_subdev_state_get_format(state, 0));
 	return 0;
 }
 
@@ -434,17 +473,58 @@ static int cam_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_state 
 {
 	const struct pc_desc *d = sd_to_cam(sd)->d;
 
-	if (fse->index || fse->code != d->code)
+	struct pc_mode m;
+
+	if (fse->index >= desc_modes(d) || fse->code != d->code)
 		return -EINVAL;
-	fse->min_width = fse->max_width = d->width;
-	fse->min_height = fse->max_height = d->height;
+	m = desc_mode(d, fse->index);
+	fse->min_width = fse->max_width = m.width;
+	fse->min_height = fse->max_height = m.height;
 	return 0;
 }
 
+/* Exposure and blanking ranges follow the mode's frame and line length. */
+static void cam_mode_controls(struct pc_cam *c)
+{
+	const struct pc_mode *m = &c->mode;
+	u32 vblank = m->vts - m->height, hblank = m->hts - m->width;
+
+	__v4l2_ctrl_modify_range(c->vblank, vblank, 0xffff - m->height, 1, vblank);
+	__v4l2_ctrl_s_ctrl(c->vblank, vblank);
+	__v4l2_ctrl_modify_range(c->exposure, 1, m->vts - c->d->exp_margin, 1, m->vts / 2);
+	if (c->hblank)
+		__v4l2_ctrl_modify_range(c->hblank, hblank, hblank, 1, hblank);
+}
+
+/* The nearest mode by area; the active format sets the camera's mode,
+ * except while it streams. */
 static int cam_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
 		       struct v4l2_subdev_format *fmt)
 {
-	cam_fill_fmt(sd_to_cam(sd)->d, &fmt->format);
+	struct pc_cam *c = sd_to_cam(sd);
+	u64 want = (u64)fmt->format.width * fmt->format.height, best = U64_MAX;
+	struct pc_mode m = c->mode;
+	unsigned int i;
+
+	for (i = 0; i < desc_modes(c->d); i++) {
+		struct pc_mode t = desc_mode(c->d, i);
+		u64 area = (u64)t.width * t.height;
+		u64 diff = area > want ? area - want : want - area;
+
+		if (diff < best) {
+			best = diff;
+			m = t;
+		}
+	}
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE && m.width != c->mode.width) {
+		if (vb2_is_busy(&c->queue))
+			return -EBUSY;
+		c->mode = m;
+		v4l2_ctrl_lock(c->vblank);
+		cam_mode_controls(c);
+		v4l2_ctrl_unlock(c->vblank);
+	}
+	cam_fill_fmt(c->d, &m, &fmt->format);
 	*v4l2_subdev_state_get_format(state, 0) = fmt->format;
 	return 0;
 }
@@ -452,11 +532,12 @@ static int cam_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
 static int cam_get_selection(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
 			     struct v4l2_subdev_selection *sel)
 {
-	const struct pc_desc *d = sd_to_cam(sd)->d;
+	struct pc_cam *c = sd_to_cam(sd);
+	const struct pc_desc *d = c->d;
 
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
-		sel->r = d->crop;
+		sel->r = c->mode.crop;
 		return 0;
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 	case V4L2_SEL_TGT_CROP_BOUNDS:
@@ -490,7 +571,7 @@ static int cam_s_ctrl(struct v4l2_ctrl *ctrl)
 	int ret = 0;
 
 	if (ctrl->id == V4L2_CID_VBLANK) {
-		u32 max = d->height + ctrl->val - d->exp_margin;
+		u32 max = c->mode.height + ctrl->val - d->exp_margin;
 
 		__v4l2_ctrl_modify_range(c->exposure, c->exposure->minimum, max,
 					 c->exposure->step, min(c->exposure->default_value, (s64)max));
@@ -505,7 +586,7 @@ static int cam_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = sensor_write(c, REG_ANALOGUE_GAIN, ctrl->val, 2);
 		break;
 	case V4L2_CID_VBLANK:
-		ret = sensor_write(c, REG_FRAME_LENGTH, d->height + ctrl->val, 2);
+		ret = sensor_write(c, REG_FRAME_LENGTH, c->mode.height + ctrl->val, 2);
 		break;
 	}
 	return ret;
@@ -532,9 +613,9 @@ static int cam_init_controls(struct pc_cam *c)
 				    d->gain_max, 1, d->gain_def);
 	c->vblank = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_VBLANK, vblank,
 				      0xffff - d->height, 1, vblank);
-	ctrl = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_HBLANK, hblank, hblank, 1, hblank);
-	if (ctrl)
-		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	c->hblank = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_HBLANK, hblank, hblank, 1, hblank);
+	if (c->hblank)
+		c->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_PIXEL_RATE, pixel_rate, pixel_rate, 1,
 			  pixel_rate);
 	ctrl = v4l2_ctrl_new_int_menu(h, &cam_ctrl_ops, V4L2_CID_LINK_FREQ, 0, 0, link_freq);
@@ -713,7 +794,7 @@ static u32 phy_mask(const struct pc_desc *d)
 	return d->phy >= 2 && d->lanes > 2 && !d->cphy ? 3 << d->phy : BIT(d->phy);
 }
 
-static void link_setup(struct pc_dev *pc, const struct pc_desc *d)
+static void link_setup(struct pc_dev *pc, const struct pc_desc *d, const struct pc_mode *m)
 {
 	void __iomem *l = pc->link;
 	u32 v;
@@ -743,7 +824,7 @@ static void link_setup(struct pc_dev *pc, const struct pc_desc *d)
 		     FIELD_PREP(CFG_DT, ch ? 0x3f : DT_RAW10);
 		writel(v, l + LINK_ISP_CONFIG(ch));
 	}
-	writel(d->height << 16 | d->width, l + LINK_ISP_RESOL(0));
+	writel(m->height << 16 | m->width, l + LINK_ISP_RESOL(0));
 	/* The GS201 HAL writes 0 here, but WDMA format 6 then gets two of every
 	 * four pixels (the Pixel 6 port's finding, seen again on GS201). */
 	writel(pixel_align ? BIT(23) : 0, l + LINK_DBG_OPTION_SUITE);
@@ -760,7 +841,8 @@ static void link_stop(struct pc_dev *pc, const struct pc_desc *d)
 	writel(readl(pc->sys + SYSREG_PHY_RESET) & ~phy_mask(d), pc->sys + SYSREG_PHY_RESET);
 }
 
-static void dma_setup(struct pc_dev *pc, const struct pc_desc *d, dma_addr_t addr)
+static void dma_setup(struct pc_dev *pc, const struct pc_desc *d, const struct pc_mode *m,
+		      dma_addr_t addr)
 {
 	void __iomem *ch = pc->dma + DMA_CTX0;
 	int i;
@@ -782,8 +864,8 @@ static void dma_setup(struct pc_dev *pc, const struct pc_desc *d, dma_addr_t add
 
 	writel(readl(ch + CTX_DATA_CTRL) & ~BIT(0), ch + CTX_DATA_CTRL);
 	writel(wdma_fmt, ch + CH_FMT);
-	writel(d->height << 16 | d->width, ch + CH_RESOL);
-	writel(desc_stride(d), ch + CH_STRIDE);
+	writel(m->height << 16 | m->width, ch + CH_RESOL);
+	writel(mode_stride(m), ch + CH_STRIDE);
 	writel(lower_32_bits(addr), ch + CH_ADDR1);
 	writel(BIT(0), ch + CH_FCNTSEQ);
 	writel(readl(ch + CTX_INT_SRC), ch + CTX_INT_SRC);
@@ -926,7 +1008,7 @@ static int pc_queue_setup(struct vb2_queue *q, unsigned int *nbuf, unsigned int 
 			  unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct pc_cam *c = vb2_get_drv_priv(q);
-	unsigned int size = desc_size(c->d);
+	unsigned int size = mode_size(&c->mode);
 
 	/* Cached buffers, synced on queue and dequeue: libcamera's software
 	 * ISP reads every frame with the CPU for its statistics, which takes
@@ -943,7 +1025,7 @@ static int pc_queue_setup(struct vb2_queue *q, unsigned int *nbuf, unsigned int 
 static int pc_buf_prepare(struct vb2_buffer *vb)
 {
 	struct pc_cam *c = vb2_get_drv_priv(vb->vb2_queue);
-	unsigned long size = desc_size(c->d);
+	unsigned long size = mode_size(&c->mode);
 
 	if (vb2_plane_size(vb, 0) < size)
 		return -EINVAL;
@@ -1029,11 +1111,11 @@ static int pc_start_streaming(struct vb2_queue *q, unsigned int count)
 	spin_unlock_irqrestore(&pc->slock, flags);
 	c->sequence = 0;
 
-	link_setup(pc, d);
+	link_setup(pc, d, &c->mode);
 	ret = -ENOBUFS;
 	if (!pc->cur)
 		goto stop_link;
-	dma_setup(pc, d, vb2_dma_contig_plane_dma_addr(&pc->cur->vb.vb2_buf, 0));
+	dma_setup(pc, d, &c->mode, vb2_dma_contig_plane_dma_addr(&pc->cur->vb.vb2_buf, 0));
 	ret = sensor_write(c, REG_MODE_SELECT, 1, 1);
 	if (ret)
 		goto stop_link;
@@ -1044,7 +1126,7 @@ static int pc_start_streaming(struct vb2_queue *q, unsigned int count)
 	dma_enable(pc, true);
 	enable_irq(pc->irq);
 	mutex_unlock(&pc->lock);
-	dev_info(pc->dev, "%s: streaming %ux%u\n", d->name, d->width, d->height);
+	dev_info(pc->dev, "%s: streaming %ux%u\n", d->name, c->mode.width, c->mode.height);
 	return 0;
 
 stop_link:
@@ -1153,15 +1235,16 @@ static struct pc_cam *vdev_to_cam(struct file *file)
 	return container_of(video_devdata(file), struct pc_cam, vdev);
 }
 
-static void pc_fill_pix(const struct pc_desc *d, struct v4l2_pix_format *p)
+static void pc_fill_pix(const struct pc_desc *d, const struct pc_mode *m,
+			struct v4l2_pix_format *p)
 {
 	memset(p, 0, sizeof(*p));
-	p->width = d->width;
-	p->height = d->height;
+	p->width = m->width;
+	p->height = m->height;
 	p->pixelformat = d->pixfmt;
 	p->field = V4L2_FIELD_NONE;
-	p->bytesperline = desc_stride(d);
-	p->sizeimage = desc_size(d);
+	p->bytesperline = mode_stride(m);
+	p->sizeimage = mode_size(m);
 	p->colorspace = V4L2_COLORSPACE_RAW;
 }
 
@@ -1184,21 +1267,50 @@ static int pc_enum_fmt(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 	return 0;
 }
 
+/* The capture node carries the sensor's active mode; libcamera sets the
+ * sensor format first. */
 static int pc_g_fmt(struct file *file, void *fh, struct v4l2_format *f)
 {
-	pc_fill_pix(vdev_to_cam(file)->d, &f->fmt.pix);
+	struct pc_cam *c = vdev_to_cam(file);
+
+	pc_fill_pix(c->d, &c->mode, &f->fmt.pix);
+	return 0;
+}
+
+/* TRY_FMT answers for the nearest mode, so the sizes ENUM_FRAMESIZES lists
+ * are all accepted. */
+static int pc_try_fmt(struct file *file, void *fh, struct v4l2_format *f)
+{
+	struct pc_cam *c = vdev_to_cam(file);
+	u64 want = (u64)f->fmt.pix.width * f->fmt.pix.height, best = U64_MAX;
+	struct pc_mode m = c->mode;
+	unsigned int i;
+
+	for (i = 0; i < desc_modes(c->d); i++) {
+		struct pc_mode t = desc_mode(c->d, i);
+		u64 area = (u64)t.width * t.height;
+		u64 diff = area > want ? area - want : want - area;
+
+		if (diff < best) {
+			best = diff;
+			m = t;
+		}
+	}
+	pc_fill_pix(c->d, &m, &f->fmt.pix);
 	return 0;
 }
 
 static int pc_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsizeenum *fs)
 {
 	const struct pc_desc *d = vdev_to_cam(file)->d;
+	struct pc_mode m;
 
-	if (fs->index || fs->pixel_format != d->pixfmt)
+	if (fs->index >= desc_modes(d) || fs->pixel_format != d->pixfmt)
 		return -EINVAL;
+	m = desc_mode(d, fs->index);
 	fs->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	fs->discrete.width = d->width;
-	fs->discrete.height = d->height;
+	fs->discrete.width = m.width;
+	fs->discrete.height = m.height;
 	return 0;
 }
 
@@ -1207,7 +1319,7 @@ static const struct v4l2_ioctl_ops pc_ioctl_ops = {
 	.vidioc_enum_fmt_vid_cap = pc_enum_fmt,
 	.vidioc_g_fmt_vid_cap = pc_g_fmt,
 	.vidioc_s_fmt_vid_cap = pc_g_fmt,
-	.vidioc_try_fmt_vid_cap = pc_g_fmt,
+	.vidioc_try_fmt_vid_cap = pc_try_fmt,
 	.vidioc_enum_framesizes = pc_enum_framesizes,
 	.vidioc_reqbufs = vb2_ioctl_reqbufs,
 	.vidioc_create_bufs = vb2_ioctl_create_bufs,
@@ -1264,6 +1376,7 @@ static int cam_register(struct pc_dev *pc, struct pc_cam *c)
 		return dev_err_probe(pc->dev, -EPROBE_DEFER, "%s: no %s (pixel-hsi2c-cam)\n",
 				     d->name, d->adapter);
 	c->adap = i2c_verify_adapter(adev);
+	c->mode = desc_mode(d, 0);
 
 	v4l2_subdev_init(&c->sd, &cam_subdev_ops);
 	c->sd.internal_ops = &cam_internal_ops;

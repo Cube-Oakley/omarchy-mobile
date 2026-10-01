@@ -476,24 +476,138 @@ PAGE_SOFTWARE = {
               + "restart actions come from a device adapter. There is no Power off entry yet.",
           ref: "devices/pixel7pro/adapter/README.md" },
         { n: "Automatic idle / sleep policy", s: "ok",
-          on: { pixel7pro: { s: "partial", note: "The same policy delegates to a guarded s2idle helper that refuses on the charger, in calls or without the modem supervisor; five automatic unplugged sleeps were recorded, and a 15-minute RTC fallback stays on pending longer tests.",
-                             ref: "devices/pixel7pro/docs/suspend-20260929.md" } },
+          on: { pixel7pro: { s: "partial", note: "The same policy now puts the Pixel in SYS_SLEEP, its deepest sleep, through a guarded helper that refuses on the charger, in calls or without the modem supervisor. Modem wakes that bring no call or text go straight back to sleep.",
+                             ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
           note: "A screen timeout, then s2idle 10 s after the screen goes dark, never during a call, audio or on "
               + "the charger; each wake is logged with its cause. The user saw it sleep and wake on the power key.",
           ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
-        { n: "Background wake for delayed delivery", s: "partial",
-          on: { pixel7pro: { s: "partial", note: "Incoming calls and texts wake the AP from s2idle, and an RTC alarm bounds each sleep; nothing else schedules wakes.",
-                             ref: "devices/pixel7pro/docs/suspend-20260929.md" } },
-          note: "Calls and texts wake the phone, and a background check wakes it every 15 minutes by default. "
-              + "Scheduled wakes for apps, alarms and agent tasks are still design only.",
-          ref: "devices/oneplus7pro/docs/sleep-20260927.md" },
         { n: "Measured, repeatable battery life", s: "no",
-          on: { pixel7pro: { s: "no", note: "Only USB-input and partial-rail figures (1.47 W screen-off idle on Wi-Fi; metered rails 0.81–0.85 W across sleeps); no unplugged drain measured.",
-                             ref: "devices/pixel7pro/docs/suspend-20260929.md" } },
+          on: { pixel7pro: { s: "partial", note: "Unplugged with daily deep sleep (screen off, modem registered, a background check every 15 minutes), a 40-minute run averaged 63.6 mA, about 3 days of standby on a full battery; asleep it draws about 50 mA. Two runs so far; no stock-Android baseline yet.",
+                             ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
           note: "Only short informal samples exist (131 mA screen-off awake vs 83 mA suspended; 85%→78% over "
               + "~3h45m). No claim is defensible yet.", ref: "devices/oneplus7pro/docs/idle-measurement-20260917.md" },
         { n: "Secure / verified boot path", s: "no",
           note: "Verification is disabled for bring-up; a production boot story is still open." }
+      ]
+    },
+
+    {
+      id: "power",
+      title: "Power: off unless needed",
+      blurb: "Keep the phone pleasant in use, and power down everything that isn't needed, completely. Done "
+           + "well, that can beat Android, which doesn't always turn hardware off when it could.",
+      groups: [
+        {
+          title: "Off means off",
+          note: "Switching something off in the UI powers its chip down, not just disconnects it. The shell's "
+              + "toggles call a device hook; the device adapter does the hardware part.",
+          items: [
+            { n: "Wi-Fi off powers the chip down", s: "no",
+              on: { pixel7pro: { s: "partial", note: "Deep sleep already unloads Wi-Fi, which drops WL_REG_ON, and reloads it for the background check and when the screen lights. The switch doesn't use this path yet.",
+                                 ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
+              note: "The switch only blocks the radio through NetworkManager; the driver and firmware stay "
+                  + "loaded and the chip stays powered.", ref: "docs/mobile-roadmap.md" },
+            { n: "Bluetooth off powers the chip down", s: "no",
+              on: { pixel7pro: { s: "partial", note: "Deep sleep already unloads Bluetooth, which drops BT_REG_ON, and reloads it within a few seconds when the screen lights. The switch doesn't use this path yet.",
+                                 ref: "devices/pixel7pro/kernel/bluetooth/README.md" } },
+              note: "The switch powers the controller off through BlueZ, which leaves the chip powered with "
+                  + "its firmware loaded.", ref: "docs/mobile-roadmap.md" },
+            { n: "Sensors run only while in use", s: "partial",
+              on: { pixel7pro: { s: "partial", note: "pixel-sensor-proxy runs a sensor only while it is claimed. The AoC that hosts the sensors stays up; with its rails and amplifiers that is about 1.5 mA in deep sleep.",
+                                 ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
+              note: "A sensor runs only while an app holds a claim on it, and the shell releases rotation and "
+                  + "light when the screen goes dark. The sensor hub itself stays powered.",
+              ref: "docs/mobile-roadmap.md" },
+            { n: "Unused hardware held off", s: "no",
+              on: { pixel7pro: { s: "partial", note: "Cameras power on per stream, the TPU and codecs are held off from boot, and touch is held in reset while the screen is dark. GNSS and the rest have not been audited.",
+                                 ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
+              note: "Every block nothing is using stays powered down: cameras, accelerators, codecs, GPS.",
+              ref: "docs/mobile-roadmap.md" },
+            { n: "Power audit per state", s: "no",
+              on: { pixel7pro: { s: "partial", note: "Each deep sleep reports its average current from the gauge. The ODPM meters sample through deep sleep, but the internal rails don't read credibly there, so there is no per-rail split of the sleep floor yet.",
+                                 ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
+              note: "What is still powered in use, dark and asleep, and what each part costs, per rail where the "
+                  + "hardware has meters.", ref: "docs/mobile-roadmap.md" }
+          ]
+        },
+        {
+          title: "Background work without polling",
+          note: "Apps can wake for work without each one waking the phone on its own schedule.",
+          items: [
+            { n: "Scheduled wakes, grouped into shared windows", s: "partial",
+              on: { pixel7pro: { s: "partial", note: "Calls, texts and the 15-minute check wake it from deep sleep. Wi-Fi is loaded for the check, which ends 15 s after Wi-Fi connects (at most 45 s).",
+                                 ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
+              note: "Calls and texts wake the phone, and a background check wakes it every 15 minutes by default. "
+                  + "Apps can't yet ask for a wake time. Planned: the sleep policy groups requests into shared "
+                  + "windows, so the network comes up once for all of them.",
+              ref: "devices/oneplus7pro/docs/background-wake-plan.md" },
+            { n: "Apps keep the phone awake while working", s: "partial",
+              on: { pixel7pro: { s: "partial", note: "The same shared policy; no app has used it yet." } },
+              note: "A file in the sleep-inhibit directory keeps the phone up for as long as it exists; no app "
+                  + "uses it yet.", ref: "overlay/mobile/sleep.py" },
+            { n: "One push connection for all apps", s: "no",
+              on: { pixel7pro: { s: "no", note: "Mobile data stays up in deep sleep, so the connection can live there; whether an incoming packet wakes the phone from SYS_SLEEP is untested." } },
+              note: "UnifiedPush (through ntfy, for example) keeps one connection for every app that supports it, "
+                  + "so chat and mail arrive without polling, and the phone wakes only when something comes in.",
+              ref: "docs/mobile-roadmap.md" },
+            { n: "Wake accounting", s: "partial",
+              on: { pixel7pro: { s: "partial", note: "Deep-sleep entries also count the quiet modem wakes and record the average current.",
+                                 ref: "devices/pixel7pro/docs/suspend-20260930.md" } },
+              note: "The battery page lists each sleep, what woke it and how long it lasted; wakes are not yet "
+                  + "attributed to individual apps.", ref: "overlay/mobile/sleep.py" }
+          ]
+        },
+        {
+          title: "Always-on display",
+          note: "The clock at close to sleep cost: the panel's own low-power mode, and the phone asleep between "
+              + "minute updates.",
+          items: [
+            { n: "Panel low-power mode", s: "absent",
+              on: { pixel7pro: { s: "no", note: "The S6E3HC4 has one, and Google's GPL panel driver has its commands; not ported yet.",
+                                 ref: "docs/mobile-roadmap.md" } },
+              note: "The OnePlus panel has no low-power mode (stock's commands for it are empty), so its ambient "
+                  + "clock runs in the normal mode.",
+              ref: "devices/oneplus7pro/docs/always-on-display-20260924.md" },
+            { n: "Phone asleep between clock updates", s: "no",
+              on: { pixel7pro: { s: "no", note: "Needs the panel kept powered and in its low-power mode through SYS_SLEEP, with an RTC wake each minute to draw the time.",
+                                 ref: "docs/mobile-roadmap.md" } },
+              note: "Today the ambient clock keeps the phone awake. Planned: deep sleep between minute updates, "
+                  + "with the panel holding the last frame.", ref: "docs/mobile-roadmap.md" },
+            { n: "Fully off face down or in a pocket", s: "ok",
+              note: "Tilt, light and proximity turn the panel fully off, and the clock comes back when the phone "
+                  + "is picked up.", ref: "devices/oneplus7pro/docs/always-on-display-20260924.md" }
+          ]
+        },
+        {
+          title: "Bluetooth Low Energy",
+          note: "What phone-as-key accessories (a car's phone key, for example) and other LE devices need from the "
+              + "OS. The apps themselves live outside this project.",
+          items: [
+            { n: "LE scanning and connections", s: "no",
+              on: { oneplus7pro: { s: "untested" },
+                    pixel7pro: { s: "partial", note: "An LE scan finds nearby devices; LE connections are untested.",
+                                 ref: "devices/pixel7pro/kernel/bluetooth/README.md" } },
+              note: "Scanning, connecting and reading signal strength (RSSI) as an LE central.",
+              ref: "docs/mobile-roadmap.md" },
+            { n: "GATT for apps", s: "no",
+              on: { oneplus7pro: { s: "untested" }, pixel7pro: { s: "untested" } },
+              note: "GATT client and server through BlueZ's D-Bus API, reachable by an app without root.",
+              ref: "docs/mobile-roadmap.md" },
+            { n: "LE advertising", s: "no",
+              on: { oneplus7pro: { s: "untested" }, pixel7pro: { s: "untested" } },
+              note: "The phone as an LE peripheral, for accessories that look for it.", ref: "docs/mobile-roadmap.md" },
+            { n: "LE Secure Connections pairing and bonding", s: "no",
+              on: { oneplus7pro: { s: "untested" }, pixel7pro: { s: "untested" } },
+              note: "Bonds that survive restarts, with the controller's address stable.", ref: "docs/mobile-roadmap.md" },
+            { n: "BLE while the phone sleeps", s: "no",
+              on: { pixel7pro: { s: "no", note: "SYS_SLEEP cuts the chip's power, so Bluetooth is unloaded for deep sleep. Needs BT_REG_ON held in sleep, the device-wake and host-wake lines, and the chip's low-power mode.",
+                                 ref: "devices/pixel7pro/kernel/bluetooth/README.md" } },
+              note: "The chip stays powered in its own low-power mode, its host-wake line wakes the phone, and "
+                  + "controller-side filters (BlueZ advertisement monitors) wake it only for a known device, so an "
+                  + "app can hold a connection to a paired accessory through deep sleep.",
+              ref: "docs/mobile-roadmap.md" }
+          ]
+        }
       ]
     },
 

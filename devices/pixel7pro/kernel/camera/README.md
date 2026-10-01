@@ -301,6 +301,15 @@ tables from `pixel-camera/<name>.bin` (`make-camera-firmware.py`), sets up
 the PHY, link and WDMA and starts the sensor. Frames are MIPI RAW10 (WDMA
 format 7 with pixel align), lines padded to 64 bytes. `cameras=` picks the
 cameras (default all four).
+
+The main camera has a second mode for stills: 4080×3072 (stock mode
+0x140448, 2×2 binned, 30 fps on the same pixel clock), with its own tables in
+`pixel-camera/main-4080x3072.bin`. The sensor subdevice and the capture node
+list both sizes; setting the sensor's active format picks the mode (refused
+while streaming), and the exposure and blanking ranges follow it. Omarchy
+Camera's photos are 4080×3072. Its preview carries a full-size raw stream for
+multi-frame stills, so it runs in this mode too, at 30 fps. The buffers
+(15.7 MB each) come from the 256 MB CMA area of kernel v26.
 libcamera's side is in `adapter/camera/libcamera/`.
 
 At boot `pixel-boot.sh` loads the media modules, the dma-buf heaps,

@@ -217,3 +217,17 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   (autofocus, colour matrices), the camera plan's status and the note on the
   USB sleep test, after the same checks, which found nothing to remove.
 
+
+- October 1, afternoon: synced the Pixel's daily SYS_SLEEP:
+  - kernel v26 with the GPU's S2MPU restore, pixel-sleep's MISC and CPUCL0
+    S2MPU restore, and the touch SPI setup after sleep;
+  - the suspend adapter's Wi-Fi- and Bluetooth-off-while-dark policy and its
+    shorter wakes, with the shell's shorter background check;
+  - the two unplugged standby measurements;
+  - the main camera's full-resolution mode and 256 MB CMA;
+  - the power and Bluetooth LE plan and roadmap sections.
+
+  Run after the checks above: the only addresses added are the USB gadget's
+  locally administered 02:70:07 addresses, and the only email address is an
+  upstream maintainer's in the kernel patch. No camera tables, firmware,
+  logs or vendor binaries are included.

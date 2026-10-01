@@ -13,7 +13,9 @@ little-endian {u16 register, u16 value} pairs, register 0xffff meaning
 
 Each camera gets the writes the stock HAL makes in code ahead of its tables
 (the Samsung software reset and clock enable, each followed by 10 ms), then
-its init table, then one mode table, then fixed extra writes.
+its init table, then one mode table, then fixed extra writes. A camera with a
+second mode (the main camera's full resolution for stills) also gets
+OUT_DIR/<camera>-<mode>.bin: the same writes with that mode's table instead.
 """
 import os
 import struct
@@ -40,6 +42,7 @@ CAMERAS = {
         "tables": ["nagual_gn1_init_a_1565.txt", "nagual_gn1_mode_0x141508_2016x1136_134.txt"],
         "extra": [],
         "value_bits": 16,
+        "modes": {"4080x3072": "nagual_gn1_mode_0x140448_4080x3072_134.txt"},
     },
     "tele": {
         "start": SAMSUNG_START,
@@ -75,18 +78,22 @@ def main():
     tables, out = sys.argv[1:]
     os.makedirs(out, exist_ok=True)
     for name, cam in CAMERAS.items():
-        writes = list(cam["start"])
-        try:
-            for t in cam["tables"]:
-                writes += load(os.path.join(tables, t), cam["value_bits"])
-        except FileNotFoundError as e:
-            print(f"{name}: skipped, {e.filename} missing")
-            continue
-        writes += cam["extra"]
-        with open(os.path.join(out, f"{name}.bin"), "wb") as f:
-            for reg, val in writes:
-                f.write(struct.pack("<HH", reg, val))
-        print(f"{name}.bin: {len(writes)} entries")
+        outputs = {name: cam["tables"]}
+        for mode, table in cam.get("modes", {}).items():
+            outputs[f"{name}-{mode}"] = cam["tables"][:-1] + [table]
+        for output, names in outputs.items():
+            writes = list(cam["start"])
+            try:
+                for t in names:
+                    writes += load(os.path.join(tables, t), cam["value_bits"])
+            except FileNotFoundError as e:
+                print(f"{output}: skipped, {e.filename} missing")
+                continue
+            writes += cam["extra"]
+            with open(os.path.join(out, f"{output}.bin"), "wb") as f:
+                for reg, val in writes:
+                    f.write(struct.pack("<HH", reg, val))
+            print(f"{output}.bin: {len(writes)} entries")
 
 
 if __name__ == "__main__":

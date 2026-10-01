@@ -3,8 +3,15 @@
 # loaded as the boot script's start_wifi does. Used when the BCM4389
 # firmware stops answering (its control ring fills after an s2idle resume, and
 # every later suspend is then refused by 0000:01:00.0). NetworkManager
-# reconnects on its own. Installed as /usr/local/sbin/pixel-wifi-restart.
+# reconnects on its own. With --start it only loads Wi-Fi that is not
+# loaded: pixel-suspend and the display hook both do that after a deep sleep,
+# so runs take turns. Installed as /usr/local/sbin/pixel-wifi-restart.
 set -euo pipefail
+exec 9>/run/pixel-wifi-restart.lock
+flock 9
+if [[ ${1-} == --start && -d /sys/module/brcmfmac ]]; then
+    exit 0
+fi
 modules=/proc/1/root/lib/modules/pixel
 wifi_driver=$modules/brcmfmac.ko
 if [[ -f /var/lib/omarchy-mobile/modem/enabled ]]; then

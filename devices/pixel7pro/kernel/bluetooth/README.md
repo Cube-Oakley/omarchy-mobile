@@ -85,6 +85,14 @@ tree with `M=`, in the order crypto, net/bluetooth, drivers/bluetooth.
 `KBUILD_MODPOST_WARN=1` is needed because of unrelated modules in those
 directories.
 
+## Deep sleep
+
+In SYS_SLEEP, PERIC0's pads take their power-down settings, and BT_REG_ON
+becomes an input, so the chip loses power and comes back without its patch
+firmware. `pixel-suspend` therefore unloads hci_uart and pixel-bt before deep
+sleep. `pixel-display-hook` loads them again through `pixel-bt-restart` when
+the screen lights (`docs/suspend-20260930.md`).
+
 ## Not done
 
 - **Low-power mode.** Device wake stays asserted and the host-wake interrupt
