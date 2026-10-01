@@ -1,7 +1,20 @@
 # Cameras: hardware map and bring-up plan (September 30)
 
-**Status (2026-09-30, evening): milestones (a), (b) and (c) are done for the
-ultrawide.** It is powered, streams 2016×1508 RAW10 on CSIS link 2 /
+**Status (2026-10-01, night): all four cameras work in Omarchy Camera.** The
+ultrawide (0.5×), main (1×), telephoto (5×) and front cameras stream through
+`pixel-camera` (V4L2) and libcamera's software ISP on the GPU, at 60 or
+120 fps in their binned modes, with autofocus on the ultrawide and main. The
+capture domains power on per stream, and the stack loads at every boot. What
+it took is in [kernel/camera](../kernel/camera/README.md): for the main, the
+CAM clock at 533 MHz, the spare link channels on VC 15 and the INT bus at
+400 MHz; for the telephoto, the link's LRTE packet delimiters (EPD). Open:
+full-resolution stills (CMA below 4 GiB is the limit), the telephoto's
+SEM1215SA autofocus (i2c-4 0x34, 16-bit registers; it needs SLG LDO5 and
+GPIO1, and its register map is not in the HAL's tables) and a calibrated
+tuning per sensor.
+
+**Earlier status (2026-09-30, evening): milestones (a), (b) and (c) are done
+for the ultrawide.** It is powered, streams 2016×1508 RAW10 on CSIS link 2 /
 DC-PHY 2+3, and its raw frames land in memory through WDMA context 0. Below
 are the two answers this plan lacked, with the procedure in
 [kernel/camera](../kernel/camera/README.md#first-frame-ultrawide):

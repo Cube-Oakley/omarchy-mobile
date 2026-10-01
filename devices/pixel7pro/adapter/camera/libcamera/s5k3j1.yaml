@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: CC0-1.0
+# Samsung 3J1 (Pixel 7 Pro front camera, fixed focus) for libcamera's software
+# ISP. Identity colour matrix until a calibration.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Ccm:
+      ccms:
+        - ct: 5000
+          ccm: [ 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 ]
+  # Defaults for apps that do not set these controls (OnePlus patch 0014).
+  - Adjust:
+      contrast: 1.2
+      saturation: 1.1
+  - Agc:
+...

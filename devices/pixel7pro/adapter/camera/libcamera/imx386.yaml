@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: CC0-1.0 AND BSD-2-Clause
+# Sony IMX386 (Pixel 7 Pro ultrawide) for libcamera's software ISP, with
+# contrast autofocus on its AK737x lens.
+# Colour matrices: Copyright 2019-2020 Raspberry Pi Ltd (BSD-2-Clause), the
+# measured IMX519 table from libcamera's src/ipa/rpi/vc4/data/imx519.json, as
+# the OnePlus 7 Pro's imx586.yaml uses, standing in until the IMX386 is
+# calibrated.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Ccm:
+      ccms:
+        - ct: 2890
+          ccm: [ 1.3675, -0.1845, -0.1831, -0.3236, 1.4483, -0.1247, -0.0041, -0.6994, 1.7035 ]
+        - ct: 2920
+          ccm: [ 1.2670, 0.0162, -0.2833, -0.2852, 1.3893, -0.1042, -0.0485, -0.8221, 1.8707 ]
+        - ct: 3550
+          ccm: [ 1.4284, -0.2723, -0.1560, -0.2875, 1.4107, -0.1232, -0.0181, -0.5485, 1.5666 ]
+        - ct: 4500
+          ccm: [ 1.3633, -0.1957, -0.1676, -0.2525, 1.5225, -0.2699, -0.0158, -0.5315, 1.5473 ]
+        - ct: 5700
+          ccm: [ 1.4921, -0.3725, -0.1196, -0.2149, 1.4001, -0.1851, -0.0378, -0.3878, 1.4256 ]
+        - ct: 7900
+          ccm: [ 1.3485, -0.0542, -0.2942, -0.2218, 1.7768, -0.5550, -0.0740, -0.5534, 1.6274 ]
+  # Defaults for apps that do not set these controls (OnePlus patch 0014).
+  - Adjust:
+      contrast: 1.2
+      saturation: 1.1
+  - Agc:
+  - Af:
+...

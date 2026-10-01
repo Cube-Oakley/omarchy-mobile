@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: CC0-1.0
+# Samsung GN1 (Pixel 7 Pro main camera) for libcamera's software ISP, with
+# contrast autofocus on its AK737x lens. The colour matrix is the identity
+# until a calibration (a Sony table would not fit a Samsung sensor); having one
+# applies the saturation default and gives Omarchy Camera's multi-frame stills
+# the matrix in the frame metadata.
+%YAML 1.1
+---
+version: 1
+algorithms:
+  - BlackLevel:
+      blackLevel: 4096
+  - Awb:
+  - Ccm:
+      ccms:
+        - ct: 5000
+          ccm: [ 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0 ]
+  # Defaults for apps that do not set these controls (OnePlus patch 0014).
+  - Adjust:
+      contrast: 1.2
+      saturation: 1.1
+  - Agc:
+  - Af:
+...

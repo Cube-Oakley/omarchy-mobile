@@ -212,3 +212,8 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   the PMIC opmode test rails, the Waydroid plan and the updated plan pages,
   after the checks above. No camera tables, sensor firmware, camera frames,
   photos, vendor binaries or logs are included.
+
+- October 1, later that night: synced the Pixel's libcamera tuning files
+  (autofocus, colour matrices), the camera plan's status and the note on the
+  USB sleep test, after the same checks, which found nothing to remove.
+

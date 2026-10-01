@@ -27,6 +27,17 @@ worked on 2026-10-01:
 The software ISP also needs a dma-buf heap: load `system_heap.ko`
 (`CONFIG_DMABUF_HEAPS_SYSTEM=m`) so `/dev/dma_heap/system` exists.
 
+## Tuning
+
+`imx386.yaml`, `s5kgn1.yaml`, `s5kgm5.yaml` and `s5k3j1.yaml` go in
+`/usr/local/share/libcamera/ipa/simple/`. Without them the simple IPA falls
+back to `uncalibrated.yaml`, which has no autofocus and no colour matrix: the
+lenses stay where the driver parks them and Omarchy Camera's multi-frame
+stills get no matrix. The files follow the OnePlus ones: black level 64 (in
+16-bit units), contrast 1.2 and saturation 1.1, autofocus on the ultrawide
+and main, the IMX519 colour matrices for the Sony ultrawide and the identity
+for the three Samsung sensors until they are calibrated.
+
 ## GPU debayer
 
 The software ISP debayers on the GPU through EGL only with the Pixel's own
