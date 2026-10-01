@@ -69,7 +69,8 @@ HW.pixel7pro = {
           ref: "devices/pixel7pro/docs/smoothness-20260928.md" },
         { n: "Unused power domains", s: "partial",
           note: "TPU, AUR, video codecs, G2D, EH and the camera pipeline are switched off at boot with Google's "
-              + "sequences. Off at boot is a stopgap: cameras, TPU and codecs will need real on-demand control.",
+              + "sequences. The camera capture domains (CSIS, PDP) come back on for each stream with their saved "
+              + "state, secure context and S2MPUs restored; TPU and codecs still have no on path.",
           ref: "devices/pixel7pro/kernel/pd/README.md" },
         { n: "Power meters (ODPM)", s: "ok",
           note: "Reads 24 PMIC rails through ACPM for measurements; loaded by hand, not at boot. It meters only "
@@ -87,12 +88,14 @@ HW.pixel7pro = {
               + "0.81–0.85 W across sleeps against 0.94 W awake), it never sleeps on the charger, and unplugged "
               + "battery life is unmeasured.",
           ref: "devices/pixel7pro/docs/suspend-20260929.md" },
-        { n: "Deepest idle power states (SYS_SLEEP)", s: "no", cap: "deepsleep",
-          note: "The stock SYS_SLEEP sequence now runs up to the firmware call: CPU hotplug (1,000 stress "
-              + "rounds), the MCT restart and the 545-register save/restore passed pm_test. An audit found 34 PMIC "
-              + "rails left always on that stock switches off in sleep. The first real firmware entry, and the "
-              + "~25 mA standby target, are next.",
-          ref: "devices/pixel7pro/docs/deep-sleep-plan-20260930.md" },
+        { n: "Deepest idle power states (SYS_SLEEP)", s: "partial", cap: "deepsleep",
+          note: "Real SYS_SLEEP works in a test image: storage, buses, USB, Wi-Fi and the modem (still "
+              + "IMS-registered) come back after every sleep. With the modem stopped and the cable in, the phone "
+              + "draws about 63 mA asleep; the "
+              + "touch controller is now held in reset whenever the screen is dark. Not yet the default: the "
+              + "installed boot image lacks the UFS link-off path. Next: an unplugged measurement and the rest of "
+              + "the floor, toward ~25 mA.",
+          ref: "devices/pixel7pro/docs/suspend-20260930.md" },
         { n: "RTC and alarms", s: "ok",
           note: "The S2MPG12 RTC sets the clock about 2 s into boot, and its alarm wakes the phone from s2idle "
               + "(rtcwake, repeated cycles). Read-only: Linux cannot correct its drift (about 30 s ahead).",
@@ -278,19 +281,28 @@ HW.pixel7pro = {
       id: "cameras",
       title: "Cameras",
       items: [
-        { n: "Rear main camera", s: "no", cap: "camera-rear", note: "Not started." },
-        { n: "Rear ultra-wide camera (Sony IMX386)", s: "partial", cap: "camera-rear",
-          note: "Powered through the stock sequence (camera PMIC, clocks, reset) on a camera I2C bus brought up "
-              + "from scratch, and it answers its chip ID. No frames yet: the CSI receiver and capture DMA are next.",
+        { n: "Rear main camera (Samsung GN1)", s: "partial", cap: "camera-rear",
+          note: "Preview and photos in Omarchy Camera (1×) through our V4L2 driver and libcamera: 2016×1136 at "
+              + "120 fps over 3-trio C-PHY, with autofocus. Binned mode only; full-resolution photos are next.",
           ref: "devices/pixel7pro/kernel/camera/README.md" },
-        { n: "Rear telephoto camera", s: "no", cap: "camera-rear", note: "Not started." },
-        { n: "Front camera", s: "no", cap: "camera-front", note: "Not started." },
+        { n: "Rear ultra-wide camera (Sony IMX386)", s: "partial", cap: "camera-rear",
+          note: "Preview and photos (0.5×): 2016×1508 at 60 fps over 4-lane D-PHY, with autofocus. Binned mode "
+              + "only.",
+          ref: "devices/pixel7pro/kernel/camera/README.md" },
+        { n: "Rear telephoto camera (Samsung GM5)", s: "partial", cap: "camera-rear",
+          note: "Preview and photos (5×): 2016×1512 at 60 fps over 2-trio C-PHY with LRTE packet delimiters. "
+              + "Its autofocus is not driven yet, so close subjects are soft.",
+          ref: "devices/pixel7pro/kernel/camera/README.md" },
+        { n: "Front camera (Samsung 3J1)", s: "partial", cap: "camera-front",
+          note: "Preview and photos: 1920×1368 at 60 fps over 4-lane D-PHY. Binned mode only.",
+          ref: "devices/pixel7pro/kernel/camera/README.md" },
         { n: "LED flash / torch (LM3644)", s: "partial", cap: "flash",
           note: "The torch lights from the shade's flashlight toggle (measured +0.81 W at the default step). "
               + "Camera flash waits on a camera.", ref: "devices/pixel7pro/kernel/torch/README.md" },
-        { n: "Image signal processor", s: "no",
-          note: "Not started; the camera pipeline's power domains are switched off at boot.",
-          ref: "devices/pixel7pro/kernel/pd/README.md" },
+        { n: "Image signal processor", s: "partial",
+          note: "libcamera's software ISP debayers on the Mali GPU at the sensors' full rate (cached capture "
+              + "buffers keep its statistics at 4 ms a frame). Google's hardware ISP is not used.",
+          ref: "devices/pixel7pro/adapter/camera/libcamera/README.md" },
         { n: "Video codec (hardware encode / decode)", s: "no",
           note: "Not started; its power domains are switched off at boot.", ref: "devices/pixel7pro/kernel/pd/README.md" }
       ]

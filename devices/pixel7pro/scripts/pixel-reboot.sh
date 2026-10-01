@@ -14,6 +14,13 @@ modem_service=/usr/local/lib/omarchy-mobile/modem/manager.py
 if [[ -d /run/pixel-modem && -f $modem_service ]]; then
     python3 "$modem_service" stop
 fi
+# The S2MPG13 keeps the camera PMIC's enable lines through a restart, which
+# left the SLG51002 on in the next boot (about 13 mA). Unloading the camera
+# driver, then its power module, powers it down first.
+for module in pixel_camera pixel_camera_power; do
+    [[ ! -d /sys/module/$module ]] || rmmod "$module" ||
+        echo "pixel-reboot: $module stays loaded" >&2
+done
 param=/sys/module/pixel_reboot/parameters/bootloader
 case ${1:-linux} in
     linux)

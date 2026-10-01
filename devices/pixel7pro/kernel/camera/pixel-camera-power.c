@@ -69,6 +69,8 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
+#include "pixel-camera-power.h"
+
 #define ACPM_PMIC_CHANNEL	2
 #define PMIC_SUB		1	/* S2MPG13 */
 #define PM_BANK			0x01
@@ -884,6 +886,28 @@ struct cam_attr {
 	unsigned int sensor;
 };
 
+/* The camera driver (pixel-camera.c) powers sensors through this, by sysfs name. */
+static struct cam_power *cam_power_dev;
+
+int pixel_camera_power_set(const char *name, bool on)
+{
+	struct cam_power *cp = READ_ONCE(cam_power_dev);
+	unsigned int s;
+	int ret;
+
+	if (!cp)
+		return -ENODEV;
+	for (s = 0; s < NSENSORS && strcmp(sensors[s].name, name); s++)
+		;
+	if (s == NSENSORS)
+		return -EINVAL;
+	mutex_lock(&cp->lock);
+	ret = on ? sensor_power_up(cp, s) : sensor_power_down(cp, s);
+	mutex_unlock(&cp->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pixel_camera_power_set);
+
 static ssize_t power_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct cam_power *cp = dev_get_drvdata(dev);
@@ -1105,6 +1129,7 @@ static int cam_power_probe(struct platform_device *pd)
 	for (i = 0; i < NSENSORS; i++)
 		sensor_check(cp, i);
 	platform_set_drvdata(pd, cp);
+	WRITE_ONCE(cam_power_dev, cp);
 	dev_info(dev, "SLG51002 rev AB on hsi2c_8, LDO12S %s at load; sensors: uw%s\n",
 		 cp->l12s_boot_on ? "on" : "off",
 		 experimental ? ", front, main, tele (experimental)" : "");
@@ -1121,6 +1146,7 @@ static void cam_power_remove(struct platform_device *pd)
 	struct cam_power *cp = platform_get_drvdata(pd);
 	unsigned int s = NSENSORS;
 
+	WRITE_ONCE(cam_power_dev, NULL);
 	mutex_lock(&cp->lock);
 	while (s--)
 		sensor_power_down(cp, s);

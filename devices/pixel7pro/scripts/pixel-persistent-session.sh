@@ -88,12 +88,16 @@ pixel_module pixel-mct ||
 pixel_module pixel-cpupm ||
     echo 'C2 idle hints unavailable; CPUs keep spinning on rejected C2.' >&2
 # The bootloader powers on the camera pipeline, TPU, codecs, G2D, EH and AUR;
-# nothing here uses them (kernel/pd). Camera development (the camera-dev flag)
-# keeps CSIS and PDP, the capture path, as the bootloader left them.
+# nothing here uses them while idle (kernel/pd). CSIS and PDP, the capture
+# path, go off with their state saved, and the camera driver powers them back
+# on for each stream; the camera-dev flag keeps them on instead. The root copy
+# allows an update without rebuilding the recovery image.
 pd_off=all
 [[ -e /var/lib/omarchy-mobile/camera-dev ]] &&
     pd_off=tpu,aur,bo,mfc,g2d,eh,dns,itp,ipp,g3aa,mcsc,gdc,tnr
-insmod /proc/1/root/lib/modules/pixel/pixel-pd-off.ko off=$pd_off ||
+pd_module=/usr/local/lib/omarchy-mobile/pixel-pd-off.ko
+[[ -f $pd_module ]] || pd_module=/proc/1/root/lib/modules/pixel/pixel-pd-off.ko
+insmod "$pd_module" off=$pd_off ||
     echo 'Unused power domains left on.' >&2
 # The thermal path must be active before enabling CPU scaling and the GPU.
 zones=(/sys/class/thermal/thermal_zone*/temp)
@@ -140,8 +144,10 @@ fi
 insmod /proc/1/root/lib/modules/pixel/pixel-keys.ko ||
     insmod /proc/1/root/lib/modules/pixel/pixel-powerkey.ko
 # Touch over the SPI0 controller with its attention interrupt; bit-banged GPIO
-# polling is the fallback.
-touch=/proc/1/root/lib/modules/pixel/pixel_touch_input.ko
+# polling is the fallback. The root copy allows an update without rebuilding
+# the recovery image.
+touch=/usr/local/lib/omarchy-mobile/pixel_touch_input.ko
+[[ -f $touch ]] || touch=/proc/1/root/lib/modules/pixel/pixel_touch_input.ko
 if ! insmod "$touch" probe=1 seconds=0 hwspi=1 irq=1 &&
    ! insmod "$touch" probe=1 seconds=0; then
     echo 'Touch driver failed; starting the desktop with USB recovery available.' >&2
@@ -395,6 +401,23 @@ if [[ -S /run/user/0/bus ]]; then
 else
     echo 'No session bus; audio server not started.' >&2
 fi
+# Cameras (kernel/camera): the media core, the dma-buf heaps libcamera's
+# software ISP allocates from, the four camera I2C buses, the camera power
+# sequences and the V4L2 driver (ultrawide, front and main), whose sensor
+# tables are firmware generated from this phone's own camera HAL. Nothing is
+# powered until an app streams. The modules are root copies, not yet in the
+# recovery image; a failure only leaves the cameras off.
+start_cameras() {
+    local dir=/usr/local/lib/omarchy-mobile/camera module
+    for module in mc videodev videobuf2-common videobuf2-v4l2 videobuf2-memops \
+                  videobuf2-dma-contig system_heap cma_heap; do
+        insmod "$dir/$module.ko" || [[ -d /sys/module/${module//-/_} ]] || return
+    done
+    insmod "$dir/pixel-hsi2c-cam.ko" buses=1,2,3,4 || return
+    insmod "$dir/pixel-camera-power.ko" experimental=1 || return
+    insmod "$dir/pixel-camera.ko"
+}
+start_cameras || echo 'Cameras did not start.' >&2
 if (( modem_ready )); then
     setsid -f sh -c 'umask 077; exec python3 -u /usr/local/lib/omarchy-mobile/modem/manager.py run >>/run/pixel-modem/manager.log 2>&1 </dev/null'
 fi

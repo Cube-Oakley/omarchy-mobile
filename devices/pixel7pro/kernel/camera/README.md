@@ -289,6 +289,28 @@ Programming the EBUF instead of bypassing it, as the HAL does, moved a little
 data but stalled before any frame start reached the WDMA. Bypass is the
 working path.
 
+## V4L2 driver (`pixel-camera.c`)
+
+One media device, `pixel-camera`, with a sensor subdev, a capture node and,
+for the ultrawide and main, an AK737x lens subdev per camera. Each camera
+streams on its own (they share WDMA context 0). Starting a stream powers
+`pd_csis` and `pd_pdp` on through `pixel-pd-off` unless they are already on
+(kernel/pd), sets the DC-PHY isolation bypass, votes CAM (400 MHz, 533 for the C-PHY sensors) and INT
+(400 MHz), powers the sensor through `pixel_camera_power_set()`, loads its
+tables from `pixel-camera/<name>.bin` (`make-camera-firmware.py`), sets up
+the PHY, link and WDMA and starts the sensor. Frames are MIPI RAW10 (WDMA
+format 7 with pixel align), lines padded to 64 bytes. `cameras=` picks the
+cameras (default all four).
+libcamera's side is in `adapter/camera/libcamera/`.
+
+At boot `pixel-boot.sh` loads the media modules, the dma-buf heaps,
+`pixel-hsi2c-cam`, `pixel-camera-power` and this driver from
+`/usr/local/lib/omarchy-mobile/camera/`, so Omarchy Camera works in every
+boot; nothing is powered until an app streams. `pixel-reboot` unloads the
+driver and the power module before restarting, which puts the camera PMIC
+back in reset. The `camera-dev` flag now only keeps CSIS and PDP on from
+boot, which the raw tools below need.
+
 ## The other three cameras
 
 Measured 2026-09-30 with `experimental=1`, `pixel-hsi2c-cam buses=1,2,3,4`
@@ -300,7 +322,7 @@ and each sensor powered on its own.
 | Tables | init 368 + mode 1920×1368 | soft reset + init `default` 4047 + mode 2016×1512 (279, emulated out of the HAL) | soft reset and clock enable + `init_a` 1565 + mode 2016×1136 |
 | Streams (0x0005) | 60 fps | 60 fps | 120 fps |
 | CSIS | **link 0, DC-PHY 0**, D-PHY 4 lanes, ~1665 Mb/s | **link 4, DC-PHY 4**, C-PHY | **link 1, DC-PHY 1**, C-PHY |
-| Frames in memory | **yes** | no | no |
+| Frames in memory | **yes** | **yes** (2026-10-01) | **yes** (2026-10-01) |
 
 ### Front
 
@@ -320,7 +342,47 @@ and each sensor powered on its own.
 - The first frame was dark and blurred. The fixed-focus front camera was
   facing something close.
 
-### Tele and main: C-PHY not decoding yet
+### Main: working (2026-10-01)
+
+Three things stood between the GN1's clean link and whole frames:
+
+- **The CAM clock.** At the CAM DVFS vote of 400 MHz the link's image FIFO
+  overflows (ERR_OVER) and the WDMA stops at 65,536 16-bit words (128 KB,
+  whatever the format). Halving the sensor's output rate (0x0312 = 2, the
+  OP post-scaler, with 0x0342 doubled) let a whole 2016×1136 frame through
+  at 400 MHz; at full rate (1596 Msps, 120 fps) a CAM vote of 533 MHz or
+  more does. `pixel-camera.c` votes 533 MHz for main and tele.
+- **Channel parking.** The HAL parks channels 1–3 on VC 1–3 with DT 0x3f.
+  The GN1 sends a second stream on VC1, and with a channel on VC1 the WDMA
+  gets only the low 8 bits of each pixel (2016 bytes a line in format 7).
+  Parked on VC 15, as `csis-probe.py --park-vc 15` does, format 7 writes
+  MIPI RAW10.
+- **The bus clock.** With libcamera's GPU debayer starting next to the
+  120 fps stream, the WDMA missed a frame end in 8 of 10 starts at the
+  default INT DVFS of 200 MHz: OVERLAP (context INT_SRC bit 20), then no
+  more frames. INT at 400 MHz: none in 10 (310 MHz: 5 in 10).
+  `pixel-camera.c` votes INT 400 MHz while any camera streams.
+
+The AK737x at i2c-1 0x0c focuses it, as the UW's does.
+
+### Tele: working (2026-10-01)
+
+The GM5's tables leave it at two trios (0x0114 reads 0x0101 after them)
+with a 24 MHz EXTCLK; scaled from the GN1's PLL that is about 1060 Msps.
+On link 4 / PHY 4 it decoded frame starts and nothing else:
+- three trios: malformed-CRC errors, no lines;
+- two or one trio: V-size mismatch, lost frame ends, no long packets, with any
+  ENABLE_DAT lane mask, any settle count up to 13, either init table and at
+  1060 or 1800 Msps; D-PHY mode gave only SoT sync errors, and no other link
+  or PHY saw it.
+
+The GM5 sends C-PHY LRTE packet delimiters. With LRTE_CONFIG (0x600) EPD_EN
+(bit 31) set and the spacer fields at their reset value, frame ends arrive
+and the WDMA writes whole 2016×1512 frames; `pixel-camera.c` sets it for
+this camera only (`epd`). It streams 60 fps. Its AF (SEM1215SA, i2c-4 0x34)
+is not driven yet, so close subjects are out of focus.
+
+### History: C-PHY before the fixes above
 
 Both Samsung sensors write 0x0118 = 0x0104, against 0x0102 on the D-PHY
 3J1, and they decode only in `csis-probe.py --cphy` mode. The HAL writes
@@ -342,8 +404,56 @@ receive side, not the sensors:
   GS201's vendor `phy-exynos-mipi.c` leaves as TODO;
 - or a trio order or polarity setting.
 
-The next step is to decode the HAL's C-PHY branch from `liblyric_hwl.so`.
-The Pixel 6 port did the same for GS101.
+Ruled out since then (2026-09-30, late):
+- **The PHY values.** GS201's HAL programs C-PHY in `0xb05580`, called from
+  the context start at `0xb046b0` with the PHY's `m1_dphy_sNc_gnr_con0`
+  offset. Its values are the Pixel 6 port's:
+  - bias: CON4 = 0x40;
+  - per trio at +0x100:
+    - 1, 0x1450, 9, 0x82b8, 1, 0x8600, 0x4000, 0x200, 0x638, 0x40;
+    - +0x30: settle 7 above 999 Msps (else 9), mask 0xff; bit 8 below
+      500 Msps;
+    - then 0x32, 0x1503, 0x32.
+- **ENABLE_DAT.** Pablo's `csi_hw_s_lane` sets 0xf for three C-PHY trios
+  and 0x3 for one or two. `csis-probe.py` now does too. CRC errors remain.
+  So do they with all four PHY data blocks programmed (`--blocks 4`).
+- **D-PHY.** With the GN1 streaming, a D-PHY receiver on PHY 1 sees nothing
+  at 3 or 4 lanes.
+- **CCS signalling mode.** The GN1 reads 0x0110 = 0x1002, which is
+  "D-PHY" if read as CCS. Writing 0x0003 silenced the link completely, so
+  the register does not mean that on this part.
+
+The same context start confirms the SYSREG routing measured on the UW:
+- 0x430 + slot × 4 = link;
+- `CSIS_SC_CON[n]` = slot;
+- 0x488 bit link + n × 8.
+
+Progress later that night:
+- **INTERLEAVE_MODE.** GS201's link start (`0xb06xxx`) writes CMN_CTRL with
+  INTERLEAVE_MODE (bits 11:10) = 3, DESKEW_LEVEL 2 and PHY_SEL = C-PHY,
+  PHY_CMN_CTRL = 0x1f, and parks channels 1–3 on VC 1–3 with DT 0x3f.
+  `csis-probe.py --interleave 3` does the same.
+- With it, the GN1's link is clean apart from two flags:
+  - the CRC errors and the V-size mismatch are gone;
+  - frame starts and ends arrive on channels 0 and 1 (the GN1 sends a
+    second stream on VC1);
+  - RAW10 (`--dt 0x2b`) counts the right number of lines, and any other
+    data type gives a V-size mismatch;
+  - ERR_WRONG_CFG remains with every data type;
+  - ERR_OVER remains.
+- **The WDMA.** It then writes exactly 65,536 words per frame and stops, with
+  LASTDATA/LASTADDR errors. The samples are 10-bit values shifted left by 6:
+  black about 65 after `>> 6`.
+  - The cut-off does not change with the WDMA format (6, 5, 4, 0x1e), the
+    pixel mode (dual or quad; single is worse), the SC_CON value (1–7) or
+    the frame rate (120 or 40 fps).
+  - The link overflows whether or not the WDMA is routed.
+
+Still open:
+- the link-side C-PHY setup the HAL writes through its field setters
+  (CMN_CTRL and the `lrte_config` it lists; the link reads 0x7fff7fff, EPD
+  off);
+- sensor-side C-PHY timing that the HAL may write in code.
 
 The GM5 modes were not exported before. `ext_kraken.py` (session scratch)
 emulates the HAL function at 0x905a88. It yields:

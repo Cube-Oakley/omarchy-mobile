@@ -4,18 +4,26 @@ goes dark. It tells the modem service (SIT 0902 screen state and the 0928
 indication filter, as stock's RIL does on a display change), so the modem stops
 optional signal and dormancy reports while the screen is dark: otherwise it
 sends one about every 1.25 s, each waking its PCIe link. Calls, SMS and
-registration changes still arrive. Installed as /usr/local/sbin/pixel-display-hook,
-called by ~/.config/omarchy-mobile/display-hook."""
+registration changes still arrive. It also holds the touch controller in reset
+while the screen is dark (pixel_touch_input's sleep parameter; about 5 mA in
+system sleep). Installed as /usr/local/sbin/pixel-display-hook, called by
+~/.config/omarchy-mobile/display-hook."""
 import json
 import socket
 import sys
 
 SOCKET = '/run/omarchy-mobile-telephony/socket'
+TOUCH_SLEEP = '/sys/module/pixel_touch_input/parameters/sleep'
 
 
 def main():
     if len(sys.argv) != 2 or sys.argv[1] not in ('on', 'off'):
         raise SystemExit('usage: pixel-display-hook on|off')
+    try:
+        with open(TOUCH_SLEEP, 'w') as touch:
+            touch.write('0' if sys.argv[1] == 'on' else '1')
+    except OSError:
+        pass  # no touch driver loaded
     try:
         with socket.socket(socket.AF_UNIX) as client:
             client.settimeout(8)

@@ -88,15 +88,22 @@
 #define SYSREG_WDMA_LINK	0x430
 
 static uint link = 2, ctx, width = 2016, height = 1508, timeout_ms = 1000, sc_con = 1;
+static uint fmt = FMT_U10BIT_UNPACK, max_mo;
 static ushort fill = 0xa5a5;
-static bool keep, tpg;
+static bool keep, tpg, pixel_align = true;
 module_param(link, uint, 0444);
 module_param(ctx, uint, 0444);
 module_param(width, uint, 0444);
 module_param(height, uint, 0444);
 module_param(timeout_ms, uint, 0444);
 module_param(sc_con, uint, 0444);
+module_param(fmt, uint, 0444);
+module_param(max_mo, uint, 0444);
+MODULE_PARM_DESC(max_mo, "CMN_DMA_CFG_CSISn MAX_MO, outstanding writes (0: leave)");
+MODULE_PARM_DESC(fmt, "WDMA channel FMT value (default 6: 10 bits in 16, MSBs zero)");
 MODULE_PARM_DESC(sc_con, "value for CSIS_SC_CON0..2 (1..7; 0 blocks the WDMA data)");
+module_param(pixel_align, bool, 0444);
+MODULE_PARM_DESC(pixel_align, "link DBG_OPTION_SUITE pixel align (GS101 HAL: on; GS201 HAL writes 0)");
 module_param(fill, ushort, 0444);
 MODULE_PARM_DESC(fill, "16-bit pattern the buffer holds before capture (shows untouched words)");
 module_param(keep, bool, 0444);
@@ -190,10 +197,14 @@ static int __init capture_init(void)
 	       dma + CMN_DMA_CTRL);
 	writel(readl(dma + CMN_DMA_CLK_CTRL) | CMN_CLKGATE_OFF, dma + CMN_DMA_CLK_CTRL);
 	writel(1, dma + CMN_DEBUG_EN);
+	if (max_mo)
+		writel((readl(dma + CMN_DMA_CFG_CSIS(ctx)) & ~GENMASK(9, 0)) | max_mo,
+		       dma + CMN_DMA_CFG_CSIS(ctx));
 	writel(readl(eb + EBUF_CTRL) | EBUF_BYPASS, eb + EBUF_CTRL);
 
 	/* Link: pixel alignment towards the WDMA, then latch the shadows. */
-	writel(readl(l + LINK_DBG_OPTION_SUITE) | DBG_PIXEL_ALIGN_EN, l + LINK_DBG_OPTION_SUITE);
+	v = readl(l + LINK_DBG_OPTION_SUITE) & ~DBG_PIXEL_ALIGN_EN;
+	writel(v | (pixel_align ? DBG_PIXEL_ALIGN_EN : 0), l + LINK_DBG_OPTION_SUITE);
 	writel(0xf, l + LINK_UPD_SDW);
 
 	/* SYSREG_CSIS: the link feeds the WDMA, the PDP muxes off their reset value. */
@@ -206,7 +217,7 @@ static int __init capture_init(void)
 
 	/* Context: OTF input, channel 0 = VC0. */
 	writel(readl(ch + CTX_CTL + CTL_DATA_CTRL) & ~BIT(0), ch + CTX_CTL + CTL_DATA_CTRL);
-	writel(FMT_U10BIT_UNPACK, ch + CH_FMT);			/* DIM 0: 2D */
+	writel(fmt, ch + CH_FMT);				/* DIM 0: 2D */
 	writel((height << 16) | width, ch + CH_RESOL);
 	writel(width * 2, ch + CH_STRIDE);
 	writel(lower_32_bits(phys), ch + CH_ADDR1);

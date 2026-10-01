@@ -24,7 +24,12 @@ Each read returns the low-pass filtered power per channel and a total.
 For an average spanning system suspend, read `parameters/interval_power`.
 The first read configures accumulator power mode and starts a baseline;
 each following read latches the sample sums, divides by the sample count,
-and starts a new interval. The meters accumulate while the AP sleeps, so
+and starts a new interval. Every interval starts with GS201's meter software
+reset (`s2mpg1x_meter_sw_reset`): a pulse on PMETER_MRST, bit 7 of the
+MT_TRIM bank's common register (S2MPG12 0x29, S2MPG13 0x34), then METER_EN.
+Without it the accumulators read back frozen: the sample count is pinned at
+0xfffff and every interval returns the same sums. Neither ASYNC_RD nor
+turning the meters off and on clears them. The meters accumulate while the AP sleeps, so
 read immediately before and after a bounded sleep to include its transitions.
 These are independent intervals, not cumulative counters to subtract.
 Use intervals shorter than one hour (the 20-bit count wraps after about
@@ -40,7 +45,8 @@ mux codes and resolutions come from Google's `s2mpg1x-meter.h`,
   shunts (10 mΩ for mmWave, display and WLAN/BT; 5 mΩ for the modem and RF
   front end).
 
-Only the meter bank (0x0A) is written:
+Only the meter bank (0x0A) and PMETER_MRST in the MT_TRIM bank (0x0E) are
+written:
 - CTRL1 (the meter enables and internal rate; the NTC rate bits are kept);
 - CTRL2 (external channel enables and rate);
 - MUXSEL0–11;

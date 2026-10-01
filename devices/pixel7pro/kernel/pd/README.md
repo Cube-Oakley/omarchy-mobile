@@ -25,7 +25,33 @@ domains with a TZPC (the stock DT's `need_smc`):
 4. `<block>_STATUS` bit 0 is polled until it reads 0.
 
 Children go before their stock-DT parents: DNS before ITP, IPP before PDP.
-There is no power-on path; the domains come back on the next boot.
+
+## CSIS and PDP come back on
+
+The camera capture path has a power-on path (2026-10-01).
+`pixel_pd_power("csis" | "pdp", on)` (`pixel-pd.h`, exported) and the test
+parameter `power` (`echo csis=1 > /sys/module/pixel_pd_off/parameters/power`)
+use the same steps as `gs201-g3d-pd` for the GPU:
+- **Off:** read the domain's stock save list (`pixel-pd-lists.h`, generated
+  by `gen-pd-lists.py` from `flexpmu_cal_local_gs201.h`: 56 CMU_CSIS and
+  SYSREG_CSIS registers, 40 for PDP), then the steps above.
+- **On:** the stock `<block>_on` (CONFIGURATION bit 0 through the secure
+  register SMC, wait for STATUS), the secure context restore (SMC 0x82000410,
+  restore 1), then the list written back in order.
+- **S2MPUs:** the CSIS domain also holds the write-DMA's two S2MPUs
+  (0x1a520000, 0x1a550000). Like HSI1's and HSI2's in system sleep, they come
+  back from a power cycle at CTRL0 = 1 and drop every DMA write: the frames
+  arrive empty. Their CTRL0 (the only S2MPU register touched) is saved with
+  the list and written back, 0 (the bootloader's state) if never read.
+
+A domain that went off without its list being read is not powered back on.
+`pixel-camera` powers CSIS, then PDP, on when a stream starts and off again
+when it stops, so the boot powers both off like the other blocks. The
+`camera-dev` flag still keeps them on from boot. With either domain off, the
+raw camera tools (`csis-probe.py`, `pixel-csis-capture`) hang the SoC: power
+them on with the parameter first.
+
+The other domains have no on path and come back on the next boot.
 
 Left on:
 - DISP and DPU (the display) and HSI0 and HSI2 (USB, UFS);
@@ -37,7 +63,7 @@ then AUR, BO, MFC, G2D and EH about 0.12 W together. The camera domains made
 no difference that the input measurement could resolve. The camera and GPU
 rails (S1S, S2S) still show 45–50 mW each with their domains off.
 
-## A stopgap
+## Still a stopgap for the other blocks
 
 This is a boot-time switch for blocks nothing uses yet. The camera, TPU and
 codecs will be needed later. Each block then needs a real power domain (genpd,

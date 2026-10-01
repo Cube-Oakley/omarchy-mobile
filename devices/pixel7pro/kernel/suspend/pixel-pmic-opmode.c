@@ -16,6 +16,11 @@
  *   could not turn them off. `suspend=NAME,...` sets the named ones to 1,
  *   one at a time, each read back. While the SoC runs PWREN is high, so they
  *   stay on; stock runs with exactly these settings.
+ * Test-only rails (`test`) are never part of "all" and must be named: the
+ * touch (L25M, L26M) and panel (L27M VCI, L28M VDDD) supplies, always on
+ * in stock, where the drivers switch them. Following PWREN they drop only
+ * inside SYS_SLEEP; neither the touch IC nor the panel is re-initialized
+ * after it, so they are for measurements that end in a reboot.
  * Nothing else is written: not the NFC/eSIM rail (L14S), not the rails this
  * port keeps off on purpose (GNSS, UWB, fingerprint), not voltages. The
  * fields stay as set when the module is unloaded; `restore=1` at unload puts
@@ -40,6 +45,7 @@ struct rail {
 	u8 pmic, reg, mask;
 	u8 want;		/* stock field value, unshifted */
 	bool retention;		/* in the retention set (raised to always on) */
+	bool test;		/* measurement only: never in "all" */
 };
 
 /* Retention: stock mode 3 where the bootloader leaves 2 (PWREN_MIF). */
@@ -72,6 +78,10 @@ static const struct rail rails[] = {
 	{ "BUCK4M", 0, 0x1d, 0xc0, 1 },		/* S4M_VDD_CPUCL0 */
 	{ "BUCK5M", 0, 0x1f, 0xc0, 1 },		/* S5M_VDD_INT */
 	{ "BUCK1M", 0, 0x17, 0xc0, 1 },		/* S1M_VDD_MIF */
+	{ "LDO25M", 0, 0x44, 0xc0, 1, false, true },	/* touch */
+	{ "LDO26M", 0, 0x45, 0xc0, 1, false, true },	/* touch */
+	{ "LDO27M", 0, 0x46, 0xc0, 1, false, true },	/* panel VCI */
+	{ "LDO28M", 0, 0x47, 0xc0, 1, false, true },	/* panel VDDD */
 };
 
 static bool retention;
@@ -79,7 +89,7 @@ module_param(retention, bool, 0400);
 MODULE_PARM_DESC(retention, "Set the four retention rails to always on (stock)");
 static char *suspend;
 module_param(suspend, charp, 0400);
-MODULE_PARM_DESC(suspend, "Comma-separated rails to set to follow PWREN (stock), or \"all\"");
+MODULE_PARM_DESC(suspend, "Comma-separated rails to set to follow PWREN; \"all\" is the stock set");
 static bool restore;
 module_param(restore, bool, 0600);
 MODULE_PARM_DESC(restore, "Put back the fields found at load when unloading");
@@ -112,23 +122,26 @@ static int field_set(unsigned int i, u8 field)
 	return ret;
 }
 
-static bool selected(unsigned int i)
+static bool named(const char *name)
 {
 	const char *p = suspend;
-	size_t n = strlen(rails[i].name);
+	size_t n = strlen(name);
 
-	if (rails[i].retention)
-		return retention;
-	if (!p)
-		return false;
-	if (!strcmp(p, "all"))
-		return true;
-	while ((p = strstr(p, rails[i].name))) {
+	while (p && (p = strstr(p, name))) {
 		if ((p == suspend || p[-1] == ',') && (p[n] == ',' || !p[n]))
 			return true;
 		p += n;
 	}
 	return false;
+}
+
+static bool selected(unsigned int i)
+{
+	if (rails[i].retention)
+		return retention;
+	if (named(rails[i].name))
+		return true;
+	return !rails[i].test && named("all");
 }
 
 static int __init opmode_init(void)

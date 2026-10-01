@@ -405,6 +405,33 @@ PAGE_SOFTWARE = {
               note: "Different density, bar, window rules and input handling than the phone layout.",
               ref: "docs/mobile-architecture.md" }
           ]
+        },
+        {
+          title: "Android apps (Waydroid)",
+          note: "For the apps that only exist on Android, such as banking, car apps and WhatsApp as the "
+              + "primary device. Waydroid runs a full Android system in a container that shares the "
+              + "phone's kernel, with each Android app as a window in the shell. Native apps stay the "
+              + "default; this is the escape hatch.",
+          items: [
+            { n: "Kernel support (binder, binderfs)", s: "no",
+              note: "Waydroid needs Android's binder IPC in the kernel; neither phone's kernel enables it "
+                  + "yet.", ref: "docs/mobile-roadmap.md" },
+            { n: "Graphics and display", s: "no",
+              note: "Android draws through the host's Mesa stack (GBM). Software rendering works as a "
+                  + "fallback, but scrolling needs the GPU path.", ref: "docs/mobile-roadmap.md" },
+            { n: "Shell integration", s: "no",
+              note: "Android apps in the launcher and the switcher, notifications in the shade, the "
+                  + "keyboard and rotation passed through, and the container started on demand rather "
+                  + "than kept running.", ref: "docs/mobile-architecture.md" },
+            { n: "Hardware passthrough", s: "no",
+              note: "Network and audio pass through; the camera, Bluetooth, GPS and telephony do not by "
+                  + "default. That rules out apps whose core feature is Bluetooth, such as a car's phone "
+                  + "key; those need native clients.", ref: "docs/mobile-roadmap.md" },
+            { n: "Google Play services", s: "no",
+              note: "Optional: some apps need them for sign-in or push notifications. A Play-free image "
+                  + "comes first, with Play services installed only by the user's choice.",
+              ref: "docs/mobile-roadmap.md" }
+          ]
         }
       ]
     },

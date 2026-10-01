@@ -204,3 +204,11 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   autofocus) and the front camera, plus the CSIS wiring and C-PHY status of
   the main and tele cameras. The checks above found nothing to remove. No
   camera tables, camera frames, vendor binaries or logs are included.
+
+- October 1, night: synced the Pixel's camera stack (the V4L2 driver
+  `pixel-camera`, the libcamera patches and build notes, the camera app's
+  Pixel lens labels, camera domains powered on demand and the camera boot
+  start), the touch controller's sleep at screen-off, the ODPM interval fix,
+  the PMIC opmode test rails, the Waydroid plan and the updated plan pages,
+  after the checks above. No camera tables, sensor firmware, camera frames,
+  photos, vendor binaries or logs are included.

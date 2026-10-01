@@ -167,10 +167,38 @@ static const struct kernel_param_ops power_ops = { .get = power_get };
 module_param_cb(power, &power_ops, NULL, 0444);
 MODULE_PARM_DESC(power, "Low-pass filtered power per metered rail");
 
-/* Stock s2mpg1x_meter_measure_acc: ASYNC_RD latches and starts a new
- * accumulation interval. Divide the captured sum by its sample count;
- * these are per-interval values, not monotonically increasing counters.
- * Hardware continues accumulating while the AP is asleep.
+/* Stock s2mpg1x_meter_sw_reset (GS201 only): pulse PMETER_MRST, bit 7 of the
+ * MT_TRIM bank's common register (S2MPG12 0x29, S2MPG13 0x34, where the
+ * other bits include the NTC enable and stay as found), then set METER_EN.
+ * Without it the accumulators and their 20-bit sample count read back
+ * frozen (count pinned at 0xfffff, the same sums every interval): ASYNC_RD
+ * alone, or turning the meters off and on, does not clear them.
+ */
+#define TRIM_BANK		0x0e
+#define PMETER_MRST		BIT(7)
+static const u8 trim_reg[2] = { 0x29, 0x34 };
+
+static int meter_sw_reset(unsigned int pmic)
+{
+	u8 val, ctrl1;
+	int ret;
+
+	ret = acpm->ops->pmic.read_reg(acpm, ACPM_PMIC_CHANNEL, TRIM_BANK, trim_reg[pmic], pmic, &val);
+	ret = ret ?: acpm->ops->pmic.write_reg(acpm, ACPM_PMIC_CHANNEL, TRIM_BANK, trim_reg[pmic],
+					       pmic, val & ~PMETER_MRST);
+	ret = ret ?: acpm->ops->pmic.write_reg(acpm, ACPM_PMIC_CHANNEL, TRIM_BANK, trim_reg[pmic],
+					       pmic, val | PMETER_MRST);
+	if (ret)
+		return ret;
+	usleep_range(10, 100);
+	ret = meter_read(pmic, METER_CTRL1, &ctrl1);
+	return ret ?: meter_write(pmic, METER_CTRL1, ctrl1 | METER_EN);
+}
+
+/* Stock s2mpg1x_meter_measure_acc: ASYNC_RD copies the accumulators to the
+ * readable registers. Each interval starts with meter_sw_reset(), so the
+ * sums and the sample count cover exactly the interval. Hardware continues
+ * accumulating while the AP is asleep.
  */
 static int meter_snapshot(unsigned int pmic)
 {
@@ -211,7 +239,7 @@ static int interval_power_get(char *buf, const struct kernel_param *kp)
 			/* Power mode for all 12 channels; preserve the upper nibble. */
 			ret = meter_write(pmic, METER_ACC_MODE, 0);
 			ret = ret ?: meter_write(pmic, METER_ACC_MODE + 1, saved_acc_mode[pmic][1] & 0xf0);
-			ret = ret ?: meter_snapshot(pmic);
+			ret = ret ?: meter_sw_reset(pmic);
 			if (ret)
 				goto out;
 			interval_initialized[pmic] = true;
@@ -240,6 +268,9 @@ static int interval_power_get(char *buf, const struct kernel_param *kp)
 			count += sysfs_emit_at(buf, count, "%-16s %7llu.%01llu mW\n",
 				rails[pmic][ch].name, uw / 1000, (uw % 1000) / 100);
 		}
+		ret = meter_sw_reset(pmic);		/* the next interval */
+		if (ret)
+			goto out;
 	}
 	count += sysfs_emit_at(buf, count, "total %llu.%01llu mW\n", total / 1000, (total % 1000) / 100);
 out:

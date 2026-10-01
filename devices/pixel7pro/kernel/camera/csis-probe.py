@@ -128,10 +128,11 @@ def dphy_set(phy, off, lanes, rate):
           f"skew {skew:#x}")
 
 
-def cphy_set(phy, off, trios, rate):
+def cphy_set(phy, off, trios, rate, settle=None):
     """The HAL's C-PHY branch: bias CON4 0x40, no clock lane, one block per
     trio, settle 7 at 1000 Msps and up (else 9)."""
-    settle = 7 if rate >= 1000 else 9
+    if settle is None:
+        settle = 7 if rate >= 1000 else 9
     clk_sel = 0x100 if rate < 500 else 0
     for o, v in ((0x0, 0x10), (0x4, 0x110), (0x8, 0x3223), (0xC, 0), (0x10, 0x40)):
         phy.wr(0x1000 + o, v)                      # M_BIAS_CON0-4
@@ -184,6 +185,13 @@ def main():
     ap.add_argument("--pixel-mode", type=int, default=2)
     ap.add_argument("--count", type=int, default=8)
     ap.add_argument("--cphy", action="store_true", help="C-PHY; --lanes counts trios (1-3)")
+    ap.add_argument("--blocks", type=int, help="C-PHY: PHY data blocks to program (default: trios)")
+    ap.add_argument("--settle", type=int, help="C-PHY: settle count (default 7 from 1000 Msps, else 9)")
+    ap.add_argument("--dt", type=lambda v: int(v, 0), default=DT_RAW10,
+                    help="channel 0 CSI-2 data type (default 0x2b, RAW10)")
+    ap.add_argument("--park-vc", type=int, help="with --interleave: VC for channels 1-3 (default: their own)")
+    ap.add_argument("--interleave", type=int, default=0, choices=range(4),
+                    help="CMN_CTRL INTERLEAVE_MODE; the GS201 HAL uses 3 and parks channels 1-3")
     a = ap.parse_args()
     if a.cphy and a.lanes > 3:
         sys.exit("C-PHY has 1-3 trios: give --lanes")
@@ -209,18 +217,29 @@ def main():
     print(f"SYSREG_CSIS 0x500 = {sysreg.rd(SYSREG_PHY_RESET):#x}")
     phy = Block(PHY_BASE, 0x10000)
     if a.cphy:
-        cphy_set(phy, PHY_OFF[a.phy], a.lanes, a.rate)
+        cphy_set(phy, PHY_OFF[a.phy], a.blocks or a.lanes, a.rate, a.settle)
     else:
         dphy_set(phy, PHY_OFF[a.phy], a.lanes, a.rate)
     link.field(CMN_CTRL, 1, 1, 1)                           # SW_RESET
     time.sleep(0.001)
     link.field(CMN_CTRL, 8, 2, a.lanes - 1)                 # LANE_NUMBER
     link.field(CMN_CTRL, 21, 1, int(a.cphy))                # PHY_SEL: 1 = C-PHY
-    link.field(PHY_CMN_CTRL, 1, 4, (1 << a.lanes) - 1)      # ENABLE_DAT
+    link.field(CMN_CTRL, 10, 2, a.interleave)               # INTERLEAVE_MODE
+    if a.interleave:
+        for ch in (1, 2, 3):                                # HAL: VC ch, DT 0x3f (none)
+            off = ISP_CONFIG_CH0 + ch * 0x10
+            v = link.rd(off)
+            v = (v & ~(0x1F << 16)) | ((ch if a.park_vc is None else a.park_vc) << 16)
+            v = (v & ~(0x3 << 12)) | (a.pixel_mode << 12)
+            link.wr(off, (v & ~(0x3F << 2)) | (0x3F << 2))
+    # ENABLE_DAT: one bit per D-PHY lane; for C-PHY pablo's csi_hw_s_lane
+    # enables 0x3 for one or two trios and all four bits (0xf) for three.
+    dat = (0xF if a.lanes == 3 else 0x3) if a.cphy else (1 << a.lanes) - 1
+    link.field(PHY_CMN_CTRL, 1, 4, dat)                     # ENABLE_DAT
     cfg = link.rd(ISP_CONFIG_CH0)
     cfg = (cfg & ~(0x1F << 16)) | (0 << 16)                 # VIRTUAL_CHANNEL 0
     cfg = (cfg & ~(0x3 << 12)) | (a.pixel_mode << 12)       # PIXEL_MODE
-    cfg = (cfg & ~(0x3F << 2)) | (DT_RAW10 << 2)            # DATAFORMAT
+    cfg = (cfg & ~(0x3F << 2)) | (a.dt << 2)                # DATAFORMAT
     link.wr(ISP_CONFIG_CH0, cfg)
     link.wr(ISP_RESOL_CH0, (h << 16) | w)
     link.field(UPD_SDW, 0, 6, 0xF)                          # UPDATE_SHADOW

@@ -51,6 +51,9 @@ def write_reg(bus, addr, reg, value, width=1):
         os.close(fd)
 
 
+DELAY = 0xFFFFFFFFFFFFFFFF   # the HAL tables' "wait <value> us" entry
+
+
 def load_table(path, width):
     writes = []
     with open(path) as f:
@@ -59,6 +62,9 @@ def load_table(path, width):
             if len(line) != 2:
                 continue
             reg, value = int(line[0], 16), int(line[1], 16)
+            if reg == DELAY:
+                writes.append((reg, value))
+                continue
             if not 0 <= reg <= 0xFFFF or not 0 <= value < 1 << (8 * width):
                 sys.exit(f"{path}: bad entry {line}")
             writes.append((reg, value))
@@ -89,6 +95,9 @@ def main():
     for path in args.tables:
         writes = load_table(path, width)
         for reg, value in writes:
+            if reg == DELAY:
+                time.sleep(value / 1e6)
+                continue
             write_reg(bus, addr, reg, value, width)
             if reg in SETTLE_AFTER and width == 2:
                 time.sleep(0.01)

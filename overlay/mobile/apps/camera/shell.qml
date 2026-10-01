@@ -18,7 +18,10 @@ ShellRoot {
         : (photos.count > 0 ? String(photos.get(0, "filePath")) : "")
     // How far each known sensor zooms against the phone's main camera, for
     // the lens buttons; other sensors show their model instead.
-    readonly property var zooms: ({ "imx586": 1, "s5k3m5": 3, "imx481": 0.6 })
+    readonly property var zooms: ({
+        "imx586": 1, "s5k3m5": 3, "imx481": 0.6,  // OnePlus 6
+        "s5kgn1": 1, "s5kgm5": 5, "imx386": 0.5     // Pixel 7 Pro
+    })
     // The cameras on the side in use, as lens buttons, widest first.
     readonly property var lenses: {
         const all = camera.cameras;

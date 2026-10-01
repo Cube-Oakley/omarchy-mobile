@@ -8,6 +8,9 @@
  * hwspi=1 moves the transfers onto the SPI0 controller at 9.98 MHz and irq=1
  * sleeps on the attention interrupt; without them the pins are bit-banged
  * and polled. Restores pins, clocks and the USI on unload or timeout.
+ * sleep=1 (the display hook writes it at screen-off) holds the controller in
+ * reset, as the bootloader leaves it, until sleep=0 restarts it: about 5 mA
+ * less in system sleep (docs/suspend-20260930.md).
  */
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -54,6 +57,17 @@ MODULE_PARM_DESC(heatmap, "Keep the controller's heat map report ($c3); off halv
 static int restart;
 module_param(restart, int, 0600);
 MODULE_PARM_DESC(restart, "Write 1 to reset and restart the controller, as after an error");
+static bool sleep_req;
+static DECLARE_WAIT_QUEUE_HEAD(sleep_wq);
+static int sleep_set(const char *val, const struct kernel_param *kp)
+{
+    int ret=param_set_bool(val, kp);
+    if (!ret) wake_up(&sleep_wq);
+    return ret;
+}
+static const struct kernel_param_ops sleep_ops = { .set = sleep_set, .get = param_get_bool };
+module_param_cb(sleep, &sleep_ops, &sleep_req, 0644);
+MODULE_PARM_DESC(sleep, "Write 1 to hold the controller in reset (screen off), 0 to restart it");
 static bool hwspi;
 module_param(hwspi, bool, 0400);
 MODULE_PARM_DESC(hwspi, "Use the SPI0 controller (PERIC1 USI0) instead of GPIO bit-banging");
@@ -520,6 +534,18 @@ static int poll_touch(void *unused)
         unsigned int len;
         /* System suspend freezes the worker between reports. */
         try_to_freeze();
+        if (READ_ONCE(sleep_req)) {
+            release_contacts();
+            bits(peri+0x64,4,0);
+            pr_info("pixel-touch: controller held in reset (sleep)\n");
+            wait_event_freezable(sleep_wq, !READ_ONCE(sleep_req) || kthread_should_stop());
+            if (kthread_should_stop()) break;
+            ret=recover();
+            if (ret) break;
+            pr_info("pixel-touch: controller restarted after sleep\n");
+            active_until=jiffies;
+            continue;
+        }
         if (readl(far+0x44)&0x80) { ret=-EBUSY; goto fail; }
         if (READ_ONCE(restart)) { WRITE_ONCE(restart, 0); ret=-ERESTART; goto fail; }
         if (readl(far+0x24)&1) { idle_wait(active_until); continue; }

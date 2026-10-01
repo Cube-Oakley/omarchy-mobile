@@ -1,0 +1,134 @@
+From 11d5e5be9eb6ff12a5b618d86848c5f01a0975ec Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 00:21:50 -0700
+Subject: [PATCH 2/2] libcamera: add the Pixel 7 Pro sensor data
+
+Sensor helpers and properties for the Pixel 7 Pro's Sony IMX386
+(ultrawide) and Samsung S5K3J1 (front), S5KGN1 (main) and S5KGM5
+(telephoto): the Sony and Samsung analogue gain models, the 64-code
+black level of their 10-bit samples, unit cell sizes and two-frame
+control delays.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ src/ipa/libipa/camera_sensor_helper.cpp       | 52 +++++++++++++++++++
+ .../sensor/camera_sensor_properties.cpp       | 40 ++++++++++++++
+ 2 files changed, 92 insertions(+)
+
+diff --git a/src/ipa/libipa/camera_sensor_helper.cpp b/src/ipa/libipa/camera_sensor_helper.cpp
+index aade9f0..5374c8e 100644
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -681,6 +681,58 @@ public:
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("imx586", CameraSensorHelperImx586)
+ 
++class CameraSensorHelperImx386 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx386()
++	{
++		/* The sensor reports a 64-code pedestal in its 10-bit samples. */
++		blackLevel_ = 4096;
++		/* Sony: gain = 1024 / (1024 - register code). */
++		gain_ = AnalogueGainLinear{ 0, 1024, -1, 1024 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx386", CameraSensorHelperImx386)
++
++class CameraSensorHelperS5k3j1 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5k3j1()
++	{
++		/* The sensor reports a 64-code pedestal in its 10-bit samples. */
++		blackLevel_ = 4096;
++		/* Samsung: gain = register code / 32 (0x20 is 1x). */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5k3j1", CameraSensorHelperS5k3j1)
++
++class CameraSensorHelperS5kgm5 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5kgm5()
++	{
++		/* The sensor reports a 64-code pedestal in its 10-bit samples. */
++		blackLevel_ = 4096;
++		/* Samsung: gain = register code / 32 (0x20 is 1x). */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5kgm5", CameraSensorHelperS5kgm5)
++
++class CameraSensorHelperS5kgn1 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5kgn1()
++	{
++		/* The sensor reports a 64-code pedestal in its 10-bit samples. */
++		blackLevel_ = 4096;
++		/* Samsung: gain = register code / 32 (0x20 is 1x). */
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5kgn1", CameraSensorHelperS5kgn1)
++
+ class CameraSensorHelperImx678 : public CameraSensorHelper
+ {
+ public:
+diff --git a/src/libcamera/sensor/camera_sensor_properties.cpp b/src/libcamera/sensor/camera_sensor_properties.cpp
+index d8654fb..2f6ba41 100644
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -311,6 +311,46 @@ const CameraSensorProperties *CameraSensorProperties::get(const std::string &sen
+ 				.hblankDelay = 2
+ 			},
+ 		} },
++		{ "imx386", {
++			.unitCellSize = { 1250, 1250 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
++		{ "s5k3j1", {
++			.unitCellSize = { 700, 700 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
++		{ "s5kgm5", {
++			.unitCellSize = { 800, 800 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
++		{ "s5kgn1", {
++			.unitCellSize = { 1200, 1200 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2
++			},
++		} },
+ 		{ "imx586", {
+ 			.unitCellSize = { 800, 800 },
+ 			.testPatternModes = {},
+-- 
+2.55.0
+
