@@ -231,3 +231,15 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   locally administered 02:70:07 addresses, and the only email address is an
   upstream maintainer's in the kernel patch. No camera tables, firmware,
   logs or vendor binaries are included.
+
+- October 8: at the user's request, new screenshots only. The README's
+  shared-shell section now shows eight captures from the Pixel 7 Pro
+  (`devices/pixel7pro/docs/images/`: lock screen, home screen, app switcher,
+  quick settings, Wisp, keyboard, Android apps and themes), and its status line
+  and Pixel row are current. Only `README.md`, the eight images and this entry
+  were synced; the development work since October 1 is not. Before capture the
+  shade's screenshot privacy hid the network name and notification contents;
+  the home screen used a stand-in layout (the user's own has a personal
+  widget), and the Wisp chat was a demo. Each image was checked at full size:
+  no phone number, name, account, network name, location or address. The
+  images were resized and stripped of metadata.

@@ -5,7 +5,7 @@ rendering and a touch-oriented Quickshell interface. One mobile shell and one OS
 brought up handset by handset, with the kernel, firmware and power work for each
 phone kept in its own device directory.
 
-**Status: experimental, September 25, 2026.** Two phones are in bring-up. Neither
+**Status: experimental, October 8, 2026.** Two phones are in bring-up. Neither
 is a daily phone or a general-purpose installation image yet.
 
 **Project plan and status tracker:** [`plans/`](plans/index.html), with a page per
@@ -16,20 +16,33 @@ device, a side-by-side comparison, and the shared software and desktop integrati
 | Device | SoC | Where it is | Details |
 |---|---|---|---|
 | OnePlus 7 Pro (`guacamole`) | Snapdragon 855 · Adreno 640 | Boots from internal storage into the full touch shell on the GPU; Wi-Fi, audio, Bluetooth, sensors and the rear cameras work; cellular waits on a SIM | [README](devices/oneplus7pro/README.md) · [status](devices/oneplus7pro/docs/status.md) |
-| Pixel 7 Pro (`cheetah`) | Google Tensor G2 · Mali-G710 | Mainline Linux runs the shared shell at 120 Hz with confirmed CRT power-button screen off/on; the Arch root and boot image are installed and verified, while autonomous boot and cold-start shell visibility remain unresolved; full suspend, battery, radios and audio remain unfinished | [README](devices/pixel7pro/README.md) · [status](devices/pixel7pro/docs/status.md) |
+| Pixel 7 Pro (`cheetah`) | Google Tensor G2 · Mali-G710 | Mainline Linux boots from internal storage into the shared shell at 120 Hz on the GPU; Wi-Fi, Bluetooth, audio, sensors, cellular data, texts and calls, all four cameras, fingerprint unlock, deep sleep and Android apps (Waydroid) work; GPS and power tuning continue | [README](devices/pixel7pro/README.md) · [status](devices/pixel7pro/docs/status.md) |
 
 ## The shared shell
 
-Real captures from the OnePlus 7 Pro. The Pixel 7 Pro runs the same shell source.
+Real captures from the Pixel 7 Pro on October 8, 2026, from the development
+build (the public tree is synced from it periodically). The OnePlus 7 Pro runs
+the same shell source.
 
 <table>
-<tr><th>Terminal / Fastfetch</th><th>Notification shade</th><th>Windows / workspaces</th></tr>
+<tr><th>Lock screen</th><th>Home screen</th><th>App switcher</th><th>Quick settings</th></tr>
 <tr>
-<td><a href="devices/oneplus7pro/docs/images/terminal.png"><img src="devices/oneplus7pro/docs/images/terminal.png" width="220" alt="Kitty with Omarchy Fastfetch on the OnePlus 7 Pro"></a></td>
-<td><a href="devices/oneplus7pro/docs/images/notifications.png"><img src="devices/oneplus7pro/docs/images/notifications.png" width="220" alt="Notification shade with Wi-Fi, battery, calendar and weather tiles"></a></td>
-<td><a href="devices/oneplus7pro/docs/images/workspaces.png"><img src="devices/oneplus7pro/docs/images/workspaces.png" width="220" alt="Workspace overview with live window previews"></a></td>
+<td><a href="devices/pixel7pro/docs/images/lock.jpg"><img src="devices/pixel7pro/docs/images/lock.jpg" width="180" alt="Lock screen with the clock, the date and the fingerprint ring"></a></td>
+<td><a href="devices/pixel7pro/docs/images/home.jpg"><img src="devices/pixel7pro/docs/images/home.jpg" width="180" alt="Home screen with the clock and weather widget and app icons"></a></td>
+<td><a href="devices/pixel7pro/docs/images/switcher.png"><img src="devices/pixel7pro/docs/images/switcher.png" width="180" alt="App switcher with live app cards"></a></td>
+<td><a href="devices/pixel7pro/docs/images/shade.png"><img src="devices/pixel7pro/docs/images/shade.png" width="180" alt="Notification shade with quick toggles, brightness and status tiles"></a></td>
+</tr>
+<tr><th>Wisp, the on-device assistant</th><th>Keyboard</th><th>Android apps (Waydroid)</th><th>Themes</th></tr>
+<tr>
+<td><a href="devices/pixel7pro/docs/images/wisp.png"><img src="devices/pixel7pro/docs/images/wisp.png" width="180" alt="Wisp answering a question with a language model running on the phone"></a></td>
+<td><a href="devices/pixel7pro/docs/images/keyboard.png"><img src="devices/pixel7pro/docs/images/keyboard.png" width="180" alt="The shell's own touch keyboard"></a></td>
+<td><a href="devices/pixel7pro/docs/images/android.png"><img src="devices/pixel7pro/docs/images/android.png" width="180" alt="F-Droid running as its own window through Waydroid"></a></td>
+<td><a href="devices/pixel7pro/docs/images/themes.png"><img src="devices/pixel7pro/docs/images/themes.png" width="180" alt="Omarchy theme picker in Settings"></a></td>
 </tr>
 </table>
+
+Screenshots hide personal details: the network name and notification contents
+are hidden, and the home screen layout and chat are examples.
 
 Touch controls and the rest of the shell are described in the
 [OnePlus 7 Pro README](devices/oneplus7pro/README.md#touch-controls) and
