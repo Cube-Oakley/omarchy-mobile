@@ -1,0 +1,2 @@
+2929fa23ef9de0a83b42f1c67cba4d4100077eff80f59e340bdd9ec1978e9826  aoc/patches/0008-trusty-bind-each-nop-thread-to-its-CPU-again-when-it.patch
+f8e5b85748ca1bf40b37b8209a0e4c7c9523470b0fd99c35530e502146db4ab9  boot-pixel-shell.img (out/display/power-image-15, build ID c5ef9a5505c6fc892c383286a1a4344155901c23)

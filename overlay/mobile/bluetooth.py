@@ -4,9 +4,19 @@
 Usage: bluetooth.py [status] | power on|off | scan [SECONDS]
        | pair|connect|disconnect|forget ADDRESS
 Prints one JSON object: the status, plus ok and message for actions. Status
-reads BlueZ's whole object tree in one D-Bus call. Actions use bluetoothctl.
-Pairing registers a NoInputNoOutput agent, so headphones, speakers, mice and
-controllers pair; devices that need a PIN or passkey (most keyboards) do not yet.
+reads BlueZ's whole object tree in one D-Bus call. Actions use bluetoothctl,
+except pairing.
+
+Pairing is this process as BlueZ's agent for its own Pair call (with
+display, keyboard and yes/no: LE Secure Connections compare a code, keyboards
+type one). Before the final status line it prints one JSON line per thing the
+user must see or answer, {"event": "request", "kind": KIND, "code": ...}, with
+KIND confirm (the six digits must match the device's), authorize, passkey
+(the six digits the device shows) or pin; or {"event": "display", "code",
+"entered"}: digits to type on the device. Each request is answered with a
+line on stdin: yes, no, or the digits. "cancel" (or closing stdin) stops the
+pairing. Without PyGObject it pairs as before, with bluetoothctl and no
+input or output (headphones, speakers, mice and controllers only).
 A board without a running controller can name a start command in device.json
 ("bluetoothStart"); "power on" runs it first.
 """
@@ -132,7 +142,222 @@ def power(on):
     return read_status(), ok, '' if ok else line
 
 
+AGENT_PATH = '/org/omarchy/mobile/bluetooth/pairing'
+AGENT_XML = """<node><interface name="org.bluez.Agent1">
+  <method name="Release"/>
+  <method name="RequestPinCode"><arg type="o" direction="in"/><arg type="s" direction="out"/></method>
+  <method name="DisplayPinCode"><arg type="o" direction="in"/><arg type="s" direction="in"/></method>
+  <method name="RequestPasskey"><arg type="o" direction="in"/><arg type="u" direction="out"/></method>
+  <method name="DisplayPasskey"><arg type="o" direction="in"/><arg type="u" direction="in"/><arg type="q" direction="in"/></method>
+  <method name="RequestConfirmation"><arg type="o" direction="in"/><arg type="u" direction="in"/></method>
+  <method name="RequestAuthorization"><arg type="o" direction="in"/></method>
+  <method name="AuthorizeService"><arg type="o" direction="in"/><arg type="s" direction="in"/></method>
+  <method name="Cancel"/>
+</interface></node>"""
+# BlueZ's pairing errors, as the user should read them.
+PAIR_ERRORS = {
+    'org.bluez.Error.AuthenticationFailed': "The codes didn't match, or {name} turned the pairing down.",
+    'org.bluez.Error.AuthenticationRejected': '{name} turned the pairing down.',
+    'org.bluez.Error.AuthenticationCanceled': 'Pairing cancelled.',
+    'org.bluez.Error.AuthenticationTimeout': "{name} didn't answer in time.",
+    'org.bluez.Error.ConnectionAttemptFailed': "Couldn't reach {name}. Make sure it is on and nearby.",
+}
+
+
+def answer(kind, line):
+    """The reply to an agent request from the user's line: ('ok', value) or
+    ('reject', None). value is None for yes/no requests."""
+    line = line.strip()
+    if kind in ('confirm', 'authorize'):
+        return ('ok', None) if line == 'yes' else ('reject', None)
+    if kind == 'passkey' and re.fullmatch(r'[0-9]{1,6}', line):
+        return 'ok', int(line)
+    if kind == 'pin' and re.fullmatch(r'[0-9A-Za-z]{1,16}', line):
+        return 'ok', line
+    return 'reject', None
+
+
+def pair_error(error, name):
+    """A readable message for a failed Pair call (GLib.Error)."""
+    remote = getattr(error, 'message', str(error))
+    match = re.match(r'GDBus\.Error:([\w.]+):', remote)
+    template = PAIR_ERRORS.get(match.group(1) if match else '')
+    return template.format(name=name) if template else remote.split(': ', 1)[-1] or 'Pairing failed.'
+
+
 def pair(address):
+    try:
+        import gi
+        gi.require_version('Gio', '2.0')
+        from gi.repository import Gio, GLib
+    except (ImportError, ValueError):
+        return pair_without_agent(address)
+    return Pairing(address, Gio, GLib).run()
+
+
+class Pairing:
+    """One Pair call with this process as its agent; requests go to stdout
+    and their answers come from stdin, while the main loop keeps serving
+    BlueZ."""
+
+    def __init__(self, address, Gio, GLib):
+        self.Gio, self.GLib = Gio, GLib
+        self.address = address
+        self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+        self.loop = GLib.MainLoop()
+        self.pending = None
+        self.cancelled = False
+        self.result = None
+        self.name = address
+        self.device = None
+        self.buffer = ''
+
+    def emit(self, **event):
+        print(json.dumps(event), flush=True)
+
+    def call(self, path, interface, method, args=None, reply=None, timeout=25000):
+        return self.bus.call_sync('org.bluez', path, interface, method, args,
+                                  self.GLib.VariantType(reply) if reply else None,
+                                  self.Gio.DBusCallFlags.NONE, timeout, None)
+
+    def objects(self):
+        return self.call('/', 'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects',
+                         reply='(a{oa{sa{sv}}})').unpack()[0]
+
+    def find(self):
+        """The adapter and the device's object path (None while unknown)."""
+        objects = self.objects()
+        adapters = sorted(path for path, ifaces in objects.items() if 'org.bluez.Adapter1' in ifaces)
+        if not adapters:
+            raise OSError('No Bluetooth controller.')
+        path = adapters[0] + '/dev_' + self.address.replace(':', '_')
+        info = objects.get(path, {}).get('org.bluez.Device1')
+        if info:
+            self.name = info.get('Alias') or info.get('Name') or self.address
+        return adapters[0], path if info else None
+
+    def agent_call(self, conn, sender, path, interface, method, params, invocation):
+        args = params.unpack()
+        if method == 'RequestConfirmation':
+            self.ask('confirm', invocation, code='%06d' % args[1])
+        elif method == 'RequestAuthorization':
+            self.ask('authorize', invocation)
+        elif method == 'RequestPasskey':
+            self.ask('passkey', invocation)
+        elif method == 'RequestPinCode':
+            self.ask('pin', invocation)
+        elif method in ('DisplayPasskey', 'DisplayPinCode'):
+            code = '%06d' % args[1] if method == 'DisplayPasskey' else args[1]
+            self.emit(event='display', code=code, entered=args[2] if method == 'DisplayPasskey' else 0)
+            invocation.return_value(None)
+        elif method == 'Cancel':
+            self.pending = None
+            self.emit(event='cancelled')
+            invocation.return_value(None)
+        else:
+            # Release, and AuthorizeService for the device being paired.
+            invocation.return_value(None)
+
+    def ask(self, kind, invocation, **extra):
+        self.pending = (kind, invocation)
+        self.emit(event='request', kind=kind, name=self.name, **extra)
+
+    def reply(self, line):
+        if line.strip() == 'cancel':
+            self.cancel()
+            return
+        if not self.pending:
+            return
+        kind, invocation = self.pending
+        self.pending = None
+        verdict, data = answer(kind, line)
+        if verdict == 'reject':
+            invocation.return_dbus_error('org.bluez.Error.Rejected', 'Declined')
+        elif kind == 'passkey':
+            invocation.return_value(self.GLib.Variant('(u)', (data,)))
+        elif kind == 'pin':
+            invocation.return_value(self.GLib.Variant('(s)', (data,)))
+        else:
+            invocation.return_value(None)
+
+    def cancel(self):
+        self.cancelled = True
+        if self.pending:
+            self.pending[1].return_dbus_error('org.bluez.Error.Canceled', 'Cancelled')
+            self.pending = None
+        if self.device:
+            self.bus.call('org.bluez', self.device, 'org.bluez.Device1', 'CancelPairing', None, None,
+                          self.Gio.DBusCallFlags.NONE, 5000, None, None)
+
+    def stdin(self, fd, condition):
+        data = os.read(fd, 4096) if condition & self.GLib.IO_IN else b''
+        if not data:
+            self.cancel()
+            return False
+        self.buffer += data.decode(errors='replace')
+        while '\n' in self.buffer:
+            line, self.buffer = self.buffer.split('\n', 1)
+            self.reply(line)
+        return True
+
+    def paired(self, bus, result):
+        try:
+            bus.call_finish(result)
+            self.result = None
+        except self.GLib.Error as error:
+            self.result = error
+        self.loop.quit()
+
+    def run(self):
+        adapter, self.device = self.find()
+        if self.device is None:
+            # BlueZ forgets unpaired devices shortly after a scan ends; find it again.
+            self.call(adapter, 'org.bluez.Adapter1', 'StartDiscovery')
+            try:
+                for _ in range(20):
+                    time.sleep(0.5)
+                    adapter, self.device = self.find()
+                    if self.device:
+                        break
+            finally:
+                try:
+                    self.call(adapter, 'org.bluez.Adapter1', 'StopDiscovery')
+                except self.GLib.Error:
+                    pass
+            if self.device is None:
+                return read_status(), False, "Couldn't find the device. Make sure it is in pairing mode."
+        node = self.Gio.DBusNodeInfo.new_for_xml(AGENT_XML)
+        register = getattr(self.bus, 'register_object_with_closures2', None) or self.bus.register_object
+        registration = register(AGENT_PATH, node.interfaces[0], self.agent_call, None, None)
+        self.call('/org/bluez', 'org.bluez.AgentManager1', 'RegisterAgent',
+                  self.GLib.Variant('(os)', (AGENT_PATH, 'KeyboardDisplay')))
+        watch = self.GLib.io_add_watch(sys.stdin.fileno(), self.GLib.PRIORITY_DEFAULT,
+                                       self.GLib.IO_IN | self.GLib.IO_HUP | self.GLib.IO_ERR, self.stdin)
+        try:
+            self.bus.call('org.bluez', self.device, 'org.bluez.Device1', 'Pair', None, None,
+                          self.Gio.DBusCallFlags.NONE, 90000, None, self.paired)
+            self.loop.run()
+        finally:
+            self.GLib.source_remove(watch)
+            try:
+                self.call('/org/bluez', 'org.bluez.AgentManager1', 'UnregisterAgent',
+                          self.GLib.Variant('(o)', (AGENT_PATH,)))
+            except self.GLib.Error:
+                pass
+            self.bus.unregister_object(registration)
+        error = self.result
+        if error is not None and 'AlreadyExists' not in error.message:
+            return read_status(), False, 'Pairing cancelled.' if self.cancelled else pair_error(error, self.name)
+        ctl('trust', self.address)
+        ok, line = ctl('--timeout', '15', 'connect', self.address, timeout=15)
+        status = read_status()
+        found = device(status, self.address)
+        if found and found['connected']:
+            return status, True, f"Connected to {found['name']}."
+        return status, bool(found and found['paired']), 'Paired. ' + reason(line, self.name)
+
+
+def pair_without_agent(address):
     if device(read_status(), address) is None:
         # BlueZ forgets unpaired devices shortly after a scan ends; find it again.
         ctl('--timeout', '8', 'scan', 'on', timeout=8)

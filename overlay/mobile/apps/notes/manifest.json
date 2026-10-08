@@ -1,0 +1,7 @@
+{
+  "id": "notes",
+  "name": "Notes",
+  "comment": "Plain text and Markdown notes in the Notes folder",
+  "icon": "accessories-text-editor",
+  "permissions": []
+}

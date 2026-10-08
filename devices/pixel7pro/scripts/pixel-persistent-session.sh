@@ -15,6 +15,23 @@ for part in persist efs efs_backup modem_userdata devinfo mfg_data fips modem_a 
         blockdev --setro "/dev/${part_dev##*/}" || echo "$part could not be set read-only." >&2
     done
 done
+# Stock's debug-snapshot area: firmware set up by the bootloader keeps writing
+# per-CPU state into its header at 0xd8100000 (16-bit values from offset
+# 0x2a8, one per online CPU). Stock's device tree reserves it, but nested one
+# level below /reserved-memory (debug_snapshot/header), where this kernel's
+# early scan does not look, so the page is in the CMA pool and whichever file
+# or program page lands there gets f6 49 written into it (a copied file showed
+# it; a RAM watch then caught the writes every few seconds). Kernels from v41
+# reserve the area themselves (kernel/reserved-memory), and this finds nothing
+# to take; for an older image (a RAM boot, a rollback) the header and the BCM
+# log stock also enables are taken out of use: soft offline moves what is
+# there and never hands the page out.
+for region in 0xd8100000:16 0xdc210000:1024; do
+    region_base=${region%:*} region_pages=${region#*:}
+    for ((page = 0; page < region_pages; page++)); do
+        echo $((region_base + page * 4096)) >/sys/devices/system/memory/soft_offline_page 2>/dev/null || true
+    done
+done
 # Clock floor until the RTC module loads below; it also guards against an RTC
 # that reads earlier than the newest log.
 clock_floor=$(stat -c %Y /etc/omarchy-mobile-pixel-root)
@@ -26,6 +43,19 @@ if (( $(date +%s) < clock_floor )); then
     date -u -s "@$clock_floor" >/dev/null
 fi
 mkdir -p /run/sshd /run/omarchy-mobile
+# Links in directories others can write are not followed into root's files,
+# as systemd sets it (root writes a few files in the desktop's runtime
+# directory; docs/user-session-plan-20261002.md).
+sysctl -q fs.protected_hardlinks=1 fs.protected_symlinks=1 fs.protected_regular=1 fs.protected_fifos=1 ||
+    echo 'Link protections not set.' >&2
+# The desktop's account (/etc/omarchy-mobile/session, "user=NAME"), or root.
+session_user=root
+if [[ -f /etc/omarchy-mobile/session ]]; then
+    session_user=$(sed -n 's/^user=\([a-z_][a-z0-9_-]*\)$/\1/p' /etc/omarchy-mobile/session | head -1)
+fi
+id "${session_user:-root}" >/dev/null 2>&1 || session_user=root
+session_uid=$(id -u "$session_user") session_gid=$(id -g "$session_user")
+session_home=$(getent passwd "$session_user" | cut -d: -f6)
 # Per-boot USB power/clock/PHY snapshot and kernel log, read-only: a normal
 # (bootloader) boot lacks fastboot's running USB, so it is compared with a
 # RAM boot's. Never stops the boot.
@@ -64,12 +94,38 @@ sleep 1
 # Battery-backed S2MPG12 RTC through ACPM (kernel/rtc); registering it sets the
 # system clock (CONFIG_RTC_HCTOSYS). Never stops the boot.
 if insmod /proc/1/root/lib/modules/pixel/pixel-rtc.ko; then
+    # The RTC is read-only and drifts: the offset the last network time sync
+    # measured corrects it (scripts/pixel-time.py).
+    timeout 10 /usr/local/sbin/pixel-time restore || echo 'Clock correction not applied.' >&2
     if (( $(date +%s) < clock_floor )); then
         echo 'RTC reads earlier than the newest log; keeping the clock floor.' >&2
         date -u -s "@$clock_floor" >/dev/null
     fi
 else
     echo 'RTC unavailable; keeping the clock floor.' >&2
+fi
+# The kernel's warnings and crashes go to /var/log/pixel-kernel-warnings.log
+# as they happen (scripts/pixel-kmsg-keeper.py): after a freeze on October 6
+# the reset with the buttons kept nothing else, not even pstore.
+if [[ -f /usr/local/lib/omarchy-mobile/pixel-kmsg-keeper.py ]]; then
+    setsid -f python3 -u /usr/local/lib/omarchy-mobile/pixel-kmsg-keeper.py </dev/null >/dev/null 2>&1
+fi
+# A kernel crash (oops) restarts the phone, panic= seconds later (kernel
+# command line), instead of leaving it half alive: on October 6 crashes in
+# the suspend path left the networking lock taken, and the phone stopped
+# answering, its screen stuck in the always-on display, until the buttons
+# reset it. A restart the kernel makes keeps RAM, so ramoops' record of the
+# crash (pstore) survives it; records found at boot are kept in
+# /var/log/pstore/ and cleared, so the next crash has room.
+echo 1 >/proc/sys/kernel/panic_on_oops
+mountpoint -q /sys/fs/pstore || mount -t pstore pstore /sys/fs/pstore 2>/dev/null || true
+if compgen -G '/sys/fs/pstore/*' >/dev/null; then
+    pstore_dir=/var/log/pstore/$(date +%Y%m%d-%H%M%S)
+    mkdir -p "$pstore_dir" && cp -a /sys/fs/pstore/. "$pstore_dir"/ && sync &&
+        rm -f /sys/fs/pstore/* || echo 'Could not keep the pstore records.' >&2
+    # Every restart leaves the last boot's console (about 500 KB): the
+    # newest 20 are kept.
+    ls -1d /var/log/pstore/*/ | head -n -20 | xargs -r rm -rf
 fi
 # CPU power-down idle (kernel/cpupm): the MCT becomes the tick broadcast
 # device, so no CPU has to stay awake to run the broadcast. Without the
@@ -91,13 +147,21 @@ pixel_module pixel-cpupm ||
 # UFS link down, pixel-sleep runs the stock SYS_SLEEP sequence whenever the
 # suspend adapter (pixel-suspend) selects deep sleep. The PMIC keeps the DRAM
 # and AoC supplies on in sleep (retention) and lets the stock sleep rails
-# follow PWREN, except the camera, INT and MIPI/UFS PLL rails, which stop the
-# wake while the display domains stay on. Without it, sleep stays s2idle.
+# follow PWREN. The camera, INT and MIPI/UFS PLL rails stop the wake while the
+# display domains stay on: they join only when the display driver powers the
+# domains off at screen-off (pixel_scanout.display_power), and pixel-sleep
+# then refuses a sleep with them powered. Without it, sleep stays s2idle.
 suspend_modules=/usr/local/lib/omarchy-mobile/suspend
+sleep_rails=LDO13S,LDO18S,LDO3S,LDO1S,BUCK8S,BUCK5S,LDO4M,LDO5M,LDO6M,LDO14M,LDO16M,LDO18M,LDO11M,LDO12M,LDO17M,BUCK2M,BUCK3M,BUCK4M,BUCK1M
+display_off=0
+if [[ $(cat /sys/module/pixel_scanout/parameters/display_power 2>/dev/null) == Y ]]; then
+    sleep_rails=all
+    display_off=1
+fi
 if [[ -e /sys/module/pixel_ufs/parameters/deep_link_off && -f $suspend_modules/pixel-sleep.ko ]]; then
-    if insmod "$suspend_modules/pixel-pmic-opmode.ko" retention=1 \
-            suspend=LDO13S,LDO18S,LDO3S,LDO1S,BUCK8S,BUCK5S,LDO4M,LDO5M,LDO6M,LDO14M,LDO16M,LDO18M,LDO11M,LDO12M,LDO17M,BUCK2M,BUCK3M,BUCK4M,BUCK1M; then
-        insmod "$suspend_modules/pixel-sleep.ko" budget=0 dry_run=0 real_sleep=1 lpm_init_pmu=1 ||
+    if insmod "$suspend_modules/pixel-pmic-opmode.ko" retention=1 suspend=$sleep_rails; then
+        insmod "$suspend_modules/pixel-sleep.ko" budget=0 dry_run=0 real_sleep=1 lpm_init_pmu=1 \
+                display_off_required=$display_off ||
             echo 'Deep sleep unavailable; sleeping in s2idle.' >&2
     else
         echo 'PMIC sleep modes not set; sleeping in s2idle.' >&2
@@ -105,9 +169,10 @@ if [[ -e /sys/module/pixel_ufs/parameters/deep_link_off && -f $suspend_modules/p
 fi
 # The bootloader powers on the camera pipeline, TPU, codecs, G2D, EH and AUR;
 # nothing here uses them while idle (kernel/pd). CSIS and PDP, the capture
-# path, go off with their state saved, and the camera driver powers them back
-# on for each stream; the camera-dev flag keeps them on instead. The root copy
-# allows an update without rebuilding the recovery image.
+# path, and MFC, the video codec, go off with their state saved, and their
+# drivers power them back on while streaming or decoding; the camera-dev flag
+# keeps CSIS and PDP on instead. The root copy allows an update without
+# rebuilding the recovery image.
 pd_off=all
 [[ -e /var/lib/omarchy-mobile/camera-dev ]] &&
     pd_off=tpu,aur,bo,mfc,g2d,eh,dns,itp,ipp,g3aa,mcsc,gdc,tnr
@@ -122,17 +187,32 @@ for zone in "${zones[@]}"; do
     temp=$(cat "$zone")
     [[ $temp -gt 0 && $temp -lt 80000 ]]
 done
-# The CPU-scaling and GPU guards refuse 60 C or more. After a hot restart,
-# such as a thermal reboot, wait up to five minutes for the chip to cool.
+# The CPU-scaling and GPU guards refuse 60 C or more on the CPU and GPU
+# sensors. After a hot restart, such as a thermal reboot, wait up to five
+# minutes for them to cool. The ISP, TPU and AUR sensors are left out: those
+# blocks are powered off above, and their readings keep the value they had
+# then (68 C for a whole day after the October 5 brownout).
+cool_zones=()
+for zone in /sys/class/thermal/thermal_zone*; do
+    case $(cat "$zone/type") in
+        pixel-big|pixel-mid|pixel-little|pixel-g3d) cool_zones+=("$zone/temp") ;;
+    esac
+done
 for n in {1..300}; do
     hot=0
-    for zone in "${zones[@]}"; do
+    for zone in "${cool_zones[@]}"; do
         (( $(cat "$zone") < 58000 )) || hot=1
     done
     (( hot )) || break
     (( n > 1 )) || echo 'Waiting for the chip to cool below 58 C.' >&2
     sleep 1
 done
+# Brownout protection before the clocks can rise (kernel/bcl): the PMIC's
+# over-current and low-voltage warnings, and the clusters' clock dividers
+# that act on them, as stock sets them. Without it an all-core load at full
+# clocks reset the phone (UVLO, October 5).
+insmod /usr/local/lib/omarchy-mobile/pixel-bcl.ko apply=1 ||
+    echo 'Brownout protection not loaded.' >&2
 # pixel_acpm refuses CPU scaling (ERANGE) when ACPM reports unexpected boot
 # rates. The CPUs then stay at the bootloader's rates, which is safe, so the
 # desktop still starts.
@@ -177,8 +257,16 @@ battery=/usr/local/lib/omarchy-mobile/pixel-battery.ko
 [[ -f $battery ]] || battery=/proc/1/root/lib/modules/pixel/pixel-battery.ko
 if insmod "$battery" ||
    { [[ $battery != /proc/* ]] && insmod /proc/1/root/lib/modules/pixel/pixel-battery.ko; }; then
-    XDG_STATE_HOME=/root/.local/state /root/.local/bin/omarchy-mobile-battery restore >/dev/null ||
-        echo 'Charge limit not restored.' >&2
+    # The limit is the session's choice, read here as data: nothing in its
+    # home runs as root.
+    # No file (no limit chosen) is not an error: pipefail would stop the boot.
+    limit=$(sed -n 's/.*"limit": *\([0-9]\{2,3\}\).*/\1/p' \
+        "$session_home/.local/state/omarchy-mobile/charge-limit.json" 2>/dev/null | head -1 || true)
+    if [[ -n $limit ]] && (( limit >= 50 && limit <= 100 )); then
+        for threshold in /sys/class/power_supply/*/charge_control_end_threshold; do
+            [[ -w $threshold ]] && echo "$limit" > "$threshold"
+        done || echo 'Charge limit not restored.' >&2
+    fi
 else
     echo 'Battery driver failed; the charger keeps its bootloader settings.' >&2
 fi
@@ -189,6 +277,29 @@ usb_switch=/usr/local/lib/omarchy-mobile/pixel-usb-switch.ko
 if [[ -f $usb_switch ]]; then
     insmod "$usb_switch" ||
         echo 'USB cable reconnection helper unavailable.' >&2
+fi
+# The PMICs' meters (kernel/odpm): the per-rail energy the battery history
+# records, and the USB-C port's thermistors, which pixel-battery reads while
+# USB power is there (above 1.5 A only with a port that reads cool). The
+# port-only module (kernel/port-temp) is the fallback; the two share the
+# meter, so only one loads. Without either the input stays at 1.5 A at most.
+odpm=/usr/local/lib/omarchy-mobile/pixel-odpm.ko
+port_temp=/usr/local/lib/omarchy-mobile/pixel-port-temp.ko
+if ! { [[ -f $odpm ]] && insmod "$odpm"; }; then
+    if [[ -f $port_temp ]]; then
+        insmod "$port_temp" || echo 'USB port temperature unavailable: input at most 1.5 A.' >&2
+    fi
+fi
+# Skin temperature (thermal/): the kernel caps the chip near stock's control
+# range; pixel-skin-guard limits the clocks by stock's surface estimate from
+# the board thermistors (pixel-odpm), as Android's thermal HAL does. Started
+# again 10 s after any exit.
+if [[ -f /usr/local/lib/omarchy-mobile/thermal/pixel-skin-guard.py ]] &&
+   [[ -e /sys/module/pixel_odpm ]]; then
+    setsid -f sh -c 'while :; do
+        python3 -u /usr/local/lib/omarchy-mobile/thermal/pixel-skin-guard.py
+        sleep 10
+    done >>/run/pixel-skin-guard.log 2>&1 </dev/null'
 fi
 # Flashlight and vibration: hsi2c_15 and hsi2c_8 as the bootloader leaves them
 # (kernel/i2c), then the LM3644 (kernel/torch) and the CS40L26 (kernel/haptics)
@@ -230,7 +341,11 @@ start_wifi() {
     for module in rfkill cfg80211 brcmutil; do
         insmod "$modules/$module.ko" || return
     done
-    insmod "$wifi_driver" || return
+    # feature_disable=0x10: no Wi-Fi Direct (P2P). wpa_supplicant asked for
+    # its interface at every radio start and the firmware never answered
+    # (brcmf_p2p_create_p2pdev timeout, err -5); the hotspot is an AP
+    # interface, which needs no P2P.
+    insmod "$wifi_driver" feature_disable=0x10 || return
     insmod "$modules/brcmfmac-wcc.ko" 2>/dev/null || [[ -d /sys/module/brcmfmac_wcc ]]
 }
 if [[ -e $wifi_marker ]]; then
@@ -260,19 +375,19 @@ if [[ -f /etc/ssh/pixel-wifi-address ]]; then
 fi
 # Bluetooth (kernel/bluetooth): the BCM4389's Bluetooth core on UART18, which
 # loads Google's patch firmware from the initramfs, then BlueZ. A UART fault
-# cannot hang the SoC, so a failure only skips it.
+# cannot hang the SoC, so a failure only skips it. Started below, once the GPIO
+# provider that carries its wake lines is loaded. Builds of its modules for
+# this kernel installed in /usr/local/lib/omarchy-mobile/bluetooth are used
+# before the image's (pixel-bt-restart does the same).
 start_bluetooth() {
     local modules=/proc/1/root/lib/modules/pixel module
+    local newer=/usr/local/lib/omarchy-mobile/bluetooth
     insmod "$modules/rfkill.ko" 2>/dev/null || [[ -d /sys/module/rfkill ]] || return
     for module in kpp ecc ecdh_generic bluetooth btbcm btqca pixel-bt hci_uart; do
-        insmod "$modules/$module.ko" || return
+        { [[ -f $newer/$module.ko ]] && insmod "$newer/$module.ko"; } ||
+            insmod "$modules/$module.ko" || return
     done
 }
-if start_bluetooth; then
-    setsid -f sh -c 'exec /usr/lib/bluetooth/bluetoothd -n >>/run/bluetoothd.log 2>&1 </dev/null'
-else
-    echo 'Bluetooth did not start.' >&2
-fi
 # Audio (kernel/aoc, kernel/audio, kernel/gpio, kernel/spi): Google's AoC
 # drivers have Trusty and the GSA load the audio DSP's firmware; the DSP runs
 # the built-in microphones and the sensors (their supplies from
@@ -379,6 +494,29 @@ if [[ -f /var/lib/omarchy-mobile/modem/enabled && -f $modem_service ]]; then
         echo 'Modem preparation failed or skipped; inspect /run/pixel-modem.' >&2
     fi
 fi
+# The GPIO provider, before Bluetooth (its wake lines) and audio: the modem
+# bundle's, loaded by its preparation, or the image's.
+if [[ ! -d /sys/module/pixel_gpio ]]; then
+    insmod /proc/1/root/lib/modules/pixel/pixel-gpio.ko || echo 'GPIO lines unavailable.' >&2
+fi
+# NFC (the ST54J controller and its secure element) stays off unless the
+# session turned it on in Settings (nfc.json, read here as data). Only the
+# modem bundle's provider has the enable line (nfc_ven); without it the chip
+# stays as the bootloader left it, on. The session switches it afterwards.
+nfc_param=/sys/module/pixel_gpio/parameters/nfc_ven
+if [[ -e $nfc_param ]]; then
+    nfc=0
+    if grep -qs '"on": *true' "$session_home/.local/state/omarchy-mobile/nfc.json"; then
+        nfc=1
+    fi
+    echo "$nfc" > "$nfc_param" || echo 'NFC enable line not set.' >&2
+    chgrp "$session_gid" "$nfc_param" || echo 'NFC switch not handed to the session.' >&2
+fi
+if start_bluetooth; then
+    setsid -f sh -c 'exec /usr/lib/bluetooth/bluetoothd -n >>/run/bluetoothd.log 2>&1 </dev/null'
+else
+    echo 'Bluetooth did not start.' >&2
+fi
 if [[ -e $audio_marker ]]; then
     echo "Audio skipped: an earlier start did not finish ($audio_marker)." >&2
 else
@@ -403,17 +541,28 @@ if aoc_online; then
 else
     echo 'Sensors unavailable: the AoC is not running.' >&2
 fi
-# The session's audio server, as root with the desktop (there are no systemd
+# The session's audio server, as the desktop's account (there are no systemd
 # user services here). WirePlumber finds Bluetooth audio through BlueZ on the
 # system bus and the built-in speakers and microphones through the AoC card's
 # UCM profile (audio/ucm2).
-if [[ -S /run/user/0/bus ]]; then
+session_runtime=/run/user/$session_uid
+if [[ -S $session_runtime/bus ]]; then
     for server in pipewire wireplumber pipewire-pulse; do
-        setsid -f env XDG_RUNTIME_DIR=/run/user/0 \
-            DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus \
-            sh -c "exec $server >>/run/$server.log 2>&1 </dev/null"
+        setsid -f setpriv --reuid="$session_uid" --regid="$session_gid" --init-groups \
+            env HOME="$session_home" XDG_RUNTIME_DIR="$session_runtime" \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=$session_runtime/bus \
+            sh -c "exec $server >>$session_runtime/$server.log 2>&1 </dev/null"
         sleep 0.5
     done
+    # The speakers' loudness filter (audio/pipewire), with its limiter
+    # plugin (swh-plugins); WirePlumber puts it in front of the speakers.
+    if [[ -f /usr/lib/ladspa/fast_lookahead_limiter_1913.so &&
+          -f /etc/pipewire/filter-chain.conf.d/60-pixel-speaker-loudness.conf ]]; then
+        setsid -f setpriv --reuid="$session_uid" --regid="$session_gid" --init-groups \
+            env HOME="$session_home" XDG_RUNTIME_DIR="$session_runtime" \
+            DBUS_SESSION_BUS_ADDRESS=unix:path=$session_runtime/bus \
+            sh -c "exec pipewire -c filter-chain.conf >>$session_runtime/filter-chain.log 2>&1 </dev/null"
+    fi
 else
     echo 'No session bus; audio server not started.' >&2
 fi
@@ -433,10 +582,59 @@ start_cameras() {
     done
     insmod "$dir/pixel-hsi2c-cam.ko" buses=1,2,3,4 || return
     insmod "$dir/pixel-camera-power.ko" experimental=1 || return
-    insmod "$dir/pixel-camera.ko"
+    insmod "$dir/pixel-camera.ko" || return
+    # The cameras as webcams (overlay/mobile/camera-bridge): two loopback
+    # nodes the session's bridges write to, front then back. Before Waydroid
+    # starts, so Android's external camera HAL finds them.
+    insmod "$dir/v4l2loopback.ko" devices=2 video_nr=20,21 card_label="Front camera,Back camera" \
+        exclusive_caps=1,1 max_buffers=2 || echo 'Webcam nodes unavailable.' >&2
 }
 start_cameras || echo 'Cameras did not start.' >&2
+# Hardware video decoding (kernel/mfc): the device tree node, mem2mem and the
+# s5p-mfc GS201 variant. The decoder powers the MFC domain on (pixel-pd-off)
+# while a video is open and off after it; the firmware is the user's own copy
+# from vendor_a, never in git. udev opens the new node once, which starts the
+# firmware: the first MMIO to a domain powered back on. A hang there would
+# recur on every boot, so mfc-starting marks the attempt, and a boot that
+# finds it left from the last one leaves the codec off.
+start_codec() {
+    local dir=/usr/local/lib/omarchy-mobile/mfc marker=/var/lib/omarchy-mobile/mfc-starting module
+    [[ -f $dir/s5p-mfc.ko && -f /usr/lib/firmware/omarchy-mobile/mfc_fw.bin ]] || return 0
+    if [[ -e $marker ]]; then
+        echo "The video codec was starting when a boot ended: left off (remove $marker to retry)." >&2
+        return 1
+    fi
+    touch "$marker" && sync
+    for module in v4l2-mem2mem pixel-mfc-dt s5p-mfc; do
+        insmod "$dir/$module.ko" || [[ -d /sys/module/${module//-/_} ]] || { rm -f "$marker"; return 1; }
+    done
+    SYSTEMD_IN_CHROOT=0 udevadm settle --timeout=10
+    rm -f "$marker" && sync
+}
+start_codec || echo 'Hardware video decoding unavailable.' >&2
+# Fingerprint (fingerprint/): opt-in, like the modem. The bundle in
+# /var/lib/omarchy-mobile/fingerprint (stock's fingerprint stack, never in
+# git, with our sensor driver, shim and service) serves the lock screen and
+# Settings on /run/omarchy-fingerprint/fingerprint.sock. It runs Trusty's
+# secure storage, so persist stays writable while it runs (user approved,
+# October 2). It needs the system dma-buf heap the cameras load above. If
+# it ends, it starts again after 30 s while still enabled.
+fingerprint=/var/lib/omarchy-mobile/fingerprint
+if [[ -f $fingerprint/enabled && -c /dev/trusty-ipc-dev0 ]]; then
+    setsid -f sh -c "while [ -f $fingerprint/enabled ]; do
+        $fingerprint/fp-hal-lab.sh $fingerprint/runtime.tar $fingerprint/fp-shim.so serve
+        sleep 30
+    done >>/run/pixel-fingerprint.log 2>&1 </dev/null"
+fi
 if (( modem_ready )); then
     setsid -f sh -c 'umask 077; exec python3 -u /usr/local/lib/omarchy-mobile/modem/manager.py run >>/run/pixel-modem/manager.log 2>&1 </dev/null'
+fi
+# Android apps (waydroid/): the container manager, once Waydroid is set up.
+# It is idle until an Android app starts (no CPU time or wakeups in a minute,
+# 42 MB); `waydroid app launch` from the app drawer then starts the session
+# as cube.
+if [[ -x /usr/local/sbin/waydroid-container && -f /var/lib/waydroid/waydroid.cfg &&
+      -d /lib/modules/$(uname -r)/kernel ]]; then
+    setsid -f /usr/local/sbin/waydroid-container start >>/run/waydroid-container.log 2>&1 </dev/null
 fi
 date -u +%FT%TZ >>/var/log/pixel-native-boots.log

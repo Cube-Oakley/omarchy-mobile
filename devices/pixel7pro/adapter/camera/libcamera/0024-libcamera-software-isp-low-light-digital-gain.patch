@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Thu, 1 Oct 2026 22:50:00 -0700
+Subject: [PATCH] libcamera: software-isp: digital gain past the sensor's
+ analogue maximum in low light
+
+Once the exposure and the sensor's analogue gain are both at their
+limits, the AGC loop may raise its gain up to 4x further. The image
+processor applies the part the sensor cannot as digital gain, on top of
+the highlight headroom's, and the loop judges brightness after both.
+Too bright, it backs that gain off first, as gain always comes off before
+exposure.
+
+On the Pixel 7 Pro the ultra-wide and the telephoto sat at 16x analogue
+gain and the longest exposure in a dim room, and stayed visibly darker
+than the main camera.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index 9afdf32..6f56c7a 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -77,6 +77,15 @@ static constexpr double kHighlightTarget = 0.9;
+ static constexpr double kMaxHeadroom = 3.0;
+ static constexpr double kHeadroomStep = 0.25;
+ 
++/*
++ * Low light. Once the exposure and the sensor's analogue gain are both at
++ * their limits, the loop may go on raising its gain up to this factor past
++ * the sensor's maximum; the image processor applies the part the sensor
++ * cannot as digital gain. Small sensors behind slow lenses (an ultra-wide,
++ * a telephoto) otherwise stay dark in a dim room.
++ */
++static constexpr double kLowLightGain = 4.0;
++
+ Agc::Agc()
+ {
+ }
+@@ -137,7 +146,7 @@ bool Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	exposure = std::clamp(exposure, context.configuration.agc.exposureMin,
+ 			      context.configuration.agc.exposureMax);
+ 	again = std::clamp(again, context.configuration.agc.againMin,
+-			   context.configuration.agc.againMax);
++			   context.configuration.agc.againMax * kLowLightGain);
+ 
+ 	context.activeState.agc.exposure = exposure;
+ 	context.activeState.agc.again = again;
+@@ -151,6 +160,17 @@ bool Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext,
+ 	return exposure != oldExposure || again != oldAgain;
+ }
+ 
++/*
++ * The image processor's digital gain: the highlight headroom, and whatever
++ * of the loop's gain is past the sensor's analogue maximum.
++ */
++double Agc::digitalGain(const IPAContext &context) const
++{
++	const auto &agc = context.activeState.agc;
++	const double headroom = std::exp2(agc.headroom);
++	return headroom * std::max(1.0, agc.again / headroom / context.configuration.agc.againMax);
++}
++
+ void Agc::applyHeadroom(const IPAContext &context, IPAFrameContext &frameContext) const
+ {
+ 	/* Take the headroom off the analogue gain first, then the exposure. */
+@@ -197,7 +217,7 @@ void Agc::updateHeadroom(IPAContext &context, const SwIspStats::Histogram &histo
+ void Agc::prepare(IPAContext &context, [[maybe_unused]] const uint32_t frame,
+ 		  [[maybe_unused]] IPAFrameContext &frameContext, DebayerParams *params)
+ {
+-	params->digitalGain = std::exp2(context.activeState.agc.headroom);
++	params->digitalGain = digitalGain(context);
+ }
+ 
+ void Agc::process(IPAContext &context,
+@@ -210,8 +230,7 @@ void Agc::process(IPAContext &context,
+ 		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
+ 	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
+ 	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
+-	metadata.set(controls::DigitalGain,
+-		     static_cast<float>(std::exp2(context.activeState.agc.headroom)));
++	metadata.set(controls::DigitalGain, static_cast<float>(digitalGain(context)));
+ 
+ 	if (!context.activeState.agc.valid) {
+ 		/*
+@@ -273,10 +292,10 @@ void Agc::process(IPAContext &context,
+ 	 * headroom.
+ 	 */
+ 	updateHeadroom(context, histogram, blackLevelHistIdx, histogramSize);
+-	const double digitalGain = std::exp2(context.activeState.agc.headroom);
++	const double gain = digitalGain(context);
+ 	for (unsigned int i = 0; i < histogramSize; i++) {
+ 		const unsigned int gained = std::min<unsigned int>(
+-			histogramSize - 1, static_cast<unsigned int>(std::lround(i * digitalGain)));
++			histogramSize - 1, static_cast<unsigned int>(std::lround(i * gain)));
+ 		unsigned int idx = (gained - (gained / yHistValsPerBinMod)) / yHistValsPerBin;
+ 		exposureBins[idx] += histogram[blackLevelHistIdx + i];
+ 	}
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 0fa3b74..1f345a6 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -32,6 +32,7 @@ private:
+ 			    double exposureMSV);
+ 	void updateHeadroom(IPAContext &context, const SwIspStats::Histogram &histogram,
+ 			    unsigned int first, unsigned int size);
++	double digitalGain(const IPAContext &context) const;
+ 	void applyHeadroom(const IPAContext &context, IPAFrameContext &frameContext) const;
+ };
+ 

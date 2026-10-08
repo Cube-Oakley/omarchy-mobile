@@ -101,7 +101,13 @@ QString write(const QImage &frame, const StillInfo &info, const QString &folder,
         return {};
     }
 
+    // Digital zoom keeps the centre of the frame, at the sensor's own pixels.
     QImage upright = frame;
+    if (info.zoom > 1.001) {
+        const int width = qRound(frame.width() / info.zoom) & ~1;
+        const int height = qRound(frame.height() / info.zoom) & ~1;
+        upright = frame.copy((frame.width() - width) / 2, (frame.height() - height) / 2, width, height);
+    }
     const int rotation = ((info.rotation % 360) + 360) % 360;
     if (rotation)
         upright = upright.transformed(QTransform().rotate(rotation));

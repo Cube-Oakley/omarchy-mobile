@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Calculator
+Comment=Arithmetic and scientific functions, with a history
+Exec=omarchy-mobile-app launch calculator
+Icon=calculator-app
+Terminal=false
+Type=Application
+Categories=Utility;Calculator;
+StartupNotify=true

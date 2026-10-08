@@ -30,11 +30,19 @@
  * for tests. The other domains have no on path and come back on the next
  * boot.
  *
+ * DPU and DISP, the display pipeline, are on demand only: never powered off
+ * at load, `off=all` included. The display driver powers them off at screen
+ * off (DPU first, then its parent DISP) and on again before it re-inits the
+ * DSIM, DECON and DPP; DISP's save list carries two BUSY waits on its NOC
+ * divider and mux, polled before the next write as stock's pmucal does. The
+ * DPU domain holds three S2MPUs.
+ *
  * Measured (image W, screen off, C2 working): TPU 0.08 W, then AUR, BO, MFC,
  * G2D and EH 0.12 W at the USB input; the camera domains made no difference
  * that the USB input could resolve.
  */
 #include <linux/arm-smccc.h>
+#include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
@@ -47,6 +55,8 @@
 struct pd_reg {
 	u32 pa;
 	const char *name;
+	bool wait;		/* poll (value & mask) == want instead of restoring */
+	u32 mask, want;
 };
 
 #include "pixel-pd-lists.h"
@@ -66,11 +76,14 @@ struct domain {
 	unsigned int nsave;
 	u32 *saved;
 	bool valid;			/* saved[] holds the list as read before power-off */
-	u32 s2mpu[2];			/* S2MPUs in the domain (stock DT), CTRL0 at +0 */
-	u32 s2mpu_ctrl0[2];
+	u32 s2mpu[3];			/* S2MPUs in the domain (stock DT), CTRL0 at +0 */
+	u32 s2mpu_ctrl0[3];
+	bool on_demand;			/* never powered off at load */
 };
 
 static u32 csis_vals[ARRAY_SIZE(csis_save)], pdp_vals[ARRAY_SIZE(pdp_save)];
+static u32 dpu_vals[ARRAY_SIZE(dpu_save)], disp_vals[ARRAY_SIZE(disp_save)];
+static u32 mfc_vals[ARRAY_SIZE(mfc_save)];
 #define SAVE(list, vals)	.save = list, .nsave = ARRAY_SIZE(list), .saved = vals
 
 /* Stock DT pd-* nodes: reg, cmu_id, need_smc. Listed children first. */
@@ -78,7 +91,8 @@ static struct domain domains[] = {
 	{ "tpu",  0x2900, 0x1cc00000, 0x1cc10204 },
 	{ "aur",  0x2980, 0x25a00000, 0x25a10204 },
 	{ "bo",   0x2880, 0x1ca00000, 0x1ca10204 },
-	{ "mfc",  0x2380, 0x1c800000, 0x1c810204 },
+	{ "mfc",  0x2380, 0x1c800000, 0x1c810204, SAVE(mfc_save, mfc_vals),
+	  .s2mpu = { 0x1c890000, 0x1c8c0000 } },
 	{ "g2d",  0x2300, 0x1c600000, 0x1c610204 },
 	{ "eh",   0x1c00, 0x17000000, 0x17010204 },
 	{ "dns",  0x2500, 0x1b000000, 0x1b010204 },
@@ -91,6 +105,9 @@ static struct domain domains[] = {
 	{ "mcsc", 0x2700, 0x1b700000, 0x1b710204 },
 	{ "gdc",  0x2780, 0x1d000000, 0x1d010204 },
 	{ "tnr",  0x2800, 0x1bc00000, 0x1bc10204 },
+	{ "dpu",  0x2200, 0x1c000000, 0x1c010204, SAVE(dpu_save, dpu_vals),
+	  .s2mpu = { 0x1c160000, 0x1c170000, 0x1c180000 }, .on_demand = true },
+	{ "disp", 0x2280, 0x1c200000, 0x1c210204, SAVE(disp_save, disp_vals), .on_demand = true },
 };
 
 static char *off = "";
@@ -146,7 +163,8 @@ static int domain_off(void __iomem *pmu, struct domain *d)
 		return 0;
 	}
 	for (i = 0; i < d->nsave; i++)
-		d->saved[i] = reg_rw(d->save[i].pa, false, 0);
+		if (!d->save[i].wait)
+			d->saved[i] = reg_rw(d->save[i].pa, false, 0);
 	d->valid = d->nsave;
 	for (i = 0; i < ARRAY_SIZE(d->s2mpu); i++)
 		if (d->s2mpu[i])
@@ -204,8 +222,22 @@ static int domain_on(void __iomem *pmu, struct domain *d)
 		pr_err("pixel-pd-off: %s: secure context restore failed: %#lx\n", d->name, res.a0);
 		return -EIO;
 	}
-	for (i = 0; i < d->nsave; i++)
-		reg_rw(d->save[i].pa, true, d->saved[i]);
+	for (i = 0; i < d->nsave; i++) {
+		const struct pd_reg *r = &d->save[i];
+		unsigned int tries;
+
+		if (!r->wait) {
+			reg_rw(r->pa, true, d->saved[i]);
+			continue;
+		}
+		for (tries = 0; tries < 1000; tries++) {
+			if ((reg_rw(r->pa, false, 0) & r->mask) == r->want)
+				break;
+			udelay(10);
+		}
+		if (tries == 1000)
+			pr_warn("pixel-pd-off: %s: %s still busy\n", d->name, r->name);
+	}
 	for (i = 0; i < ARRAY_SIZE(d->s2mpu); i++) {
 		if (!d->s2mpu[i])
 			continue;
@@ -265,7 +297,7 @@ static int __init pixel_pd_off_init(void)
 		return -ENOMEM;
 	mutex_lock(&pd_lock);
 	for (i = 0; i < ARRAY_SIZE(domains) && !ret; i++)
-		if (wanted(domains[i].name))
+		if (!domains[i].on_demand && wanted(domains[i].name))
 			ret = domain_off(pmu_va, &domains[i]);
 	mutex_unlock(&pd_lock);
 	if (ret)

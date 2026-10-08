@@ -1,0 +1,79 @@
+hci_bcm: keep the BCM4389's links through system sleep
+
+On top of the v37 tree (fp-v36.patch). With a host-wake interrupt, the
+BCM4389 registers without the HCI suspend notifier, which would disconnect
+every link and pause scanning and advertising at each system sleep; the
+chip's low-power mode and host wake take over instead (kernel/bluetooth).
+---
+--- a/drivers/bluetooth/hci_bcm.c
++++ b/drivers/bluetooth/hci_bcm.c
+@@ -56,6 +56,9 @@
+  *	its default speed even without a shutdown GPIO
+  * @drive_rts_on_open: drive RTS signal on ->open() when platform requires it
+  * @no_uart_clock_set: UART clock set command for >3Mbps mode is unavailable
++ * @keep_links_in_sleep: with a host-wake interrupt, no HCI suspend notifier:
++ *	connections, scanning and advertising go on through system sleep, as on
++ *	a phone, and the chip's host wake brings the host back for its traffic
+  * @max_autobaud_speed: max baudrate supported by device in autobaud mode
+  * @max_speed: max baudrate supported
+  */
+@@ -64,6 +67,7 @@
+ 	bool	host_powered;
+ 	bool	drive_rts_on_open;
+ 	bool	no_uart_clock_set;
++	bool	keep_links_in_sleep;
+ 	u32	max_autobaud_speed;
+ 	u32	max_speed;
+ };
+@@ -108,6 +112,7 @@
+  * @no_early_set_baudrate: don't set_baudrate before setup()
+  * @drive_rts_on_open: drive RTS signal on ->open() when platform requires it
+  * @no_uart_clock_set: UART clock set command for >3Mbps mode is unavailable
++ * @keep_links_in_sleep: register the HCI device without a suspend notifier
+  * @pcm_int_params: keep the initial PCM configuration
+  * @use_autobaud_mode: start Bluetooth device in autobaud mode
+  * @max_autobaud_speed: max baudrate supported by device in autobaud mode
+@@ -149,6 +154,7 @@
+ 	bool			no_early_set_baudrate;
+ 	bool			drive_rts_on_open;
+ 	bool			no_uart_clock_set;
++	bool			keep_links_in_sleep;
+ 	bool			use_autobaud_mode;
+ 	u8			pcm_int_params[5];
+ 	u32			max_autobaud_speed;
+@@ -487,6 +493,12 @@
+ 
+ out:
+ 	if (bcm->dev) {
++		/* Only with a host wake to bring the host back for the links'
++		 * traffic. Read by hci_uart_register_device() after this open.
++		 */
++		if (bcm->dev->keep_links_in_sleep && bcm->dev->irq > 0)
++			set_bit(HCI_UART_NO_SUSPEND_NOTIFIER, &hu->flags);
++
+ 		if (bcm->dev->use_autobaud_mode)
+ 			hci_uart_set_flow_control(hu, false);	/* Assert BT_UART_CTS_N */
+ 		else if (bcm->dev->drive_rts_on_open)
+@@ -1553,6 +1565,7 @@
+ 		bcmdev->no_early_set_baudrate = data->no_early_set_baudrate;
+ 		bcmdev->drive_rts_on_open = data->drive_rts_on_open;
+ 		bcmdev->no_uart_clock_set = data->no_uart_clock_set;
++		bcmdev->keep_links_in_sleep = data->keep_links_in_sleep;
+ 		if (data->max_speed && bcmdev->oper_speed > data->max_speed)
+ 			bcmdev->oper_speed = data->max_speed;
+ 	}
+@@ -1576,10 +1589,13 @@
+ 	.drive_rts_on_open = true,
+ };
+ 
+-/* Pixel 7 Pro: the platform powers the BCM4389 through BT_REG_ON itself. */
++/* Pixel 7 Pro: the platform powers the BCM4389 through BT_REG_ON itself and
++ * keeps it powered through system sleep, where its links stay up.
++ */
+ static struct bcm_device_data bcm4389_device_data = {
+ 	.drive_rts_on_open = true,
+ 	.host_powered = true,
++	.keep_links_in_sleep = true,
+ };
+ 
+ static struct bcm_device_data cyw4373a0_device_data = {

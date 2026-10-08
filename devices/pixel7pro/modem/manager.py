@@ -52,6 +52,22 @@ def command(*args, timeout=60):
         raise RuntimeError('Modem operation failed: ' + Path(args[0]).name)
 
 
+def fingerprint_holds(device):
+    """Whether the fingerprint service holds persist writable, as the user
+    approved (October 2): Trusty's secure storage lives there, mounted only in
+    the service's own namespace at /run/fp-hal-persist, and the partition is
+    read-only again when the service ends (fingerprint/fp-hal-lab.sh)."""
+    try:
+        pid = int(Path('/run/fp-hal-logs/lab.pid').read_text().split()[0])
+        for line in Path(f'/proc/{pid}/mountinfo').read_text().splitlines():
+            fields, _, rest = line.partition(' - ')
+            if fields.split()[4] == '/run/fp-hal-persist':
+                return rest.split()[1] == '/dev/' + device
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
 def protected_readonly():
     if b'google,GS201 CHEETAH' not in Path('/sys/firmware/devicetree/base/compatible').read_bytes():
         raise RuntimeError('Not the supported Pixel')
@@ -64,7 +80,7 @@ def protected_readonly():
         name = props.get('PARTNAME')
         if name in expected:
             ro = subprocess.check_output(['blockdev', '--getro', '/dev/' + entry.name], text=True).strip()
-            if ro != '1':
+            if ro != '1' and not (name == 'persist' and fingerprint_holds(entry.name)):
                 raise RuntimeError('Protected partition is not read-only')
             seen.add(name)
     if seen != expected:
@@ -131,10 +147,33 @@ def terminate(child, seconds):
     child.wait(timeout=seconds)
 
 
+# A boot that ended with the modem up and running (the AP or its power
+# firmware crashed later; October 3: an APM watchdog reset after hours of
+# service) is no sign that starting the modem is unsafe. Its guard is
+# archived and the modem starts again, once: another such end within
+# RETRY_WINDOW seconds keeps the guard, as an end during start always does.
+RETRY_WINDOW = 1800
+
+
+def recover_after_crash():
+    data = json.loads(GUARD.read_text())
+    if data.get('stage') != 'running' or data.get('boot') == boot_id():
+        raise RuntimeError('An earlier modem session did not stop cleanly; automatic start skipped')
+    now = time.time()
+    if any(now - archive.stat().st_mtime < RETRY_WINDOW
+           for archive in GUARD.parent.glob(GUARD.name + '.crashed-running-*')):
+        raise RuntimeError('The modem session ended uncleanly twice within 30 minutes; automatic start skipped')
+    archive = GUARD.with_name(f'{GUARD.name}.crashed-running-{data.get("boot", "unknown")}')
+    GUARD.rename(archive)
+    os.utime(archive, (now, now))
+    os.sync()
+    print('The last modem session ended while running, not while starting; starting again', flush=True)
+
+
 def prepare():
     verify_bundle()
     if GUARD.exists():
-        raise RuntimeError('An earlier modem session did not stop cleanly; automatic start skipped')
+        recover_after_crash()
     if Path('/sys/module/pixel_gpio').exists() or Path('/sys/module/cpif').exists():
         raise RuntimeError('GPIO preparation requires a fresh boot before audio')
     durable_json(GUARD, {'boot': boot_id(), 'stage': 'preparing'})

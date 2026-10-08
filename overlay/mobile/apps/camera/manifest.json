@@ -1,7 +1,7 @@
 {
   "id": "camera",
   "name": "Camera",
-  "comment": "Take photos with the phone's cameras",
+  "comment": "Take photos and videos with the phone's cameras",
   "icon": "camera-photo",
-  "permissions": ["camera"]
+  "permissions": ["camera", "microphone"]
 }

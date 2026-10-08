@@ -1,0 +1,12 @@
+[Unit]
+Description=Omarchy Link (phone and computer)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/omarchy-link daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

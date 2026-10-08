@@ -312,6 +312,46 @@ multi-frame stills, so it runs in this mode too, at 30 fps. The buffers
 (15.7 MB each) come from the 256 MB CMA area of kernel v26.
 libcamera's side is in `adapter/camera/libcamera/`.
 
+The UW, tele and front cameras have full-resolution modes too (2026-10-01), each at 30 fps
+with its own tables (`uw-4032x3016.bin`, `tele-4032x3024.bin`):
+- **UW:** 4032×3016, stock mode 0x918ca0, unbinned. Its VT PLL changes
+  (195/6 against 151/4) and the frame length becomes 3098; the OP PLL, and so
+  the link rate, stay the same.
+- **Tele:** 4032×3024, stock mode 0x908a64. Twice the line length at the
+  same pixel clock. Its OP PLL multiplier (0x0310) is 249 against 220, so the
+  link runs at about 1200 Msps. A mode now carries its own link rate.
+- **Pixel rate.** The sensor's `PIXEL_RATE` follows the active mode, so
+  libcamera's exposure times stay right in the UW's full mode.
+
+The front camera has one too: 3840×2736 (stock mode 0), unbinned, 30 fps at
+its tables' frame length and the binned mode's pixel rate, on the same link
+rate. Raw captures ran at 30 fps. libcamera's GPU pipeline processes 10.5 MP
+at about 15 fps, which suits stills. A still of the ceiling came out sharp
+and clean.
+
+**Frame rate.** Every mode starts at 30 fps or slower (2026-10-01). The binned
+modes' tables run faster (the main camera's 2016×1136 at 120 fps, the
+others at 60), and libcamera's simple pipeline never sets `VBLANK`, so video
+ran at 120 fps with 8 ms exposures, and the image processor kept an uneven
+quarter of the frames. The driver now sets the default blanking to stretch
+each frame to 1/30 s; the exposure range follows. The faster rates are still
+a `VBLANK` write away. The main camera's video then came in at 30 fps, with
+whole 33.3 ms steps.
+
+**Orientation (2026-10-01).** The ultra-wide and the telephoto were upside
+down at the main camera's 90°.
+- **Ultra-wide:** mounted the other way up. Its rotation is now 270.
+- **Telephoto:** at 270 it was the right way up but mirrored, so its sensor
+  reads its rows the other way. It keeps 270 and gets a vertical flip
+  (0x0101 = 0x02, written after its tables). Flipped, its rows start on the
+  colour filter's B G line, so it reports BGGR. The user checked text and
+  colours on both.
+
+On the phone, raw captures ran at 30.0 fps with whole frames, and the tele
+ran 564 frames in a row with no link error. libcamera's GPU pipeline made
+12 MP stills from both. The phone lay on its back, so the frames were dark
+(black level 64, σ 0.6), and the image itself is still to be checked.
+
 At boot `pixel-boot.sh` loads the media modules, the dma-buf heaps,
 `pixel-hsi2c-cam`, `pixel-camera-power` and this driver from
 `/usr/local/lib/omarchy-mobile/camera/`, so Omarchy Camera works in every
@@ -388,8 +428,38 @@ On link 4 / PHY 4 it decoded frame starts and nothing else:
 The GM5 sends C-PHY LRTE packet delimiters. With LRTE_CONFIG (0x600) EPD_EN
 (bit 31) set and the spacer fields at their reset value, frame ends arrive
 and the WDMA writes whole 2016×1512 frames; `pixel-camera.c` sets it for
-this camera only (`epd`). It streams 60 fps. Its AF (SEM1215SA, i2c-4 0x34)
-is not driven yet, so close subjects are out of focus.
+this camera only (`epd`). It streams 60 fps.
+
+### Tele autofocus (2026-10-01)
+
+The tele's lens is driven by its SEMCO SEM1215SA (AF and OIS controller,
+hsi2c_4 0x34, 16-bit registers, 8-bit values). The protocol comes from the
+stock HAL's ACT-SEM121FAMILY register table, recovered by static analysis
+(`.work/research/reports/Pixel 7 Pro tele SEM1215SA autofocus.md`):
+- **Power.** `pixel-camera-power` adds the stock actuator supplies to the
+  tele's sequence: L12S, 1 ms, SLG LDO5 2.85 V, then SLG GPIO1, down in
+  reverse.
+- **Enable.** After the sensor's 10 ms, wait for 0x0201 to read 1, then
+  write 0x0200 = 1 (AF on) and 0x0B00 = 1 (status monitor).
+- **Position.** 10 bits: the low byte to 0x0204, then the high byte to
+  0x0205. It reads back at 0x0206/0x0207.
+- **Off.** 0x0200 = 0.
+- **Calibration.** The module's factory calibration is read (never written)
+  from the EEPROM window: infinity at 0xC7B6, macro at 0xC7BC (big-endian).
+  On this phone they read 286 and 756.
+- **Never written:** calibration, gyro, OIS tuning, the flash window, or any
+  register outside these.
+
+On the phone the readback followed every move (0, 256, 512, 768, 1023 read
+115, 202, 520, 799, 1001 within 5 ms). libcamera's contrast AF (`Af` in
+`s5kgm5.yaml`) swept the full 0-1023 range and settled. `lens_debug=1` logs
+each move's readback.
+
+**AF range.** At load the driver powers the tele for about 20 ms to read
+the calibration. It sets the focus control to the calibrated span plus 40
+codes either side (246-796 on this phone), starting a quarter of the way
+from infinity. libcamera's AF then sweeps that span in steps of 137 and 27,
+against 255 and 51 over 0-1023.
 
 ### History: C-PHY before the fixes above
 

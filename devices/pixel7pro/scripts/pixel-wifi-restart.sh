@@ -26,6 +26,7 @@ insmod "$modules/pixel-pcie.ko" l1ss=1
 for module in rfkill cfg80211 brcmutil; do
     [[ -d /sys/module/$module ]] || insmod "$modules/$module.ko"
 done
-insmod "$wifi_driver"
+# No Wi-Fi Direct, as at boot (pixel-persistent-session.sh start_wifi).
+insmod "$wifi_driver" feature_disable=0x10
 insmod "$modules/brcmfmac-wcc.ko" 2>/dev/null || [[ -d /sys/module/brcmfmac_wcc ]]
 echo 'Wi-Fi restarted' >&2

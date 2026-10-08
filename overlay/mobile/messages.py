@@ -5,13 +5,21 @@
   thread KEY [LIMIT]            one conversation's messages, oldest first
   read KEY                      mark a conversation read
   send NUMBER TEXT              send a text (long texts go as several parts)
+  send-mms NUMBER TEXT FILE...  send a picture message (pictures made small enough)
+  capture                       open the camera to take a picture to send
+  photos                        the newest pictures in the camera roll
   retry ID                      send a failed message again
   delete ID | delete-thread KEY
   unread                        number of unread messages
+  download ID                   fetch a picture message again (the watcher does it)
   segments TEXT                 SMS parts and characters left, for the composer
   watch                         one JSON line per change. The shell runs this.
 
-Messages live in a SQLite database under $XDG_DATA_HOME/omarchy-mobile/messages.
+Messages live in a SQLite database under $XDG_DATA_HOME/omarchy-mobile/messages,
+a picture message's attachments in mms/ID beside it. A picture message (MMS)
+arrives as a notification in a WAP push; the recorder files it as
+"downloading", fetches it over mobile data (omarchy-mobile-mms) and only then
+posts a notification, trying three times before it gives up.
 ModemManager holds a received text only until it is copied here: the watcher
 that holds the lock (the recorder) copies each new text, removes it from the
 modem, posts a notification and follows delivery reports for sent texts.
@@ -21,28 +29,51 @@ omarchy-mobile-contacts when it is installed.
 When the Messages app runs this (OMARCHY_MOBILE_APP=messages), its messages
 grant is required. The shell needs none.
 """
+import ast
+import ctypes
 import fcntl
 import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import mimetypes
 import os
 from pathlib import Path
 import re
 import selectors
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
+import queue
 import time
 import uuid
 from datetime import datetime
+
+LIBC = ctypes.CDLL(None)
+PR_SET_PDEATHSIG = 1
+
+
+def die_with_parent():
+    """For a gdbus monitor (preexec_fn): it ends with this process. It writes
+    only when a signal comes, so one left behind by a restarted watcher would
+    never get the SIGPIPE and stay for good (900 piled up on October 2)."""
+    LIBC.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
+
 
 BUS = 'org.freedesktop.ModemManager1'
 MESSAGING = 'org.freedesktop.ModemManager1.Modem.Messaging'
 SMS = 'org.freedesktop.ModemManager1.Sms'
 # Sent texts stay in ModemManager this long for their delivery report.
 DELIVERY_WAIT = 3600
+# Picture messages: tries, and the wait before the next one (times the tries).
+MMS_TRIES = 3
+MMS_RETRY = 60
+# What a picture message may weigh: carriers take about 1 MB (T-Mobile's,
+# Tello's), less the headers' share.
+MMS_LIMIT = 900 * 1024
 MAX_TEXT = 1600
 GSM = set('@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà')
 GSM_EXT = set('^{}\\[~]|€\f')
@@ -67,6 +98,16 @@ def load_module(names, label):
 def device_backend():
     backend = load_module(('telephony.py', 'omarchy-mobile-telephony'), 'omarchy_mobile_telephony')
     return backend if backend is not None and backend.enabled() else None
+
+
+_mms = False
+
+
+def mms_module():
+    global _mms
+    if _mms is False:
+        _mms = load_module(('mms.py', 'omarchy-mobile-mms'), 'omarchy_mobile_mms')
+    return _mms
 
 
 def load_apps():
@@ -137,6 +178,15 @@ def database():
             CREATE INDEX IF NOT EXISTS messages_fingerprint ON messages (fingerprint);
             PRAGMA user_version = 1;
         ''')
+    if db.execute('PRAGMA user_version').fetchone()[0] < 2:
+        # Picture messages: kind 'mms', the files they brought ([{path, type,
+        # name, size}]) and what the notification said (JSON).
+        db.executescript('''
+            ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'sms';
+            ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+            ALTER TABLE messages ADD COLUMN mms TEXT NOT NULL DEFAULT '';
+            PRAGMA user_version = 2;
+        ''')
     return db
 
 
@@ -198,11 +248,38 @@ def segments(text):
 
 
 def row(item):
+    attachments = json.loads(item['attachments'] or '[]')
+    info = json.loads(item['mms'] or '{}')
     return {
         'id': item['id'], 'thread': item['thread'], 'number': item['number'],
         'direction': item['direction'], 'body': item['body'], 'time': item['time'],
         'state': item['state'], 'read': bool(item['read']), 'error': item['error'],
+        'kind': item['kind'], 'attachments': attachments, 'group': info.get('group', []),
+        'preview': preview(item, attachments),
     }
+
+
+def preview(item, attachments):
+    """A message in one line: its text, else what it brought."""
+    if item['body']:
+        return item['body']
+    if item['kind'] != 'mms':
+        return ''
+    if item['state'] == 'downloading':
+        return 'Picture message, downloading…'
+    if item['state'] == 'download-failed':
+        return 'Picture message, not downloaded'
+    if item['state'] == 'expired':
+        return 'Picture message, expired'
+    kinds = [a['type'].split('/')[0] for a in attachments]
+    if kinds and all(k == 'image' for k in kinds):
+        return 'Photo' if len(kinds) == 1 else f'{len(kinds)} photos'
+    if 'video' in kinds:
+        return 'Video'
+    if 'audio' in kinds:
+        return 'Audio'
+    return 'Attachment' if kinds else 'Picture message'
+
 
 
 def threads(db):
@@ -315,13 +392,13 @@ def when(stamp):
         return time.time()
 
 
-def insert(db, number, direction, body, stamp, state, read, modem='', fingerprint=''):
+def insert(db, number, direction, body, stamp, state, read, modem='', fingerprint='', kind='sms', mms=''):
     now = time.time()
     cursor = db.execute(
-        'INSERT INTO messages (thread, number, direction, body, time, state, read, modem, sent, fingerprint, updated) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO messages (thread, number, direction, body, time, state, read, modem, sent, fingerprint, updated, '
+        'kind, mms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         (thread_key(number), number, direction, body, stamp, state, int(read), modem,
-         now if direction == 'out' else 0, fingerprint, now))
+         now if direction == 'out' else 0, fingerprint, now, kind, mms))
     db.commit()
     return cursor.lastrowid
 
@@ -338,8 +415,13 @@ def ingest(db, texts=None, quiet=False):
             continue
         body = sms['text']
         if not body and sms['data']:
-            # A picture message arrives as a WAP push. MMS is not supported yet.
-            body = 'Sent a picture message, which this phone cannot show yet.'
+            # A picture message arrives as a WAP push: filed to download.
+            notice = mms_notice(sms['data'])
+            if notice is not None:
+                file_mms(db, sms, notice, quiet)
+                delete_modem_text(sms['path'])
+                continue
+            body = 'Sent a message this phone cannot show.'
         if not body:
             delete_modem_text(sms['path'])
             continue
@@ -350,6 +432,161 @@ def ingest(db, texts=None, quiet=False):
             added.append(row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone()))
         delete_modem_text(sms['path'])
     return added
+
+
+def mms_notice(data):
+    """The MMS message in a WAP push's bytes (hex), or None."""
+    module = mms_module()
+    if module is None:
+        return None
+    try:
+        pdu = module.push(bytes.fromhex(re.sub(r'[^0-9a-fA-F]', '', data)))
+        return module.decode(pdu) if pdu is not None else None
+    except ValueError:
+        return None
+
+
+def file_mms(db, sms, notice, quiet):
+    """A picture message's notification becomes a message to download (a
+    delivery report for one sent is only noted)."""
+    kind = notice.get('message-type')
+    if kind == 'delivery-ind':
+        if notice.get('status') == 0x81 and notice.get('message-id'):
+            db.execute("UPDATE messages SET state = 'delivered', updated = ? WHERE kind = 'mms' AND direction = 'out' "
+                       "AND json_extract(mms, '$.id') = ?", (time.time(), notice['message-id']))
+            db.commit()
+        return
+    if kind != 'notification-ind' or not notice.get('content-location'):
+        return
+    transaction = notice.get('transaction-id') or notice['content-location']
+    fingerprint = 'mms|' + transaction
+    if db.execute('SELECT 1 FROM messages WHERE fingerprint = ?', (fingerprint,)).fetchone():
+        return
+    info = {'location': notice['content-location'], 'transaction': transaction,
+            'expiry': notice.get('expiry', 0), 'size': notice.get('message-size', 0),
+            'subject': notice.get('subject', ''), 'tries': 0, 'tried': 0}
+    insert(db, notice.get('from') or sms['number'], 'in', '', when(sms['timestamp']), 'downloading', quiet,
+           fingerprint=fingerprint, kind='mms', mms=json.dumps(info))
+
+
+def attachment_folder(ident):
+    return data_root() / 'omarchy-mobile/messages/mms' / str(int(ident))
+
+
+def save_parts(ident, message, module):
+    """A retrieved message's parts: its texts, and its files saved."""
+    folder = attachment_folder(ident)
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, 0o700)
+    texts, attachments = [], []
+    for index, part in enumerate(message['parts']):
+        kind = part['type']
+        if kind == 'application/smil':
+            continue
+        if kind == 'text/plain':
+            text = module.part_text(part).strip()
+            if text:
+                texts.append(text)
+            continue
+        name = re.sub(r'[^\w.\-]+', '_', Path(part['name'] or '').name).strip('._')
+        if not name:
+            name = f'part{index}' + (mimetypes.guess_extension(kind) or '')
+        elif not Path(name).suffix:
+            name += mimetypes.guess_extension(kind) or ''
+        path = folder / name
+        n = 1
+        while path.exists():
+            path = folder / f'{Path(name).stem} ({n}){Path(name).suffix}'
+            n += 1
+        path.write_bytes(part['data'])
+        os.chmod(path, 0o600)
+        attachments.append({'path': str(path), 'type': kind, 'name': path.name, 'size': len(part['data'])})
+    return texts, attachments
+
+
+def fetch_mms(ident):
+    """Download a picture message; its row when there is news for the user
+    (it came, or the last try failed), else None."""
+    module = mms_module()
+    db = database()
+    try:
+        item = db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone()
+        if item is None or item['kind'] != 'mms' or item['state'] not in ('downloading', 'download-failed'):
+            return None
+        info = json.loads(item['mms'] or '{}')
+        now = time.time()
+        try:
+            if module is None:
+                raise RuntimeError('omarchy-mobile-mms is not installed')
+            if info.get('expiry') and info['expiry'] < now:
+                raise TimeoutError('The message expired before it was downloaded')
+            message = module.retrieve(info['location'])
+            texts, attachments = save_parts(ident, message, module)
+        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+            expired = isinstance(error, TimeoutError)
+            info.update(tries=info.get('tries', 0) + 1, tried=now)
+            db.execute('UPDATE messages SET state = ?, error = ?, mms = ?, updated = ? WHERE id = ?',
+                       ('expired' if expired else 'download-failed', str(error), json.dumps(info), time.time(), ident))
+            db.commit()
+            print(f'messages: picture message {ident} not downloaded: {error}', file=sys.stderr)
+            final = expired or info['tries'] >= MMS_TRIES
+            return row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone()) if final else None
+        subject = message.get('subject') or info.get('subject') or ''
+        if subject and subject not in texts:
+            texts.insert(0, subject)
+        info['group'] = sorted({a for a in message.get('to', []) + message.get('cc', []) if a})
+        db.execute("UPDATE messages SET body = ?, attachments = ?, state = 'received', error = '', mms = ?, "
+                   "updated = ? WHERE id = ?",
+                   ('\n'.join(texts), json.dumps(attachments), json.dumps(info), time.time(), ident))
+        db.commit()
+        try:
+            module.acknowledge(info['transaction'])
+        except (OSError, ValueError, RuntimeError) as error:
+            print(f'messages: the MMS server was not told of {ident}: {error}', file=sys.stderr)
+        return row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone())
+    finally:
+        db.close()
+
+
+class Downloads:
+    """Picture messages being fetched, each on a thread of its own, so the
+    watcher never waits on the network."""
+
+    def __init__(self):
+        self.running = set()
+        self.done = queue.Queue()
+
+    def start(self, db):
+        now = time.time()
+        for item in db.execute("SELECT id, state, mms FROM messages WHERE kind = 'mms' "
+                               "AND state IN ('downloading', 'download-failed')").fetchall():
+            if item['id'] in self.running:
+                continue
+            info = json.loads(item['mms'] or '{}')
+            tries = info.get('tries', 0)
+            if item['state'] == 'download-failed' and (tries >= MMS_TRIES or now - info.get('tried', 0) < MMS_RETRY * tries):
+                continue
+            self.running.add(item['id'])
+            threading.Thread(target=self.fetch, args=(item['id'],), daemon=True).start()
+
+    def fetch(self, ident):
+        try:
+            result = fetch_mms(ident)
+        except Exception as error:      # a bug must not end the watcher
+            print(f'messages: picture message {ident}: {error}', file=sys.stderr)
+            result = None
+        self.done.put((ident, result))
+
+    def finished(self):
+        found = []
+        while True:
+            try:
+                ident, result = self.done.get_nowait()
+            except queue.Empty:
+                return found
+            self.running.discard(ident)
+            if result is not None:
+                found.append(result)
 
 
 def hash_text(text):
@@ -466,6 +703,131 @@ def send(db, number, text):
     return row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone())
 
 
+def shrink(source, budget, folder, index):
+    """A file to send: as it is when it fits, a picture made smaller (a
+    JPEG, by ffmpeg) when it does not. (name, type, bytes)."""
+    source = Path(source)
+    data = source.read_bytes()
+    kind = mimetypes.guess_type(source.name)[0] or 'application/octet-stream'
+    if len(data) <= budget:
+        return source.name, kind, data
+    if not kind.startswith('image/') or not shutil.which('ffmpeg'):
+        raise ValueError(f'{source.name} is too large for a picture message')
+    target = folder / f'.shrink{index}.jpg'
+    try:
+        for edge in (1600, 1280, 1024, 800, 640, 480):
+            for quality in (3, 6, 10):
+                subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', str(source), '-frames:v', '1', '-vf',
+                                f"scale='min({edge},iw)':'min({edge},ih)':force_original_aspect_ratio=decrease",
+                                '-q:v', str(quality), str(target)], check=True, capture_output=True, timeout=60)
+                out = target.read_bytes()
+                if len(out) <= budget:
+                    return source.stem + '.jpg', 'image/jpeg', out
+    finally:
+        target.unlink(missing_ok=True)
+    raise ValueError(f'{source.name} could not be made small enough')
+
+
+def transmit_mms(db, ident, number, text, parts):
+    """Post a picture message to the carrier's server and record the result."""
+    module = mms_module()
+    if module is None:
+        raise RuntimeError('omarchy-mobile-mms is not installed')
+    try:
+        message_id = module.send([number], text, parts)
+    except module.Uncertain as error:
+        state, failure = 'unknown', 'Delivery uncertain; check with the recipient before sending again'
+        print(f'messages: picture message {ident}: {error}', file=sys.stderr)
+    except (OSError, ValueError, RuntimeError) as error:
+        state, failure = 'failed', str(error)
+    else:
+        state, failure = 'sent', ''
+        info = json.loads(db.execute('SELECT mms FROM messages WHERE id = ?', (ident,)).fetchone()[0] or '{}')
+        info['id'] = message_id
+        db.execute('UPDATE messages SET mms = ? WHERE id = ?', (json.dumps(info), ident))
+    db.execute('UPDATE messages SET state = ?, error = ?, updated = ? WHERE id = ?', (state, failure, time.time(), ident))
+    db.commit()
+    if state != 'sent':
+        raise RuntimeError(failure or 'Could not send the message')
+
+
+def send_mms(db, number, text, files):
+    """A picture message: its files kept beside the database, then sent."""
+    number = normalize(number)
+    text = text.replace('\r\n', '\n').strip()
+    if not files:
+        raise ValueError('A picture message needs a picture')
+    if len(files) > 10:
+        raise ValueError('Ten pictures at most')
+    for name in files:
+        if not Path(name).is_file():
+            raise ValueError(f'{Path(name).name} is not there')
+    ident = insert(db, number, 'out', text, time.time(), 'sending', True, kind='mms', mms='{}')
+    folder = attachment_folder(ident)
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, 0o700)
+    budget = (MMS_LIMIT - len(text.encode()) - 2048) // len(files)
+    parts, attachments = [], []
+    try:
+        for index, name in enumerate(files):
+            title, kind, data = shrink(name, budget, folder, index)
+            path = folder / title
+            n = 1
+            while path.exists():
+                path = folder / f'{Path(title).stem} ({n}){Path(title).suffix}'
+                n += 1
+            path.write_bytes(data)
+            os.chmod(path, 0o600)
+            parts.append((path.name, kind, data))
+            attachments.append({'path': str(path), 'type': kind, 'name': path.name, 'size': len(data)})
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        db.execute("UPDATE messages SET state = 'failed', error = ?, attachments = ?, updated = ? WHERE id = ?",
+                   (str(error), json.dumps(attachments), time.time(), ident))
+        db.commit()
+        raise ValueError(str(error)) from error
+    db.execute('UPDATE messages SET attachments = ?, updated = ? WHERE id = ?', (json.dumps(attachments), time.time(), ident))
+    db.commit()
+    transmit_mms(db, ident, number, text, parts)
+    return row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone())
+
+
+def ask_shell(request):
+    """A line on the shell's request FIFO; False when no shell reads it."""
+    base = os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}'
+    try:
+        fd = os.open(Path(base) / 'omarchy-mobile-shell.fifo', os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        return os.write(fd, (request + '\n').encode()) > 0
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+
+
+def capture():
+    """The camera, in its capture mode, over Messages: the picture kept
+    arrives at the returned path."""
+    base = os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}'
+    folder = Path(base) / 'omarchy-mobile-capture'
+    folder.mkdir(mode=0o700, exist_ok=True)
+    path = folder / f'photo-{int(time.time() * 1000)}.jpg'
+    if not ask_shell(f'over camera capture:{path}'):
+        launcher = shutil.which('omarchy-mobile-app') or str(Path.home() / '.local/bin/omarchy-mobile-app')
+        subprocess.Popen([launcher, 'launch', 'camera', f'capture:{path}'], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    return str(path)
+
+
+def photos(count=30):
+    """The camera roll's newest pictures."""
+    folder = Path(os.environ.get('XDG_PICTURES_DIR') or Path.home() / 'Pictures') / 'Camera'
+    found = [p for p in folder.glob('*') if p.suffix.lower() in ('.jpg', '.jpeg', '.png') and p.is_file()]
+    found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [str(p) for p in found[:count]]
+
+
 def retry(db, ident):
     item = db.execute("SELECT * FROM messages WHERE id = ? AND direction = 'out' AND state = 'failed'",
                       (ident,)).fetchone()
@@ -473,6 +835,11 @@ def retry(db, ident):
         raise ValueError('Only a failed message can be sent again')
     db.execute("UPDATE messages SET state = 'sending', error = '', time = ?, sent = ?, updated = ? WHERE id = ?",
                (time.time(), time.time(), time.time(), ident))
+    if item['kind'] == 'mms':
+        db.commit()
+        parts = [(a['name'], a['type'], Path(a['path']).read_bytes()) for a in json.loads(item['attachments'] or '[]')]
+        transmit_mms(db, ident, item['number'], item['body'], parts)
+        return row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone())
     db.commit()
     transmit(db, ident, item['number'], item['body'])
     return row(db.execute('SELECT * FROM messages WHERE id = ?', (ident,)).fetchone())
@@ -492,19 +859,28 @@ def adopt_sent(db, texts):
         delete_modem_text(sms['path'])
 
 
+def gvariant_string(text):
+    """A string in GVariant's text format, for gdbus."""
+    return "'" + text.replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n') + "'"
+
+
 def notify(message):
-    """A received text becomes a notification; its Open button shows the thread."""
+    """A received text becomes a notification: Open shows the thread, Reply
+    answers it from the notification (the server's inline reply), and Mark as
+    read files it."""
     if not shutil.which('gdbus'):
         return 0
     who = person(message['number'])
-    body = message['body'] if len(message['body']) <= 240 else message['body'][:239] + '…'
-    hints = "{'urgency': <byte 1>, 'category': <'im.received'>, 'desktop-entry': <'messages'>}"
+    text = message.get('preview') or message['body']
+    body = text if len(text) <= 240 else text[:239] + '…'
+    hints = ("{'urgency': <byte 1>, 'category': <'im.received'>, 'desktop-entry': <'messages'>, "
+             "'x-kde-reply-placeholder-text': <" + gvariant_string('Text ' + who['name']) + ">}")
     try:
         result = subprocess.run(['gdbus', 'call', '--session', '--dest', 'org.freedesktop.Notifications',
                                  '--object-path', '/org/freedesktop/Notifications',
                                  '--method', 'org.freedesktop.Notifications.Notify', '--',
                                  'Messages', '0', 'mail-unread', who['name'], body,
-                                 "['open', 'Open']", hints, '-1'],
+                                 "['open', 'Open', 'inline-reply', 'Reply', 'read', 'Mark as read']", hints, '-1'],
                                 capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return 0
@@ -560,7 +936,8 @@ class Monitors:
                 self.selector.unregister(process.stdout)
                 self.processes.pop(name)
             try:
-                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                           preexec_fn=die_with_parent)
             except OSError:
                 continue
             self.processes[name] = process
@@ -568,7 +945,8 @@ class Monitors:
             self.selector.register(process.stdout, selectors.EVENT_READ, name)
 
     def wait(self, timeout):
-        """Returns (modem signal seen, [notification ids whose Open was pressed])."""
+        """Returns (modem signal seen, [(notification id, what)]), what being
+        'open', 'read' or ('reply', text)."""
         if not self.processes:
             time.sleep(min(timeout, 2.0))
             return True, []
@@ -598,7 +976,18 @@ class Monitors:
                     self.tails[name] = rest
                     for match in re.finditer(r"ActionInvoked \(uint32 (\d+), '([^']*)'\)", complete):
                         if match.group(2) in ('open', 'default'):
-                            opened.append(int(match.group(1)))
+                            opened.append((int(match.group(1)), 'open'))
+                        elif match.group(2) == 'read':
+                            opened.append((int(match.group(1)), 'read'))
+                    # The server's inline reply (KDE's NotificationReplied
+                    # signal), the text in GVariant's text format.
+                    for match in re.finditer(r"""NotificationReplied \(uint32 (\d+), ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\)""",
+                                             complete):
+                        try:
+                            text = ast.literal_eval(match.group(2))
+                        except (ValueError, SyntaxError):
+                            continue
+                        opened.append((int(match.group(1)), ('reply', text)))
 
 
 def watch():
@@ -617,6 +1006,7 @@ def watch():
     # they are filed as read, without a notification.
     first = db.execute('SELECT COUNT(*) FROM messages').fetchone()[0] == 0
     next_modem = 0.0
+    downloads = Downloads()
     while True:
         monitors.ensure()
         if not leader and lock_leader(lock):
@@ -633,12 +1023,16 @@ def watch():
                 follow_delivery(db, texts)
                 if first:
                     added, first = [], False
+            # Signals do the work; a slow poll covers anything missed.
+            next_modem = time.monotonic() + (1 if backend else 60)
+        if leader:
+            # Picture messages are told of once they are here (or given up on).
+            downloads.start(db)
+            added += [m for m in downloads.finished() if not m['read']]
             for message in added:
                 ident = notify(message)
                 if ident:
-                    notified[ident] = message['thread']
-            # Signals do the work; a slow poll covers anything missed.
-            next_modem = time.monotonic() + (1 if backend else 60)
+                    notified[ident] = (message['thread'], message['number'])
         current = version(db)
         if current != last:
             emit({'ok': True, 'unread': unread(db), 'version': current,
@@ -646,11 +1040,24 @@ def watch():
             last = current
         # Sent texts waiting for a delivery report are checked every 20 s.
         waiting = leader and db.execute("SELECT 1 FROM messages WHERE modem != '' LIMIT 1").fetchone()
-        hit, opened = monitors.wait(1.0 if backend else 20.0 if waiting else (60.0 if leader else 1.0))
+        timeout = 1.0 if backend or downloads.running else 20.0 if waiting else (60.0 if leader else 1.0)
+        hit, opened = monitors.wait(timeout)
         pending = hit
-        for ident in opened:
-            if ident in notified:
-                launch_app(notified.pop(ident))
+        for ident, what in opened:
+            if ident not in notified:
+                continue
+            key, number = notified.pop(ident)
+            if what == 'open':
+                launch_app(key)
+                continue
+            if isinstance(what, tuple) and what[1].strip():
+                try:
+                    send(db, number, what[1])
+                except (ValueError, RuntimeError, OSError, subprocess.SubprocessError, sqlite3.Error) as error:
+                    print(f'messages: the reply to {key} was not sent: {error}', file=sys.stderr)
+            # A reply or Mark as read files the conversation as read.
+            db.execute('UPDATE messages SET read = 1, updated = ? WHERE thread = ? AND read = 0', (time.time(), key))
+            db.commit()
 
 
 def main(args):
@@ -674,14 +1081,33 @@ def main(args):
             result = {'ok': True, 'unread': unread(db)}
         elif action == 'send' and len(args) == 3:
             result = {'ok': True, 'message': send(db, args[1], args[2])}
+        elif action == 'send-mms' and len(args) >= 4:
+            result = {'ok': True, 'message': send_mms(db, args[1], args[2], args[3:])}
+        elif action == 'capture' and len(args) == 1:
+            result = {'ok': True, 'path': capture()}
+        elif action == 'photos' and len(args) == 1:
+            result = {'ok': True, 'photos': photos()}
         elif action == 'retry' and len(args) == 2:
             result = {'ok': True, 'message': retry(db, int(args[1]))}
+        elif action == 'download' and len(args) == 2:
+            item = db.execute("SELECT mms FROM messages WHERE id = ? AND kind = 'mms' "
+                              "AND state IN ('download-failed', 'expired')", (int(args[1]),)).fetchone()
+            if item is None:
+                raise ValueError('There is no picture message to download')
+            info = dict(json.loads(item['mms'] or '{}'), tries=0, tried=0)
+            db.execute("UPDATE messages SET state = 'downloading', error = '', mms = ?, updated = ? WHERE id = ?",
+                       (json.dumps(info), time.time(), int(args[1])))
+            db.commit()
+            result = {'ok': True}
         elif action == 'delete' and len(args) == 2:
+            shutil.rmtree(attachment_folder(args[1]), ignore_errors=True)
             db.execute('DELETE FROM messages WHERE id = ?', (int(args[1]),))
             db.execute('UPDATE messages SET updated = ? WHERE id = (SELECT MAX(id) FROM messages)', (time.time(),))
             db.commit()
             result = {'ok': True}
         elif action == 'delete-thread' and len(args) == 2:
+            for item in db.execute("SELECT id FROM messages WHERE thread = ? AND kind = 'mms'", (args[1],)).fetchall():
+                shutil.rmtree(attachment_folder(item['id']), ignore_errors=True)
             db.execute('DELETE FROM messages WHERE thread = ?', (args[1],))
             db.execute('UPDATE messages SET updated = ? WHERE id = (SELECT MAX(id) FROM messages)', (time.time(),))
             db.commit()

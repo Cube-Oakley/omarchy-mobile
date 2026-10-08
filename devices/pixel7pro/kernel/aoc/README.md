@@ -37,6 +37,12 @@ same as on stock:
 It needed these changes:
 - **Trusty load order.** trusty-ipc loads before trusty-virtio, so TIPC is
   probed before VIRTIO_START.
+- **Trusty after CPU hotplug** (0008, v37). Each CPU's `trusty-nop` thread
+  loses its binding while the CPU is offline, and unparking does not restore
+  it. Back online, the CPU's doorbell then entered Trusty from another CPU,
+  and Trusty threads pinned to it never ran. The fingerprint app pins itself
+  to CPUs 4 and 6, which are offline while the screen is dark. `trusty_cpu_up`
+  binds the thread again.
 - **S2MPUs.** They reset to blocking. On stock, pKVM programs them when their
   power domain comes up. Here, `stubs/.../pkvm-s2mpu.h` disables the GSA's
   S2MPU instead (CTRL0 = 0) while the GSA is powered, and `aoc.c` does the

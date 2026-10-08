@@ -11,6 +11,11 @@ PanelWindow {
     property string error: ""
     property string destination: ""
     property bool restarting: false
+    // A screen recording in progress (the shell's), and the menu's requests
+    // for one or a screenshot: the shell acts once the menu has faded.
+    property bool recording: false
+    signal recordRequested()
+    signal screenshotRequested()
     readonly property string helper: Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-power-menu"
     function show() {
         if (restarting) return;
@@ -72,6 +77,27 @@ PanelWindow {
             }
             TouchButton {
                 Layout.fillWidth: true
+                label: menu.recording ? "\u{F04DB}  Stop recording" : "\u{F044A}  Record the screen"
+                selected: menu.recording
+                visible: !menu.restarting
+                onClicked: { menu.close(); menu.recordRequested(); }
+            }
+            TouchButton {
+                Layout.fillWidth: true
+                label: "\u{F0E51}  Screenshot"
+                visible: !menu.restarting && !menu.recording
+                onClicked: { menu.close(); menu.screenshotRequested(); }
+            }
+            // A snapshot of the logs for a problem just seen
+            // (omarchy-mobile-report); it notifies when saved.
+            TouchButton {
+                Layout.fillWidth: true
+                label: "\u{F0026}  Report a problem"
+                visible: !menu.restarting && !report.running
+                onClicked: { report.running = true; menu.close(); }
+            }
+            TouchButton {
+                Layout.fillWidth: true
                 label: "Restart"
                 visible: !menu.restarting
                 enabled: menu.available.restart
@@ -91,6 +117,10 @@ PanelWindow {
                 onClicked: menu.close()
             }
         }
+    }
+    Process {
+        id: report
+        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-report"]
     }
     Process {
         id: capabilities

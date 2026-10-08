@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Clock
+Comment=Alarms, world clocks, timers and a stopwatch
+Exec=omarchy-mobile-app launch clock
+Icon=clock-app
+Terminal=false
+Type=Application
+Categories=Utility;Clock;
+StartupNotify=true

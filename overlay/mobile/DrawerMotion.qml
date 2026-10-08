@@ -10,6 +10,7 @@ Item {
     property real lastVelocity: 0
     property double lastMotionTime: 0
     readonly property bool settledOpen: progress > 0.999 && !dragging && !settle.running
+    readonly property bool moving: dragging || settle.running
     signal closed()
     function begin() {
         settle.stop(); dragging = true;

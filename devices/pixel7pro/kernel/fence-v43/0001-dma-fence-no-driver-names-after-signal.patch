@@ -1,0 +1,35 @@
+diff --git a/drivers/dma-buf/dma-fence.c b/drivers/dma-buf/dma-fence.c
+index 05090fb0f..c63052153 100644
+--- a/drivers/dma-buf/dma-fence.c
++++ b/drivers/dma-buf/dma-fence.c
+@@ -1168,6 +1168,13 @@ const char __rcu *dma_fence_driver_name(struct dma_fence *fence)
+ {
+ 	const struct dma_fence_ops *ops;
+ 
++	/*
++	 * A signaled fence keeps its ops when it has a release or wait
++	 * callback (drm_sched's), but what they read may be freed: not asked.
++	 */
++	if (dma_fence_test_signaled_flag(fence))
++		return (const char __rcu *)"detached-driver";
++
+ 	/* RCU protection is required for safe access to returned string */
+ 	ops = rcu_dereference(fence->ops);
+ 	if (ops)
+@@ -1201,6 +1208,16 @@ const char __rcu *dma_fence_timeline_name(struct dma_fence *fence)
+ {
+ 	const struct dma_fence_ops *ops;
+ 
++	/*
++	 * A signaled fence keeps its ops when it has a release or wait
++	 * callback, but what they read may be freed: a drm_sched fence's
++	 * timeline name is its scheduler's, gone with a closed GPU context
++	 * (Android's sync_file info read one on October 7, and the kernel
++	 * panicked).
++	 */
++	if (dma_fence_test_signaled_flag(fence))
++		return (const char __rcu *)"signaled-timeline";
++
+ 	/* RCU protection is required for safe access to returned string */
+ 	ops = rcu_dereference(fence->ops);
+ 	if (ops)

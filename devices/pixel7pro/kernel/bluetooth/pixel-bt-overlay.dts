@@ -5,6 +5,14 @@
  * A new node: the stock serial@181B0000 lists pin states on a pin controller
  * without a mainline driver, so a device bound to it would wait forever.
  *
+ * The Bluetooth node's wake lines are the stock nitrous node's: device wake
+ * gpp16-3 (active high) and host wake gpa6-6, a wake-up interrupt, which
+ * pixel-gpio.ko provides. With them hci_bcm runs the chip's low-power mode:
+ * after 5 s idle it drops device wake and stops the UART (RTS deasserted),
+ * and the chip asks for it back with a host-wake pulse (rising edge), which
+ * also wakes the phone from sleep. pixel-bt applies the node without them
+ * (no low-power mode) if pixel-gpio does not provide both.
+ *
  * The UART clock is CMU_APM DIV_CLK_APM_USI1_UART (ratio 2) of APM_FUNC,
  * which the bootloader leaves on PLL_ALV/2: 197 MHz. GIC SPI 69 and the
  * 256-byte FIFO are the stock node's.
@@ -39,6 +47,9 @@
 			 */
 			compatible = "brcm,bcm4389-bt";
 			max-speed = <3000000>;
+			device-wakeup-gpios = <&gpp16 3 0>;
+			interrupts-extended = <&gpa6 6 1 0>;
+			interrupt-names = "host-wakeup";
 		};
 	};
 };

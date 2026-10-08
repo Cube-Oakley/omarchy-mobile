@@ -1,0 +1,5 @@
+bec333229ff2de5968970bbde2c5c9dfb82f943e38b87a1feba0bdf9a4fced2b  boot-pixel-shell.img (out/bcl-guard-v39, build ID 21035b7b89e68af018d46ba3da985c985457e64f)
+f3660fcdd0e4cf93bdd5c76516795fcf80760d03245c5f0ed1ca12f653bd562f  scripts/build-pixel-shell.py
+8790b734bb6746c7ff157974b6e78b7331ba6383fa1556b25b8882c88ccae303  scripts/pixel-persistent-session.sh
+056edf1f8575585c0de7e0e91efad78bf0f2911ab6e5d85492c24ebdc4a77ac9  kernel/bcl/pixel-bcl.c
+b93561951644eaeda5f4c2a42a9be16a496aa23f2ade3d72b69d9d5719db5b95  kernel/bcl-guard-v39/0001-pixel-acpm-cpu-scaling-guard-cpu-gpu-sensors.patch

@@ -25,6 +25,7 @@ ap.add_argument('--panel120', action='store_true', help='build v19 guarded 60/12
 ap.add_argument('--persistent-root', action='store_true', help='include UFS/input modules and mount an already installed Pixel root; requires --seconds 0')
 ap.add_argument('--initcall-debug', action='store_true', help='trace kernel initialization in this diagnostic image')
 ap.add_argument('--cma', default='128M', help='default CMA area below 4 GiB (the camera write-DMA is 32-bit)')
+ap.add_argument('--mfc-cma', help='CMA area of its own for the video codec (kernel/mfc), e.g. 128M')
 a = ap.parse_args()
 if a.persistent_root:
     if a.seconds != 0:
@@ -83,6 +84,8 @@ if a.panel120:
     # panel_sleep: sleep in while the screen is off, 0.32 W less than display
     # off alone (1.47 against 1.79 W, screen off and idle).
     cmdline += ' pixel_scanout.panel120=1 pixel_scanout.panel_sleep=1'
+if a.mfc_cma:
+    cmdline += f' pixel_mfc_cma={a.mfc_cma}'
 if a.initcall_debug:
     cmdline += ' initcall_debug'
 (out / 'cmdline.txt').write_text(cmdline + '\n')
@@ -180,7 +183,54 @@ subprocess.run([str(kernel / 'scripts/config'), '--file', str(kernel / '.config'
                    '--enable', 'PSTORE', '--enable', 'PSTORE_RAM',
                    '--enable', 'PSTORE_CONSOLE',
                    # Staged suspend tests (/sys/power/pm_test) and timings
-                   '--enable', 'PM_DEBUG', '--enable', 'PM_SLEEP_DEBUG'] if a.persistent_root else []),
+                   '--enable', 'PM_DEBUG', '--enable', 'PM_SLEEP_DEBUG',
+                   # Binder, for the vendor fingerprint HAL (AIDL over binderfs)
+                   '--enable', 'ANDROID_BINDER_IPC', '--enable', 'ANDROID_BINDERFS',
+                   # Waydroid: Android 13's lmkd, a critical service, needs
+                   # pressure stall information; without it the container
+                   # reboots itself after four lmkd exits.
+                   '--enable', 'PSI',
+                   # Android's netd routes each network through its own table
+                   # and fwmark rules ("ip rule" failed without them: Android
+                   # had an address but no route), and closes sockets with
+                   # SOCK_DESTROY when a network goes away.
+                   '--enable', 'IP_ADVANCED_ROUTER', '--enable', 'IP_MULTIPLE_TABLES',
+                   '--enable', 'IPV6_MULTIPLE_TABLES', '--enable', 'IPV6_ROUTER_PREF',
+                   '--enable', 'IPV6_ROUTE_INFO', '--enable', 'IPV6_OPTIMISTIC_DAD',
+                   '--enable', 'INET_UDP_DIAG', '--enable', 'INET_DIAG_DESTROY',
+                   '--module', 'NET_CLS_BPF', '--module', 'NET_ACT_BPF',
+                   # Waydroid's container bridge NATs through iptables-legacy
+                   # (waydroid/pack-modules.sh); all modules but ICMP's
+                   # icmp_ndo_send helper.
+                   '--enable', 'NETFILTER_XTABLES_LEGACY',
+                   '--module', 'IP_NF_IPTABLES_LEGACY', '--module', 'IP_NF_FILTER',
+                   '--module', 'IP_NF_NAT', '--module', 'IP_NF_TARGET_MASQUERADE',
+                   '--module', 'IP_NF_MANGLE', '--module', 'NETFILTER_XT_TARGET_CHECKSUM',
+                   # Android's netd inside Waydroid: its iptables-restore
+                   # needs these tables, matches and targets (Android's
+                   # android-base.config list, as modules; SECMARK is left
+                   # out because it would change the sk_buff layout).
+                   *(x for o in ('IP_NF_RAW', 'IP_NF_TARGET_REJECT', 'IP_NF_MATCH_AH', 'IP_NF_MATCH_ECN',
+                                 'IP_NF_MATCH_TTL', 'IP_NF_TARGET_NETMAP', 'IP_NF_TARGET_REDIRECT',
+                                 'IP6_NF_IPTABLES', 'IP6_NF_IPTABLES_LEGACY', 'IP6_NF_FILTER',
+                                 'IP6_NF_MANGLE', 'IP6_NF_RAW', 'IP6_NF_TARGET_REJECT',
+                                 'IP6_NF_MATCH_IPV6HEADER', 'IP6_NF_MATCH_RPFILTER',
+                                 'NETFILTER_XT_MATCH_BPF', 'NETFILTER_XT_MATCH_COMMENT',
+                                 'NETFILTER_XT_MATCH_CONNLIMIT', 'NETFILTER_XT_CONNMARK',
+                                 'NETFILTER_XT_MATCH_CONNTRACK', 'NETFILTER_XT_MATCH_HASHLIMIT',
+                                 'NETFILTER_XT_MATCH_HELPER', 'NETFILTER_XT_MATCH_IPRANGE',
+                                 'NETFILTER_XT_MATCH_LENGTH', 'NETFILTER_XT_MATCH_LIMIT',
+                                 'NETFILTER_XT_MATCH_MAC', 'NETFILTER_XT_MARK', 'NETFILTER_XT_MATCH_OWNER',
+                                 'NETFILTER_XT_MATCH_PKTTYPE', 'NETFILTER_XT_MATCH_POLICY',
+                                 'NETFILTER_XT_MATCH_QUOTA', 'NETFILTER_XT_MATCH_SOCKET',
+                                 'NETFILTER_XT_MATCH_STATE', 'NETFILTER_XT_MATCH_STATISTIC',
+                                 'NETFILTER_XT_MATCH_STRING', 'NETFILTER_XT_MATCH_TIME',
+                                 'NETFILTER_XT_MATCH_U32', 'NETFILTER_XT_TARGET_CLASSIFY',
+                                 'NETFILTER_XT_TARGET_CT', 'NETFILTER_XT_TARGET_IDLETIMER',
+                                 'NETFILTER_XT_TARGET_NFLOG', 'NETFILTER_XT_TARGET_NFQUEUE',
+                                 'NETFILTER_XT_TARGET_TCPMSS', 'NETFILTER_XT_TARGET_TPROXY',
+                                 'NETFILTER_XT_TARGET_TRACE')
+                     for x in ('--module', o))] if a.persistent_root else []),
                 '--set-str', 'LOCALVERSION', '-pixel-panel19' if a.panel120 else '-pixel-scanout17' if a.direct_scanout else ('-pixel-display16' if a.display_timing else ('-pixel-gpu15' if a.gpu else ('-pixel-power14' if a.acpm else ('-pixel-drm11' if a.drm else ('-pixel-net10' if a.usb_network else '-pixel-shell9'))))),
                 *(['--enable', 'EXYNOS_ACPM_PROTOCOL', '--enable', 'EXYNOS_MBOX',
                    '--enable', 'EXYNOS_ACPM_CLK', '--enable', 'GS201_ACPM_THERMAL',

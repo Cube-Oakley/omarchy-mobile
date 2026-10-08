@@ -21,6 +21,15 @@ for module in pixel_camera pixel_camera_power; do
     [[ ! -d /sys/module/$module ]] || rmmod "$module" ||
         echo "pixel-reboot: $module stays loaded" >&2
 done
+# The PMIC also keeps the sleep opmodes pixel-pmic-opmode set (rails that
+# follow PWREN or PWREN_MIF). After a day of deep sleep, the first boot from
+# a restart with them in place hit an APM watchdog reset, twice; the second
+# boot was clean. Put back the fields the module found at load.
+opmode=/sys/module/pixel_pmic_opmode/parameters/restore
+if [[ -w $opmode ]]; then
+    echo 1 >"$opmode" && rmmod pixel_pmic_opmode ||
+        echo 'pixel-reboot: PMIC opmodes stay as set for sleep' >&2
+fi
 param=/sys/module/pixel_reboot/parameters/bootloader
 case ${1:-linux} in
     linux)

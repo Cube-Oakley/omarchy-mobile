@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 01:40:00 -0700
+Subject: [PATCH] libcamera: simple: accept a sensor configuration within 1% of
+ the processed stream size
+
+The simple pipeline picks the smallest sensor configuration whose largest
+processed output covers the requested stream. The software ISP's debayer
+leaves an 8-column margin, so a binned mode exactly as wide as the request
+never covers it, and the full-resolution mode wins instead, at four times
+the data.
+
+A configuration that falls short by at most 1% in each direction now
+qualifies too, and the stream is adjusted down to it. On the Pixel 7 Pro
+the front camera's 1080p video moves from the 3840x2736 mode to the
+1920x1368 binned one (1912x1080 out), and the software ISP's time per frame
+halves; every other camera and role keeps its mode.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -1235,12 +1235,23 @@
+ 	const SimpleCameraData::Configuration *maxPipeConfig = nullptr;
+ 	pipeConfig_ = nullptr;
+ 
++	/*
++	 * A sensor configuration whose largest output falls short of the
++	 * processed stream by at most 1% in each direction also qualifies; the
++	 * stream is then adjusted down to it. A converter may need a margin
++	 * (the software ISP's debayer leaves 8 columns), so an otherwise
++	 * matching binned mode would lose to a full-resolution one it cannot
++	 * process at the same frame rate: 1912 of 1920 columns, for example.
++	 */
++	const Size nearProcessedStreamSize{ maxProcessedStreamSize.width * 99 / 100,
++					    maxProcessedStreamSize.height * 99 / 100 };
++
+ 	for (const SimpleCameraData::Configuration *pipeConfig : *configs) {
+ 		const Size &captureSize = pipeConfig->captureSize;
+ 		const Size &maxOutputSize = pipeConfig->outputSizes.max;
+ 
+-		if (maxOutputSize.width >= maxProcessedStreamSize.width &&
+-		    maxOutputSize.height >= maxProcessedStreamSize.height &&
++		if (maxOutputSize.width >= nearProcessedStreamSize.width &&
++		    maxOutputSize.height >= nearProcessedStreamSize.height &&
+ 		    captureSize.width >= maxRawStreamSize.width &&
+ 		    captureSize.height >= maxRawStreamSize.height) {
+ 			if (!pipeConfig_ || captureSize < pipeConfig_->captureSize)

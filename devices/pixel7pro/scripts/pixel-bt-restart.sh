@@ -7,10 +7,15 @@
 set -euo pipefail
 marker=/run/pixel-bt-sleeping
 modules=/proc/1/root/lib/modules/pixel
+newer=/usr/local/lib/omarchy-mobile/bluetooth
 exec 9>/run/pixel-bt-restart.lock
 flock 9
 [[ -e $marker ]] || exit 0
-[[ -d /sys/module/pixel_bt ]] || insmod "$modules/pixel-bt.ko"
-[[ -d /sys/module/hci_uart ]] || insmod "$modules/hci_uart.ko"
+# The boot's choice: a build installed for this kernel, else the image's.
+load() {
+    { [[ -f $newer/$1.ko ]] && insmod "$newer/$1.ko"; } || insmod "$modules/$1.ko"
+}
+[[ -d /sys/module/pixel_bt ]] || load pixel-bt
+[[ -d /sys/module/hci_uart ]] || load hci_uart
 rm -f "$marker"
 echo 'Bluetooth restarted' >&2

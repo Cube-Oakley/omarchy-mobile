@@ -1,0 +1,57 @@
+Find each trace event's category at compile time (Omarchy Mobile).
+
+Upstream Perfetto keeps a TRACE_EVENT's category index in a constexpr
+variable. This copy passed PERFETTO_GET_CATEGORY_INDEX() straight to the
+calls, so every trace point, enabled or not, searched the 275 registered
+categories by name at run time (twice for a scoped event: at its start and
+at its end). And since clang defines __GNUC__ too, the GCC fallback of
+TRACE_EVENT_CATEGORY_ENABLED did the same under clang.
+
+On the Pixel 7 Pro, scrolling X, that search
+(perfetto::internal::TrackEventCategoryRegistry::Find) was 46 % of Viz's
+compositor thread, 39 % of the browser's main thread, 34 % of the
+renderer's compositor thread, 17 % of the renderer's main thread and 10 %
+of the GPU thread.
+
+--- a/src/3rdparty/chromium/third_party/perfetto/include/perfetto/tracing/internal/track_event_macros.h
++++ b/src/3rdparty/chromium/third_party/perfetto/include/perfetto/tracing/internal/track_event_macros.h
+@@ -133,6 +133,12 @@
+   do {                                                                         \
+     ::perfetto::internal::ValidateEventNameType<decltype(name)>();             \
+     namespace tns = PERFETTO_TRACK_EVENT_NAMESPACE;                            \
++    /* The category's index at compile time, as upstream Perfetto has it */   \
++    /* (Omarchy Mobile): passed straight to the calls, Find() searched */     \
++    /* every category by name twice per event, enabled or not. */             \
++    PERFETTO_INTERNAL_STATIC_FOR_MSVC constexpr size_t PERFETTO_UID(           \
++        kCatIndex_ADD_TO_PERFETTO_DEFINE_CATEGORIES_IF_FAILS_) =               \
++        PERFETTO_GET_CATEGORY_INDEX(category);                                 \
+     if (::PERFETTO_TRACK_EVENT_NAMESPACE::internal::IsDynamicCategory(         \
+             category)) {                                                       \
+       tns::TrackEvent::CallIfEnabled(                                          \
+@@ -144,11 +150,12 @@
+           });                                                                  \
+     } else {                                                                   \
+       tns::TrackEvent::CallIfCategoryEnabled(                                  \
+-          PERFETTO_GET_CATEGORY_INDEX(category),                               \
++          PERFETTO_UID(kCatIndex_ADD_TO_PERFETTO_DEFINE_CATEGORIES_IF_FAILS_), \
+           [&](uint32_t instances) PERFETTO_NO_THREAD_SAFETY_ANALYSIS {         \
+             tns::TrackEvent::method(                                           \
+                 instances,                                                     \
+-                PERFETTO_GET_CATEGORY_INDEX(category),                         \
++                PERFETTO_UID(                                                  \
++                    kCatIndex_ADD_TO_PERFETTO_DEFINE_CATEGORIES_IF_FAILS_),    \
+                 ::perfetto::internal::DecayEventNameType(name),                \
+                 ##__VA_ARGS__);                                                \
+           });                                                                  \
+@@ -214,7 +221,10 @@
+   }
+ #endif  // PERFETTO_ENABLE_LEGACY_TRACE_EVENTS
+ 
+-#if PERFETTO_BUILDFLAG(PERFETTO_COMPILER_GCC) || \
++// Clang defines __GNUC__ too, so PERFETTO_COMPILER_GCC alone sent it to the
++// fallback, which finds the category by name at run time (Omarchy Mobile).
++#if (PERFETTO_BUILDFLAG(PERFETTO_COMPILER_GCC) &&  \
++     !PERFETTO_BUILDFLAG(PERFETTO_COMPILER_CLANG)) || \
+     PERFETTO_BUILDFLAG(PERFETTO_COMPILER_MSVC)
+ // On GCC versions <9 there's a bug that prevents using captured constant
+ // variables in constexpr evaluation inside a lambda:

@@ -1,0 +1,21 @@
+--- a/arch/arm64/kernel/pixel_acpm.c
++++ b/arch/arm64/kernel/pixel_acpm.c
+@@ -453,11 +453,17 @@
+ 		return -EINVAL;
+ 	if (!handle || num_online_cpus() != 8)
+ 		return -ENODEV;
+-	/* Require live thermal zones and fresh, plausible firmware temperatures. */
++	/* Require live thermal zones and fresh, plausible firmware temperatures
++	 * on the CPU and GPU sensors. The ISP, TPU and AUR blocks are powered
++	 * off at boot and their sensors keep the reading they had then: after a
++	 * hot reset the ISP read 68 C all day and CPU scaling never started.
++	 */
+ 	for (i = 0; i < ARRAY_SIZE(zones); i++) {
+ 		tz = thermal_zone_get_zone_by_name(zones[i]);
+ 		if (IS_ERR(tz))
+ 			return PTR_ERR(tz);
++		if (i > 3)	/* after pixel-g3d */
++			continue;
+ 		ret = handle->ops->tmu.read_temp(handle, 9, i, &temp);
+ 		if (ret)
+ 			return ret;

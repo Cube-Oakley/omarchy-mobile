@@ -67,19 +67,32 @@ def main():
         'usr/local/sbin/pixel-usb-diag': ('scripts/pixel-usb-diag.py', 0o755),
         'usr/local/sbin/pixel-wifi-ssh': ('scripts/pixel-wifi-ssh.py', 0o755),
         'etc/NetworkManager/dispatcher.d/50-pixel-wifi-ssh': ('scripts/pixel-wifi-ssh-dispatcher.sh', 0o755),
+        'usr/local/sbin/pixel-wl': ('scripts/pixel-wl.py', 0o755),
+        'etc/NetworkManager/dispatcher.d/51-pixel-wifi-power': ('scripts/pixel-wifi-power-dispatcher.sh', 0o755),
+        'etc/NetworkManager/dispatcher.d/52-pixel-hotspot': ('scripts/pixel-hotspot-dispatcher.sh', 0o755),
+        'etc/NetworkManager/dispatcher.d/53-pixel-android-uplink': ('scripts/pixel-android-uplink-dispatcher.sh', 0o755),
+        'etc/NetworkManager/dispatcher.d/54-pixel-time': ('scripts/pixel-time-dispatcher.sh', 0o755),
+        'usr/local/sbin/pixel-time': ('scripts/pixel-time.py', 0o755),
         'usr/local/sbin/pixel-reboot': ('scripts/pixel-reboot.sh', 0o755),
+        'usr/local/sbin/pixel-hotspot-iface': ('scripts/pixel-hotspot-iface.sh', 0o755),
+        'usr/local/sbin/pixel-report-root': ('scripts/pixel-report-root.sh', 0o755),
         'usr/local/sbin/pixel-suspend': ('scripts/pixel-suspend.py', 0o755),
         'usr/local/sbin/pixel-wifi-restart': ('scripts/pixel-wifi-restart.sh', 0o755),
         'usr/local/sbin/pixel-display-hook': ('scripts/pixel-display-hook.py', 0o755),
         'usr/local/sbin/pixel-bt-restart': ('scripts/pixel-bt-restart.sh', 0o755),
         'etc/NetworkManager/conf.d/10-pixel.conf': ('adapter/network/NetworkManager-pixel.conf', 0o644),
+        'etc/NetworkManager/conf.d/30-pixel-hotspot.conf': ('adapter/network/NetworkManager-hotspot.conf', 0o644),
         'usr/share/alsa/ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf':
             ('audio/ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf', 0o644),
         'usr/share/alsa/ucm2/Google/aoc/HiFi.conf': ('audio/ucm2/Google/aoc/HiFi.conf', 0o644),
         'etc/wireplumber/wireplumber.conf.d/51-pixel-aoc.conf': ('audio/wireplumber/51-pixel-aoc.conf', 0o644),
+        'etc/pipewire/filter-chain.conf.d/60-pixel-speaker-loudness.conf':
+            ('audio/pipewire/filter-chain.conf.d/60-pixel-speaker-loudness.conf', 0o644),
         'usr/local/lib/omarchy-mobile/sensors/pixel-sensor-proxy.py': ('sensors/pixel-sensor-proxy.py', 0o755),
         'usr/local/lib/omarchy-mobile/sensors/usf.py': ('sensors/usf.py', 0o644),
         'usr/local/lib/omarchy-mobile/sensors/usf_backend.py': ('sensors/usf_backend.py', 0o644),
+        'usr/local/lib/omarchy-mobile/thermal/pixel-skin-guard.py': ('thermal/pixel-skin-guard.py', 0o755),
+        'etc/dbus-1/system.d/omarchy-sensor-power.conf': ('sensors/omarchy-sensor-power.conf', 0o644),
     }
     directories = {'mnt': 0o755, 'run': 0o755, 'dev': 0o755, 'proc': 0o755, 'sys': 0o755, 'tmp': 0o1777}
     proof = 'pixel-persistent-' + uuid.uuid4().hex + '\n'

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Notes
+Comment=Plain text and Markdown notes in the Notes folder
+Exec=omarchy-mobile-app launch notes
+Icon=notes-app
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+StartupNotify=true

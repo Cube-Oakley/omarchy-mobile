@@ -290,8 +290,9 @@ def sync():
             lines.append(f"color{i} {colors.get(name, colors.get('color'+str(i), colors['foreground']))}")
         write_changed(CONFIG / "kitty/mobile-theme.conf", "\n".join(lines) + "\n")
         signal_owned("kitty", signal.SIGUSR1)
-        # Do not restart wvkbd here: --auto would see Settings' text-input
-        # and flash the keyboard. Colors apply the next time the helper starts it.
+        # The keyboard (keyboard/shell.qml) takes the new colours by itself;
+        # wvkbd, the fallback, only the next time the helper starts it (a
+        # restart here would see Settings' text-input and flash it).
         helper = HOME / ".local/bin/omarchy-mobile-keyboard"
         if helper.exists() and os.getenv("WAYLAND_DISPLAY"):
             subprocess.run([str(helper), "hide"], stdout=subprocess.DEVNULL, check=False)

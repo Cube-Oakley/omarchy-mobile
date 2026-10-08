@@ -1,0 +1,7 @@
+{
+  "id": "calculator",
+  "name": "Calculator",
+  "comment": "Arithmetic and scientific functions, with a history",
+  "icon": "accessories-calculator",
+  "permissions": []
+}

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android's decor_caption with Waydroid's buttons (back, pip, minimize,
+     maximize, close), all of no size. DecorView finds each button by id and
+     DecorCaptionView sets the caption VISIBLE again, so the views stay; a
+     caption of no height gives the app no caption inset, and buttons of no
+     size leave empty hit rectangles, so no touch at the top of an app is
+     taken for a button. -->
+<com.android.internal.widget.DecorCaptionView
+        xmlns:android="http://schemas.android.com/apk/res/android"
+        android:orientation="vertical"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:descendantFocusability="beforeDescendants">
+    <LinearLayout
+            android:id="@*android:id/caption"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:focusable="false"
+            android:descendantFocusability="blocksDescendants">
+        <Button android:id="@*android:id/back_window"
+                android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/pip_window"
+                android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/minimize_window"
+                android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/maximize_window"
+                android:layout_width="0dp" android:layout_height="0dp" />
+        <Button android:id="@*android:id/close_window"
+                android:layout_width="0dp" android:layout_height="0dp" />
+    </LinearLayout>
+</com.android.internal.widget.DecorCaptionView>

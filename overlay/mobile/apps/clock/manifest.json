@@ -1,0 +1,7 @@
+{
+  "id": "clock",
+  "name": "Clock",
+  "comment": "Alarms, world clocks, timers and a stopwatch",
+  "icon": "alarm-clock",
+  "permissions": []
+}

@@ -74,6 +74,20 @@ TestCase {
         touch.move(0, preview, 150, 180).commit(); wait(120);
         touch.release(0, preview, 150, 180).commit(); wait(30);
         compare(swiped.count, 1); compare(swiped.signalArguments[0][0], true); compare(opened.count, 0);
+        // The finger rested 120 ms before lifting: the card starts from rest.
+        compare(swiped.signalArguments[0][1], 0);
+    }
+    function test_preview_flick_reports_release_speed() {
+        const touch = touchEvent(preview);
+        touch.press(0, preview, 150, 460).commit(); wait(10);
+        for (let y = 430; y >= 130; y -= 30) {
+            touch.move(0, preview, 150, y).commit(); wait(10);
+        }
+        touch.release(0, preview, 150, 130).commit(); wait(30);
+        compare(swiped.count, 1); compare(swiped.signalArguments[0][0], true);
+        // 30 px every ~10 ms: about 3000 px/s, allowing for timer slack.
+        const speed = swiped.signalArguments[0][1];
+        verify(speed > 1200 && speed < 4500, "release speed " + speed);
     }
     function test_preview_hold_is_not_close_or_open() {
         const touch = touchEvent(preview);

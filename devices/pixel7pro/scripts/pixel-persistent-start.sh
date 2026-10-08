@@ -7,9 +7,10 @@ trap 'log "startup stopped; inspect /run/pixel-persistent.log over USB serial"' 
 insmod /lib/modules/pixel/pixel-reboot.ko
 # HS gear 4 rate B on both lanes with Google's GS201 calibration
 # (kernel/storage/README.md); a failed change retries in PWM gear 1.
-# dev_reset starts the UFS device from reset, as the vendor driver does. If
-# that load fails, load once more without it, the previously proven setting.
-if ! insmod /lib/modules/pixel/pixel-ufs.ko vendor_cal=1 hs_gear=4 dev_reset=1; then
+# dev_reset starts the UFS device from reset, as the vendor driver does, and
+# idle_hibern8 puts the idle link in Hibern8. If that load fails, load once
+# more without them, the previously proven setting.
+if ! insmod /lib/modules/pixel/pixel-ufs.ko vendor_cal=1 hs_gear=4 dev_reset=1 idle_hibern8=1; then
     log "UFS load with device reset failed; retrying without it"
     insmod /lib/modules/pixel/pixel-ufs.ko vendor_cal=1 hs_gear=4
 fi

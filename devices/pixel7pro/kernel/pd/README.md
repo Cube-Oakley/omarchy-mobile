@@ -71,3 +71,25 @@ as `gs201-g3d-pd` does for the GPU) that powers it on for its driver and off
 again when idle. That means the `<block>_on` sequence, the CMU save/restore
 and the secure context restore (SMC 0x82000410 with restore = 1), and
 dropping the block from this module's list.
+
+## MFC (video codec): prepared, not yet on the phone (2026-10-01)
+
+The codec research (`.work/research/reports/Pixel 7 Pro video codec
+feasibility.md`) recommends a GS201 variant of mainline's `s5p-mfc`. Its
+first-light test needs the MFC domain powered back on with its CMU state.
+`gen-pd-lists.py` now emits stock's 22-entry `mfc_save`:
+- CMU_MFC's NOCP divider, the MFC user mux and its Q-channel controls;
+- the controller option;
+- SYSREG_MFC's DRCG and MEMCLK.
+
+`pixel-pd-off` saves the list before powering `mfc` off at boot, and
+restores its two S2MPUs' CTRL0 (0x1c890000, 0x1c8c0000) after power-on, as
+for CSIS.
+
+**Installed 2026-10-06** (the phone's root copy, boot-loaded). The boot
+reads the list as it powers MFC off. The S2MPUs come back at CTRL0 = 1, as
+CSIS's do, and are set to 0. After a power cycle every register the
+first-light test reads matches the bootloader's state, and the firmware
+starts and decodes. The s5p-mfc GS201 variant (`kernel/mfc`) calls
+`pixel_pd_power("mfc", …)`: on for the first open, off after the last
+close, and off around system sleep with a video open.

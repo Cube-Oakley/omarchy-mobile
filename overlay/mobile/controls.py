@@ -55,14 +55,17 @@ EV_ABS, EV_FF, FF_RUMBLE = 0x03, 0x15, 0x50
 class AutoBrightness:
     """Brightness from ambient light: a log curve in the slider's (perceptual)
     scale, shifted by the user's own preference, which is learnt whenever
-    they set the slider. A change is made only when it is worth one, and
-    then faded in (ramp)."""
+    they set the slider. The preference is two shifts, one for ordinary light
+    (about 9 lux and up) and one for the dark, blended between: a brighter
+    choice indoors must not keep a dark room bright. A change is made only
+    when it is worth one, and then faded in (ramp)."""
     STEP = 4          # slider points before a change is worth making
     INTERVAL = 2.0    # seconds between changes
     SETTLE = 5.0      # seconds a slider drag is left alone
 
-    def __init__(self, offset=None, panel_lux=0.0):
+    def __init__(self, offset=None, panel_lux=0.0, dark_offset=None):
         self.offset = offset
+        self.dark_offset = dark_offset or 0
         self.panel_lux = panel_lux
         self.level = None      # filtered log10(lux + 1)
         self.applied = None
@@ -73,13 +76,25 @@ class AutoBrightness:
     def base(level):
         return 10 + 17 * level
 
+    def weight(self):
+        """How much the ordinary-light shift counts: 0 in the dark, 1 from
+        about 9 lux (log10(lux + 1) = 1)."""
+        return min(1.0, max(0.0, self.level))
+
     def target(self):
-        return min(100, max(1, round(self.base(self.level) + self.offset)))
+        w = self.weight()
+        shift = w * self.offset + (1 - w) * self.dark_offset
+        return min(100, max(1, round(self.base(self.level) + shift)))
 
     def user_set(self, percent):
-        """The slider's final level: learn it as the preference here."""
+        """The slider's final level: learn it as the preference here, in the
+        shift that counts most in this light."""
         if self.level is not None:
-            self.offset = percent - self.base(self.level)
+            w, wanted = self.weight(), percent - self.base(self.level)
+            if w >= 0.5:
+                self.offset = (wanted - (1 - w) * self.dark_offset) / w
+            else:
+                self.dark_offset = (wanted - w * self.offset) / (1 - w)
         self.applied = percent
         self.manual_since = None
 
@@ -93,7 +108,8 @@ class AutoBrightness:
         else:  # brighten quickly, darken slowly
             self.level += (0.35 if level > self.level else 0.12) * (level - self.level)
         if self.offset is None:  # first use: keep the level the user has now
-            self.offset = current - self.base(self.level)
+            self.offset = 0
+            self.user_set(current)
         if self.applied is None:
             self.applied = current
         if abs(current - self.applied) > 1:  # someone is moving the slider
@@ -355,7 +371,7 @@ def auto_run():
     state = load_state()
     if state.get('auto_brightness') is not True:
         return
-    auto = AutoBrightness(state.get('auto_offset'), panel_lux())
+    auto = AutoBrightness(state.get('auto_offset'), panel_lux(), state.get('auto_dark_offset'))
     remembered = state.get('brightness')
     # Only readings: the value monitor-sensor starts with may be the daemon's
     # placeholder, or stale from before the screen went off.
@@ -399,6 +415,7 @@ def auto_run():
                     if isinstance(remembered, int):
                         auto.user_set(remembered)
                         state['auto_offset'] = auto.offset
+                        state['auto_dark_offset'] = auto.dark_offset
                         save_state(state)
                 current = percent_for(raw, maximum)
                 wanted = auto.light(lux, raw / maximum, current, time.monotonic())

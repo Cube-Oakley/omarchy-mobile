@@ -48,7 +48,10 @@ hardware. On a standard desktop, arrange startup of this shell and avoid
 running a second desktop/navigation shell over it.
 
 Dependencies: Hyprland 0.56 Lua (with its headers for touch-fingers), Quickshell 0.3, Qt Quick/Controls, Kitty,
-Python 3.11+, util-linux, procps-ng, Fastfetch, and wvkbd. The keyboard was built
+Python 3.11+, util-linux, procps-ng, Fastfetch, wvkbd, and the Yaru icon theme
+(`yaru-icon-theme`, from Omarchy's package repository; an `any` package, so
+`pacman -U` of the desktop's cached package works on the phone). The shell's
+app icons come from it (`//@ pragma IconTheme Yaru`). The keyboard was built
 from upstream commit `6b41504a0cb58fd1163fa44692398fbd61f8905f`, using:
 
 ```bash
@@ -96,6 +99,10 @@ battery, modem, suspend, charging and camera control belongs in the device adapt
 The optional executable `~/.config/omarchy-mobile/suspend` supports `--check`,
 sleep without arguments, and `--wake-after SECONDS` for supervised tests. A
 nonzero readiness result retains display-only behavior and logs its reason.
+Under the always-on clock (a device profile with `ambientSleep`), the sleep
+loop sets `OMARCHY_MOBILE_MINUTE_TICK` to a file the clock watches. The
+adapter then wakes a second after each minute until `--wake-after` runs out,
+writes the file and sleeps again, all in one call.
 The adapter owns hardware checks, resume/input recovery and sleep permissions.
 The optional executable `~/.config/omarchy-mobile/display-hook` is called with
 `on` when the screen lights and `off` when it goes dark or to the always-on

@@ -29,8 +29,20 @@ def split_fields(line):
 
 
 def interfaces():
-    return [r[0] for r in (split_fields(l) for l in nmcli('-f', 'DEVICE,TYPE', 'device').splitlines())
-            if len(r) == 2 and r[1] == 'wifi']
+    found = [r[0] for r in (split_fields(l) for l in nmcli('-f', 'DEVICE,TYPE', 'device').splitlines())
+             if len(r) == 2 and r[1] == 'wifi']
+    # The hotspot's own interface (omarchy-mobile-hotspot; on the Pixel a
+    # virtual one, ap0) is not a Wi-Fi connection to show, scan or join.
+    hotspot = hotspot_interface()
+    others = [name for name in found if name != hotspot]
+    return others or found
+
+
+def hotspot_interface():
+    try:
+        return nmcli('-g', 'connection.interface-name', 'connection', 'show', 'omarchy-hotspot').strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ''
 
 
 def detail(interface):

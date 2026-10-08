@@ -12,6 +12,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBCAMERA REQUIRED IMPORTED_TARGET libcamera)
 pkg_check_modules(GLES REQUIRED IMPORTED_TARGET egl glesv2)
 pkg_check_modules(EXIV2 IMPORTED_TARGET exiv2)
+# Video recording, when GStreamer is there; its encoders are found at run time.
+pkg_check_modules(GSTREAMER IMPORTED_TARGET gstreamer-1.0 gstreamer-app-1.0 gstreamer-tag-1.0)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -25,6 +27,7 @@ qt_add_qml_module(omarchycamera
         src/viewfinder.h src/viewfinder.cpp
         src/stillwriter.h src/stillwriter.cpp
         src/rawmerge.h src/rawmerge.cpp
+        src/videorecorder.h src/videorecorder.cpp
 )
 
 target_link_libraries(omarchycamera PRIVATE
@@ -40,4 +43,9 @@ target_compile_definitions(omarchycamera PRIVATE QT_NO_KEYWORDS)
 if(EXIV2_FOUND)
     target_link_libraries(omarchycamera PRIVATE PkgConfig::EXIV2)
     target_compile_definitions(omarchycamera PRIVATE HAVE_EXIV2)
+endif()
+
+if(GSTREAMER_FOUND)
+    target_link_libraries(omarchycamera PRIVATE PkgConfig::GSTREAMER)
+    target_compile_definitions(omarchycamera PRIVATE HAVE_GSTREAMER)
 endif()

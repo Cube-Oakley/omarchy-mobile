@@ -4,6 +4,9 @@
  * under unshare --mount --pid --fork --mount-proc=ROOT/proc (gnss-lab.sh). The
  * root is a dedicated tmpfs; only the GNSS driver's device nodes and sysfs
  * directory are bind-mounted into it.
+ *
+ * ENTER_UID and ENTER_GID, if set, run the program as that user and group, as
+ * stock runs Trusty's storageproxyd as system (1000). Still no capabilities.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -23,9 +26,13 @@ int main(int argc, char **argv)
 	char **command;
 	if (argc < 3) { fprintf(stderr, "usage: enter-runtime ROOT /vendor/bin/PROGRAM [args]\n"); return 2; }
 	if (chroot(argv[1]) || chdir("/")) fail("chroot");
+	const char *uid = getenv("ENTER_UID"), *gid = getenv("ENTER_GID");
 	if (setgroups(0, NULL)) fail("setgroups");
 	for (int cap = 0; cap <= CAP_LAST_CAP; cap++)
 		if (prctl(PR_CAPBSET_DROP, cap, 0, 0, 0)) fail("drop capability");
+	/* After the bounding set (that needs CAP_SETPCAP), before the rest go. */
+	if (gid && setresgid(atoi(gid), atoi(gid), atoi(gid))) fail("setresgid");
+	if (uid && setresuid(atoi(uid), atoi(uid), atoi(uid))) fail("setresuid");
 	if (syscall(SYS_capset, &header, data)) fail("capset");
 	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) fail("no_new_privs");
 	if (clearenv()) fail("clearenv");

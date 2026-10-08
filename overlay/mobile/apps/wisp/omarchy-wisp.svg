@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2b3a"/>
+      <stop offset="1" stop-color="#0c131c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="128" cy="150" r="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7fe7ff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#7fe7ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#c9f6ff"/>
+      <stop offset="0.55" stop-color="#5fd0f2"/>
+      <stop offset="1" stop-color="#3a86d8"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
+  <circle cx="128" cy="150" r="96" fill="url(#glow)"/>
+  <!-- the wisp: a soft flame curling up and to the right -->
+  <path d="M128 206c-32 0-54-23-54-52 0-26 16-42 30-58 11-13 18-27 15-46 22 12 36 34 34 58 9-6 14-16 15-27 18 17 28 40 28 63 0 36-27 62-68 62z"
+        fill="url(#flame)"/>
+  <ellipse cx="124" cy="166" rx="20" ry="24" fill="#ecfdff" opacity="0.95"/>
+  <circle cx="186" cy="74" r="7" fill="#c9f6ff" opacity="0.9"/>
+  <circle cx="204" cy="100" r="4" fill="#c9f6ff" opacity="0.7"/>
+</svg>

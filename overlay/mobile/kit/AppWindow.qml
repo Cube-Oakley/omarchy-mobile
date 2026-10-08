@@ -14,6 +14,8 @@ FloatingWindow {
     property bool backVisible: false
     property bool compact: false
     property int pageMargin: 24
+    // Shown at the header's right (PageHeader.accessory).
+    property Component headerAccessory: null
     signal backClicked()
     default property alias content: slot.data
     title: appTitle.length ? appTitle : heading
@@ -32,6 +34,7 @@ FloatingWindow {
             title: win.heading
             backVisible: win.backVisible
             compact: win.compact
+            accessory: win.headerAccessory
             onBackClicked: win.backClicked()
         }
         AppBack {

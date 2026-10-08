@@ -16,12 +16,35 @@ rotation, light and proximity helpers) work unchanged:
 As in iio-sensor-proxy, a sensor runs only while some client holds a claim,
 and a client's claims end when it leaves the bus.
 
+  /net/hadess/SensorProxy          org.omarchy.Mobile.SensorPower
+      Pause, Resume (root only)
+
+Pause stops every sensor and keeps the claims; Resume starts the claimed ones
+again. pixel-suspend pauses for each system sleep: a running sensor, even a
+non-wakeup one, has the AoC write its samples to DRAM, which takes the memory
+interface out of its sleep state about 28 times a second (+17 mA in SYS_SLEEP).
+
+  /org/omarchy/Mobile/Steps        org.omarchy.Mobile.Steps
+      Enabled, Today; SetEnabled(b) (root or the session user)
+
+Step counting, when enabled: the AoC's step counter counts by itself, with no
+wake-ups, and keeps running through Pause (it reports only on change, at most
+once a second, so a phone lying still writes nothing). Its cumulative
+readings become rows of steps per minute in /var/lib/omarchy-mobile/steps/
+steps.db, an append-only SQLite log that apps and syncs read (see
+overlay/mobile/steps.py).
+
   pixel-sensor-proxy.py [--backend usf|test] [--device PATH]
 """
 import argparse
 import math
+import os
+import pwd
 import signal
+import sqlite3
 import sys
+import time
+import uuid
 
 import gi
 gi.require_version('Gio', '2.0')
@@ -46,6 +69,12 @@ XML = '''<node>
     <property name="LightLevel" type="d" access="read"/>
     <property name="HasProximity" type="b" access="read"/>
     <property name="ProximityNear" type="b" access="read"/>
+  </interface>
+</node>'''
+POWER_XML = '''<node>
+  <interface name="org.omarchy.Mobile.SensorPower">
+    <method name="Pause"/>
+    <method name="Resume"/>
   </interface>
 </node>'''
 COMPASS_XML = '''<node>
@@ -100,7 +129,7 @@ def tilt(x, y, z):
 
 class TestBackend:
     """Scripted readings, to exercise the D-Bus side without sensors."""
-    has = {'accel': True, 'light': True, 'proximity': True, 'compass': True}
+    has = {'accel': True, 'light': True, 'proximity': True, 'compass': True, 'steps': True}
 
     def __init__(self, report):
         self.report = report
@@ -123,9 +152,159 @@ class TestBackend:
             self.report('light', 100.0 + self.step)
         elif kind == 'compass':
             self.report('compass', (10.0 * self.step) % 360)
+        elif kind == 'steps':
+            self.report('steps', [(int(time.time() * 1000), self.step * 2)])
         else:
             self.report('proximity', self.step % 4 < 2)
         return True
+
+
+STEPS_DIR = '/var/lib/omarchy-mobile/steps'
+STEPS_PATH = '/org/omarchy/Mobile/Steps'
+STEPS_XML = '''<node>
+  <interface name="org.omarchy.Mobile.Steps">
+    <method name="SetEnabled"><arg name="enabled" type="b" direction="in"/></method>
+    <property name="Enabled" type="b" access="read"/>
+    <property name="Today" type="u" access="read"/>
+  </interface>
+</node>'''
+STEPS_SCHEMA = '''
+CREATE TABLE IF NOT EXISTS steps (
+    id TEXT PRIMARY KEY,          -- random UUID, the same on every copy
+    start_ms INTEGER NOT NULL,    -- the minute, ms since 1970 UTC
+    end_ms INTEGER NOT NULL,
+    count INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    recorded_ms INTEGER NOT NULL  -- when this row was written: sync after it
+);
+CREATE INDEX IF NOT EXISTS steps_start ON steps(start_ms);
+CREATE INDEX IF NOT EXISTS steps_recorded ON steps(recorded_ms);
+CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+'''
+
+
+def session_uid():
+    """The desktop user's uid (/etc/omarchy-mobile/session user=NAME), or None."""
+    try:
+        with open('/etc/omarchy-mobile/session') as f:
+            for line in f:
+                key, _, value = line.strip().partition('=')
+                if key == 'user':
+                    return pwd.getpwnam(value).pw_uid
+    except (OSError, KeyError):
+        pass
+    return None
+
+
+class Steps:
+    """The step counter's readings, per minute, in steps.db; on while
+    STEPS_DIR/enabled exists."""
+    SOURCE = 'pixel7pro.aoc.step-counter'
+
+    def __init__(self, bus, backend):
+        self.bus = bus
+        self.backend = backend
+        self.bucket = None          # [minute start ms, steps]
+        self.flush_timer = None
+        os.makedirs(STEPS_DIR, mode=0o755, exist_ok=True)
+        old = os.umask(0o022)       # readable by apps and syncs
+        try:
+            self.db = sqlite3.connect(os.path.join(STEPS_DIR, 'steps.db'))
+            self.db.executescript(STEPS_SCHEMA)
+            self.db.commit()
+        finally:
+            os.umask(old)
+        row = self.db.execute("SELECT value FROM state WHERE key = 'last_raw'").fetchone()
+        self.last_raw = int(row[0]) if row else None
+        self.enabled = os.path.exists(os.path.join(STEPS_DIR, 'enabled')) and backend.has.get('steps', False)
+        info = Gio.DBusNodeInfo.new_for_xml(STEPS_XML).interfaces[0]
+        bus.register_object_with_closures2(STEPS_PATH, info, self._call, self._get, None)
+        if self.enabled:
+            GLib.idle_add(self._start)   # after the proxy is in place to take readings
+
+    def _start(self):
+        if self.enabled:
+            self.backend.start('steps')
+        return False
+
+    def _get(self, conn, sender, path, iface, prop):
+        return {'Enabled': GLib.Variant('b', self.enabled),
+                'Today': GLib.Variant('u', self.today())}.get(prop)
+
+    def _call(self, conn, sender, path, iface, method, params, invocation):
+        try:
+            uid = conn.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                                 'GetConnectionUnixUser', GLib.Variant('(s)', (sender,)),
+                                 GLib.VariantType.new('(u)'), Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+        except GLib.Error:
+            uid = None
+        if uid is None or uid not in (0, session_uid()):
+            invocation.return_dbus_error('org.freedesktop.DBus.Error.AccessDenied', 'Root or the session user only')
+            return
+        if not self.backend.has.get('steps', False):
+            invocation.return_dbus_error('net.hadess.SensorProxy.Error.NoSensor', 'No step counter')
+            return
+        self.set_enabled(params.unpack()[0])
+        invocation.return_value(None)
+
+    def set_enabled(self, on):
+        if on == self.enabled:
+            return
+        flag = os.path.join(STEPS_DIR, 'enabled')
+        if on:
+            open(flag, 'w').close()
+            self.backend.start('steps')
+        else:
+            self.backend.stop('steps')
+            self.flush()
+            os.unlink(flag)
+        self.enabled = on
+        self.bus.emit_signal(None, STEPS_PATH, 'org.freedesktop.DBus.Properties', 'PropertiesChanged',
+                             GLib.Variant('(sa{sv}as)', ('org.omarchy.Mobile.Steps',
+                                                         {'Enabled': GLib.Variant('b', on)}, [])))
+
+    def feed(self, samples):
+        """Cumulative readings (wall ms, steps since the counter started)."""
+        for at_ms, raw in samples:
+            if self.last_raw is None:
+                self.last_raw = raw     # the first reading: a starting point
+                continue
+            # A lower reading: the counter started again (an AoC restart).
+            delta = raw - self.last_raw if raw >= self.last_raw else raw
+            self.last_raw = raw
+            if delta <= 0:
+                continue
+            minute = at_ms // 60_000 * 60_000
+            if self.bucket and self.bucket[0] != minute:
+                self.flush()
+            if not self.bucket:
+                self.bucket = [minute, 0]
+            self.bucket[1] += delta
+        if self.bucket and self.flush_timer is None:
+            self.flush_timer = GLib.timeout_add_seconds(60, self._flush_later)
+
+    def _flush_later(self):
+        self.flush_timer = None
+        self.flush()
+        return False
+
+    def flush(self):
+        if self.bucket and self.bucket[1] > 0:
+            start = self.bucket[0]
+            self.db.execute('INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?)',
+                            (str(uuid.uuid4()), start, start + 60_000, self.bucket[1], self.SOURCE,
+                             int(time.time() * 1000)))
+        self.bucket = None
+        if self.last_raw is not None:
+            self.db.execute("INSERT OR REPLACE INTO state VALUES ('last_raw', ?)", (str(self.last_raw),))
+        self.db.commit()
+
+    def today(self):
+        lt = time.localtime()
+        midnight = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)) * 1000)
+        total = self.db.execute('SELECT COALESCE(SUM(count), 0) FROM steps WHERE start_ms >= ?',
+                                (midnight,)).fetchone()[0]
+        return total + (self.bucket[1] if self.bucket and self.bucket[0] >= midnight else 0)
 
 
 class Proxy:
@@ -133,6 +312,7 @@ class Proxy:
         self.bus = bus
         self.backend = backend
         self.claims = {'accel': set(), 'light': set(), 'proximity': set(), 'compass': set()}
+        self.paused = False
         self.state = {'AccelerometerOrientation': 'undefined', 'AccelerometerTilt': 'undefined',
                       'LightLevel': 0.0, 'ProximityNear': False, 'CompassHeading': -1.0}
         info = Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0]
@@ -140,6 +320,9 @@ class Proxy:
         bus.register_object_with_closures2(PATH, info, self._call, self._get, None)
         bus.register_object_with_closures2(PATH + '/Compass', compass, self._compass_call,
                                            self._compass_get, None)
+        power = Gio.DBusNodeInfo.new_for_xml(POWER_XML).interfaces[0]
+        bus.register_object_with_closures2(PATH, power, self._power_call, None, None)
+        self.steps = Steps(bus, backend)
         bus.signal_subscribe('org.freedesktop.DBus', 'org.freedesktop.DBus', 'NameOwnerChanged',
                              '/org/freedesktop/DBus', None, Gio.DBusSignalFlags.NONE,
                              self._owner_changed)
@@ -185,16 +368,48 @@ class Proxy:
             self._release('compass', sender)
         invocation.return_value(None)
 
+    def _power_call(self, conn, sender, path, iface, method, params, invocation):
+        try:
+            uid = conn.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                                 'GetConnectionUnixUser', GLib.Variant('(s)', (sender,)),
+                                 GLib.VariantType.new('(u)'), Gio.DBusCallFlags.NONE, -1, None).unpack()[0]
+        except GLib.Error:
+            uid = None
+        if uid != 0:
+            invocation.return_dbus_error('org.freedesktop.DBus.Error.AccessDenied', 'Root only')
+            return
+        if method == 'Pause':
+            self.pause()
+        else:
+            self.resume()
+        invocation.return_value(None)
+
+    def pause(self):
+        if self.paused:
+            return
+        self.paused = True
+        for kind, holders in self.claims.items():
+            if holders:
+                self.backend.stop(kind)
+
+    def resume(self):
+        if not self.paused:
+            return
+        self.paused = False
+        for kind, holders in self.claims.items():
+            if holders:
+                self.backend.start(kind)
+
     def _claim(self, kind, sender):
         first = not self.claims[kind]
         self.claims[kind].add(sender)
-        if first:
+        if first and not self.paused:
             self.backend.start(kind)
 
     def _release(self, kind, sender):
         if sender in self.claims[kind]:
             self.claims[kind].discard(sender)
-            if not self.claims[kind]:
+            if not self.claims[kind] and not self.paused:
                 self.backend.stop(kind)
 
     def _owner_changed(self, conn, sender, path, iface, signal_name, params):
@@ -204,6 +419,9 @@ class Proxy:
                 self._release(kind, name)
 
     def report(self, kind, value):
+        if kind == 'steps':
+            self.steps.feed(value)
+            return
         changed = {}
         if kind == 'accel':
             ax, ay, az = value
@@ -261,6 +479,7 @@ def main():
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, loop.quit)
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, loop.quit)
     loop.run()
+    proxy.steps.flush()
 
 
 if __name__ == '__main__':

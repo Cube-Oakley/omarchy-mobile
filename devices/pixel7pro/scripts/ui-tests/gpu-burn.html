@@ -1,0 +1,15 @@
+<!doctype html><html><body style="margin:0;background:#000"><canvas id=c></canvas><script>
+// GPU load for thermal tests: a full-screen shader with a long loop per pixel.
+const c = document.getElementById('c'); c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio;
+c.style.width = innerWidth + 'px'; c.style.height = innerHeight + 'px';
+const gl = c.getContext('webgl');
+const vs = 'attribute vec2 p; void main(){ gl_Position = vec4(p, 0., 1.); }';
+const fs = 'precision highp float; uniform float t; void main(){ vec2 u = gl_FragCoord.xy / 300.; float a = 0.; for (int i = 0; i < 160; i++) { a += sin(u.x * float(i) + t) * cos(u.y * float(i) - t); } gl_FragColor = vec4(fract(a), fract(a * .5), fract(a * .25), 1.); }';
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+const pr = gl.createProgram(); gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(pr); gl.useProgram(pr);
+const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+const l = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, 2, gl.FLOAT, false, 0, 0);
+const tl = gl.getUniformLocation(pr, 't'); let frames = 0;
+(function f(ts) { gl.uniform1f(tl, ts / 1000); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); frames++; requestAnimationFrame(f); })(0);
+setInterval(() => { document.title = 'fps ' + frames; frames = 0; }, 1000);
+</script></body></html>

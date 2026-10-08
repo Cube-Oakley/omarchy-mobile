@@ -2,7 +2,7 @@
 Name=Settings
 Comment=Omarchy Mobile settings
 Exec=omarchy-mobile-settings
-Icon=preferences-system
+Icon=org.gnome.Settings
 Terminal=false
 Type=Application
 Categories=Settings;DesktopSettings;

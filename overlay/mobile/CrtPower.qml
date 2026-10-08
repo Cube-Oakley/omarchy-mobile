@@ -94,6 +94,25 @@ PanelWindow {
         mark("covered", id);
         console.log("MOBILE_CRT covered");
     }
+    // Open at once, without the animation: a finger on the fingerprint sensor
+    // in the always-on display wants the screen now (omarchy-mobile-display
+    // unlock).
+    function open(id) {
+        anim.stop();
+        litFrames = -1;
+        litWait.stop();
+        captureWait.stop();
+        capturing = false;
+        playing = false;
+        progress = 0;
+        frame.source = "";
+        mode = "";
+        token = id;
+        wakeAt = Date.now();
+        mark("settled", id);
+        opened();
+        console.log("MOBILE_CRT opened " + id);
+    }
     function play(which, id) {
         const now = Date.now();
         // Wake asks twice, once from suspend cleanup and once from the power

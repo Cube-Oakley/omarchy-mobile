@@ -86,10 +86,14 @@ def network_ready(interface):
 
 
 def ensure_profile(interface):
+    # A profile is tied to an interface name, which changes with the laptop's
+    # USB port (enp198s0f0u2, then enp198s0f0u1 on 2026-10-05).
     names = run(['nmcli', '-g', 'NAME', 'connection', 'show']).stdout.split('\n')
-    profile = next((n for n in names if n.startswith(PROFILE_PREFIX)), None)
-    if profile:
-        return profile
+    for name in names:
+        if name.startswith(PROFILE_PREFIX):
+            bound = run(['nmcli', '-g', 'connection.interface-name', 'connection', 'show', name]).stdout.strip()
+            if bound == interface:
+                return name
     profile = PROFILE_PREFIX + uuid.uuid4().hex[:8]
     user = run(['id', '-un']).stdout.strip()
     r = run(['nmcli', 'connection', 'add', 'save', 'no', 'type', 'ethernet',
@@ -170,8 +174,10 @@ def main():
         # SSH can take longer to close than the phone takes to restart, so
         # the USB disconnect may already be over. A new boot ID establishes
         # a completed Linux restart even when that short interval was missed.
+        # The orderly stop includes the modem's, which took two minutes once
+        # (October 6); 30 s reported a timeout on a restart still under way.
         if a.target == 'fastboot':
-            wait_for(lambda: linux_interface() is None, 30, 'Linux to stop')
+            wait_for(lambda: linux_interface() is None, 300, 'Linux to stop')
 
     if a.target == 'fastboot':
         wait_for(lambda: in_fastboot(serial), a.timeout, 'fastboot')

@@ -7,6 +7,9 @@ Item {
     property string title: ""
     property bool backVisible: false
     property bool compact: false
+    // Something the app puts at the header's right (a picture, a button);
+    // the title gives it room.
+    property Component accessory: null
     signal backClicked()
     signal closeClicked()
     implicitHeight: compact ? 52 : 88
@@ -22,13 +25,20 @@ Item {
     }
     Text {
         y: header.compact ? 8 : 23
-        width: parent.width - (header.backVisible ? 64 : 0)
+        width: parent.width - (header.backVisible ? 64 : 0) - (extra.item && extra.item.visible ? extra.item.width + 12 : 0)
         text: header.title
         color: MobileTheme.foreground
         font.family: MobileTheme.fontFamily
         font.pixelSize: header.compact ? 22 : 34
         font.bold: true
         elide: Text.ElideRight
+    }
+    Loader {
+        id: extra
+        sourceComponent: header.accessory
+        anchors.right: parent.right
+        anchors.rightMargin: header.backVisible ? 60 : 0
+        anchors.verticalCenter: parent.verticalCenter
     }
     TouchButton {
         visible: header.backVisible

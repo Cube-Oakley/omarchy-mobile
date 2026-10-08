@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="org.omarchy.mobile.keyboard"
+        android:versionCode="7"
+        android:versionName="7">
+    <application android:label="Omarchy bridge" android:hasCode="true">
+        <service android:name=".BridgeIme"
+                android:label="Omarchy keyboard"
+                android:permission="android.permission.BIND_INPUT_METHOD"
+                android:exported="true">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data android:name="android.view.im" android:resource="@xml/method" />
+        </service>
+        <service android:name=".ReplyService"
+                android:label="Omarchy notification replies"
+                android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+                android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <receiver android:name=".ReplyReceiver"
+                android:permission="android.permission.WRITE_SECURE_SETTINGS"
+                android:exported="true" />
+        <activity android:name=".SleepActivity"
+                android:theme="@style/Sleep"
+                android:taskAffinity="org.omarchy.mobile.keyboard.sleep"
+                android:excludeFromRecents="true"
+                android:noHistory="true"
+                android:exported="false" />
+        <receiver android:name=".HideReceiver"
+                android:permission="android.permission.WRITE_SECURE_SETTINGS"
+                android:exported="true" />
+        <receiver android:name=".MediaReceiver"
+                android:permission="android.permission.WRITE_SECURE_SETTINGS"
+                android:exported="true" />
+    </application>
+</manifest>

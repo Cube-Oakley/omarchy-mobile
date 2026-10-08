@@ -41,3 +41,28 @@ class ManagerTests(unittest.TestCase):
                     manager.prepare()
                 launch.assert_not_called()
                 command.assert_not_called()
+
+    def test_a_crash_while_running_starts_again_once_per_window(self):
+        with tempfile.TemporaryDirectory() as folder:
+            guard = Path(folder) / 'starting.json'
+            with patch.object(manager, 'GUARD', guard), patch.object(manager, 'boot_id', return_value='new'), \
+                 patch.object(manager.os, 'sync'):
+                guard.write_text(json.dumps({'boot': 'old', 'stage': 'running'}))
+                manager.recover_after_crash()
+                self.assertFalse(guard.exists())
+                self.assertTrue((Path(folder) / 'starting.json.crashed-running-old').exists())
+                # A second end while running within the window keeps the guard.
+                guard.write_text(json.dumps({'boot': 'older', 'stage': 'running'}))
+                with self.assertRaises(RuntimeError):
+                    manager.recover_after_crash()
+                self.assertTrue(guard.exists())
+
+    def test_an_end_during_start_or_in_this_boot_still_blocks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            guard = Path(folder) / 'starting.json'
+            with patch.object(manager, 'GUARD', guard), patch.object(manager, 'boot_id', return_value='new'):
+                for data in ({'boot': 'old', 'stage': 'gpio-ready'}, {'boot': 'new', 'stage': 'running'}):
+                    guard.write_text(json.dumps(data))
+                    with self.assertRaises(RuntimeError):
+                        manager.recover_after_crash()
+                    self.assertTrue(guard.exists())

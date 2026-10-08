@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: cube oakley <cube-oakley@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 09:50:00 -0700
+Subject: [PATCH 8/8] trusty: bind each nop thread to its CPU again when it
+ comes back online
+
+Taking a CPU offline parks its trusty-nop thread after the scheduler has
+stopped accepting tasks there, so balance_push moves the thread away and
+its binding is lost. kthread_unpark() restores the binding only for
+KTHREAD_IS_PER_CPU threads (smpboot's), not for kthread_create_on_cpu()
+ones. Back online, the CPU's doorbell then woke a thread on another CPU
+("trusty-nop-4 ran on wrong cpu, 1"), and a Trusty thread pinned to the
+CPU never ran: Goodix's fingerprint app pins itself to CPU 4, and the
+Pixel 7 Pro takes CPUs 4-7 offline while the screen is dark.
+
+---
+ trusty/trusty.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/trusty/trusty.c b/trusty/trusty.c
+--- a/trusty/trusty.c
++++ b/trusty/trusty.c
+@@ -1006,6 +1006,14 @@
+ 
+ 	s = container_of(node, struct trusty_state, cpuhp_node);
+ 	tw = this_cpu_ptr(s->nop_works);
++	/*
++	 * kthread_create_on_cpu() does not make the thread KTHREAD_IS_PER_CPU
++	 * (only smpboot threads are), so kthread_unpark() does not bind it
++	 * again, and once this CPU has been offline the thread runs elsewhere.
++	 * Its nops then enter Trusty on the wrong CPU, and a Trusty thread
++	 * pinned to this one never runs.
++	 */
++	set_cpus_allowed_ptr(tw->nop_thread, cpumask_of(cpu));
+ 	kthread_unpark(tw->nop_thread);
+ 
+ 	dev_dbg(s->dev, "cpu %d up\n", cpu);
+-- 
+2.51.0

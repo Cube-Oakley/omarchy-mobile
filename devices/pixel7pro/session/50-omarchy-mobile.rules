@@ -1,0 +1,9 @@
+// Omarchy Mobile on the Pixel: the phone's user runs the network from
+// Settings. There is no logind here, so polkit never sees an "active local"
+// session; the wheel group stands for it, for NetworkManager's actions only
+// (docs/user-session-plan-20261002.md).
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

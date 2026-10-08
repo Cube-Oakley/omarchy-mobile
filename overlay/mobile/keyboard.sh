@@ -8,6 +8,26 @@ mkdir -p "$state"
 pidfile="$XDG_RUNTIME_DIR/omarchy-mobile-keyboard.pid"
 exec 9>"$XDG_RUNTIME_DIR/omarchy-mobile-keyboard.lock"
 flock 9
+action=${1:-toggle}
+case $action in start|show|hide|toggle) ;; *) echo 'Usage: keyboard.sh start|show|hide|toggle' >&2; exit 2 ;; esac
+
+# The keyboard (keyboard/shell.qml, a Quickshell window in the theme's
+# colours, with swipe typing). It watches a command file; each line carries
+# the time, so a command left from before it started is not replayed.
+# wvkbd below remains for $state/keyboard-wvkbd or a missing keyboard.
+qml=${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/omarchy-mobile-keyboard/shell.qml
+if [[ -f $qml && ! -e $state/keyboard-wvkbd ]]; then
+    if ! pgrep -u "$(id -u)" -f "^quickshell .*-p $qml\$" > /dev/null; then
+        pkill -u "$(id -u)" -x wvkbd-mobintl 2>/dev/null || true
+        imports=${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-mobile/qml
+        QML_IMPORT_PATH=$imports QML2_IMPORT_PATH=$imports \
+            nohup quickshell -n -p "$qml" > "$state/keyboard.log" 2>&1 9>&- < /dev/null &
+    fi
+    if [[ $action != start ]]; then
+        printf '%s %s\n' "$action" "$(date +%s%3N)" > "$XDG_RUNTIME_DIR/omarchy-mobile-keyboard.cmd"
+    fi
+    exit 0
+fi
 pid=$(cat "$pidfile" 2>/dev/null || true)
 if [[ ! $pid =~ ^[0-9]+$ ]] || [[ $(cat "/proc/$pid/comm" 2>/dev/null || true) != wvkbd-mobintl ]]; then
     # Process substitution needs /dev/fd, which minimal boot environments may

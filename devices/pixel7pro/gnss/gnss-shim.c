@@ -69,6 +69,17 @@ bool ABinderProcess_isThreadPoolStarted(void)
 	return true;
 }
 
+/* Trusty's storageproxyd sizes and starts a pool for its (Android-only)
+ * health callbacks. */
+bool ABinderProcess_setThreadPoolMaxThreadCount(uint32_t threads)
+{
+	return true;
+}
+
+void ABinderProcess_startThreadPool(void)
+{
+}
+
 void ABinderProcess_joinThreadPool(void)
 {
 	struct timespec day = { 86400, 0 };

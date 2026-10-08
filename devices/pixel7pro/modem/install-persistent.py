@@ -45,7 +45,7 @@ def main():
         'shm_ipc.ko': '/root/tools/modem-stage4/shm_ipc.ko',
         'cpif.ko': '/root/tools/suspend/cpif.ko',
         'pixel-wdt-pm.ko': '/root/tools/suspend/pixel-wdt-pm.ko',
-        'brcmfmac.ko': '/root/tools/suspend/brcmfmac-rptr.ko',
+        'brcmfmac.ko': '/root/tools/suspend/brcmfmac-rt.ko',
         'wdtkick': '/root/tools/wdtkick',
         'runtime.tar': '/root/modem-runtime.tar',
     }

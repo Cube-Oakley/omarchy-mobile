@@ -1,0 +1,6 @@
+{
+  "id": "clock",
+  "name": "Clock and weather",
+  "description": "The time, the date and the weather where you set it. Tap the time for alarms, the weather for the forecast.",
+  "sizes": [[4, 2], [4, 1], [2, 2]]
+}

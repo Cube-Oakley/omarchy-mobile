@@ -1,0 +1,60 @@
+diff --git a/drivers/of/of_reserved_mem.c b/drivers/of/of_reserved_mem.c
+index 8c9d6395d..151fe6342 100644
+--- a/drivers/of/of_reserved_mem.c
++++ b/drivers/of/of_reserved_mem.c
+@@ -328,6 +328,45 @@ static int __init __reserved_mem_alloc_size(unsigned long node, const char *unam
+  * allocated, a region specific init function is called and region information
+  * is stored in the reserved_mem array.
+  */
++/*
++ * Google's GS201 device trees nest static no-map regions one level below
++ * /reserved-memory (debug_snapshot/header and its logs, with the parent's own
++ * #address-cells and #size-cells), which the vendor kernel's debug-snapshot
++ * driver reserves. Firmware the bootloader set up writes into some of them
++ * whatever the kernel runs, so the available ones are reserved here: left in
++ * the page allocator, the header's page took 16-bit writes every few seconds
++ * into whatever data the kernel had put there (Omarchy Mobile).
++ */
++static void __init __reserved_mem_reserve_nested(const void *fdt, int parent,
++						 const char *pname)
++{
++	int addr_cells = fdt_address_cells(fdt, parent);
++	int size_cells = fdt_size_cells(fdt, parent);
++	int child;
++
++	if (addr_cells < 1 || addr_cells > 2 || size_cells < 1 || size_cells > 2)
++		return;
++
++	fdt_for_each_subnode(child, fdt, parent) {
++		const __be32 *prop;
++		phys_addr_t base, size;
++		int len;
++
++		if (!of_fdt_device_is_available(fdt, child) ||
++		    !fdt_getprop(fdt, child, "no-map", NULL))
++			continue;
++		prop = fdt_getprop(fdt, child, "reg", &len);
++		if (!prop || len != (addr_cells + size_cells) * sizeof(__be32))
++			continue;
++		base = of_read_number(prop, addr_cells);
++		size = of_read_number(prop + addr_cells, size_cells);
++		if (size && early_init_dt_reserve_memory(base, size, true) == 0)
++			pr_info("Reserved memory: %s/%s: base %pa, size %lu KiB (nested, no-map)\n",
++				pname, fdt_get_name(fdt, child, NULL), &base,
++				(unsigned long)(size / SZ_1K));
++	}
++}
++
+ int __init fdt_scan_reserved_mem(void)
+ {
+ 	int node, child;
+@@ -359,6 +398,9 @@ int __init fdt_scan_reserved_mem(void)
+ 		err = __reserved_mem_reserve_reg(child, uname);
+ 		if (!err)
+ 			count++;
++		else if (err == -ENOENT && !of_get_flat_dt_prop(child, "size", NULL) &&
++			 fdt_first_subnode(fdt, child) >= 0)
++			__reserved_mem_reserve_nested(fdt, child, uname);
+ 
+ 		/*
+ 		 * Save the nodes for the dynamically-placed regions

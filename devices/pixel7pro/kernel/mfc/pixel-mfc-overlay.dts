@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * The GS201 video codec for mainline s5p-mfc (pixel-mfc-dt.c applies this
+ * at load). The stock DT's own MFC nodes ("samsung,exynos-mfc" and its
+ * MFC-0 child) point at SysMMUs, a power domain and a clock this kernel has
+ * no drivers for; this node has only the core's registers (stock MFC-0) and
+ * its interrupt (GIC SPI 504). The root's interrupt parent is the GIC.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/} {
+	video-codec@1c8d0000 {
+		compatible = "google,gs201-mfc";
+		reg = <0x0 0x1c8d0000 0x10000>;
+		interrupts = <0 504 4>;
+	};
+};

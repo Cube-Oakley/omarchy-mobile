@@ -1,0 +1,1487 @@
+Direct presentation and partial redraws (Omarchy Mobile)
+
+Qt Quick redraws its whole window for every frame Chromium hands it, and the
+Wayland compositor then recomposes the whole window, so a page that changed
+a few pixels had the full screen redrawn three times: on a Pixel 7 Pro a
+57-pixel animation cost as much GPU and memory power as a full-screen one.
+
+- Chromium redraws only what changed in the buffer it draws into: the output
+  device reports partial swaps and, with each swap, what of the next buffer
+  is older than the newest frame (viz keeps that area across a skipped swap).
+- With a window asking for it (dynamic property `_q_webengine_direct`, an
+  alpha channel), the frames go to the compositor as a wl_subsurface below
+  the window, each with the area that changed, and Qt leaves a transparent
+  hole for them (items above the page still draw over it). Qt draws the
+  frames again while the page is faded, scaled, hidden or pictured. A page
+  hidden while its window is off screen keeps its last frame there, so a
+  picture of the window (an app switcher's card) still shows it.
+  libwayland-client is looked up at run time; the protocol objects have an
+  event queue and a thread of their own, which also waits for each frame's
+  GPU work. QTWEBENGINE_DIRECT_DEBUG=1 logs what it does.
+
+--- a/src/core/compositor/compositor.h
++++ b/src/core/compositor/compositor.h
+@@ -7,10 +7,13 @@
+ 
+ #include <QtWebEngineCore/private/qtwebenginecoreglobal_p.h>
+ 
++#include <QtCore/qrect.h>
++
+ QT_BEGIN_NAMESPACE
+ class QQuickWindow;
+ class QSize;
+ class QSGTexture;
++class QWindow;
+ QT_END_NAMESPACE
+ 
+ namespace viz {
+@@ -142,6 +145,29 @@
+     // Release resources created in texture()
+     virtual void releaseResources();
+ 
++    // Direct presentation (Omarchy Mobile patch, Wayland): the frames go to
++    // the compositor as a sub-surface below the window, which shows them
++    // through a transparent hole, and only the area that changed is redrawn
++    // anywhere. `target` is the item's rectangle in the window (logical
++    // pixels), or null to have Qt draw the frames again. Called on Qt's
++    // render thread while it syncs (or with `immediate` for a hidden item,
++    // from the GUI thread); returns whether the frames are shown directly
++    // from now on.
++    struct DirectTarget
++    {
++        QWindow *window;
++        QRectF rect;
++    };
++    virtual bool setDirect(const DirectTarget *target, bool immediate = false)
++    {
++        Q_UNUSED(target);
++        Q_UNUSED(immediate);
++        return false;
++    }
++    // After a Qt frame (its afterFrameEnd): a sub-surface that Qt now covers
++    // with the same frame is taken away.
++    virtual void directFrameEnd() { }
++
+ protected:
+     Compositor(Type type);
+     virtual ~Compositor();
+--- a/src/core/compositor/native_skia_output_device.h
++++ b/src/core/compositor/native_skia_output_device.h
+@@ -11,6 +11,7 @@
+ #include "components/viz/service/display_embedder/skia_output_device.h"
+ #include "gpu/command_buffer/service/shared_context_state.h"
+ #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
++#include "ui/gfx/geometry/rect.h"
+ 
+ #include <QMutex>
+ 
+@@ -64,6 +65,7 @@
+ 
+     // Overridden from SkiaOutputDevice.
+     void SetFrameSinkId(const viz::FrameSinkId &frame_sink_id) override;
++    void SetViewportSize(const gfx::Size &viewport_size) override;
+     bool Reshape(const ReshapeParams &params) override;
+     void Present(const std::optional<gfx::Rect>& update_rect,
+                  BufferPresentedCallback feedback,
+@@ -84,6 +86,8 @@
+     QSize size() override;
+     bool requiresAlphaChannel() override;
+     float devicePixelRatio() override;
++    bool setDirect(const DirectTarget *target, bool immediate) override;
++    void directFrameEnd() override;
+ 
+ protected:
+     struct Shape
+@@ -130,9 +134,27 @@
+ 
+         const Shape &shape() const { return m_shape; }
+         viz::SharedImageFormat sharedImageFormat() const { return m_skiaRepresentation->format(); }
++        // Read by Qt or the compositor: Chromium must not draw into it.
++        bool inUse() const { return m_presentCount > 0; }
++        // The GPU work drawing it, if it is not done yet (a sync file, owned).
++        int takeAcquireFenceFd();
+ 
+         std::function<void()> textureCleanupCallback;
+ 
++        // Omarchy Mobile patch: what changed (in pixels) since this buffer's
++        // content was drawn, so Chromium redraws only that next time, and
++        // what its own frame changed from the frame before (for the
++        // compositor).
++        gfx::Rect stale;
++        gfx::Rect damage;
++        const uint64_t serial;
++        // The compositor's wl_buffer for it (direct presentation), made on
++        // its first use.
++        struct wl_proxy *wlBuffer = nullptr;
++        // Attached in the compositor and not yet released.
++        bool onWayland = false;
++        void *wlTag = nullptr;
++
+     private:
+         void createSkImageOnGPUThread();
+ 
+@@ -174,6 +196,26 @@
+     base::TimeTicks nextQtFrame() const;
+     std::unique_ptr<Buffer> takeSpare();
+     void finishDeferredSwap();
++    // What of the next buffer Chromium draws into is older than the newest
++    // frame (Omarchy Mobile patch, m_mutex held).
++    gfx::Rect nextBufferDamage();
++    template<typename F> void forEachBuffer(F f);
++
++    // Direct presentation (Omarchy Mobile patch). All with m_mutex held.
++    struct Direct;
++    friend struct Direct;
++    void directPresentNext();
++    void directAttach(std::unique_ptr<Buffer> buffer);
++    void directHide();
++    void directTeardown();
++    void directFrameDone();
++    void directReleased(uint64_t serial);
++    void directFenceSignaled(uint64_t serial);
++    void directFinishDeferredSwap();
++    static void directEvent(uint64_t device, int kind, uint64_t serial);
++    std::unique_ptr<Direct> m_direct;
++    uint64_t m_deviceId = 0;
++    gfx::Size m_viewportSize;
+ 
+     bool m_requiresAlpha;
+     gpu::SharedImageFactory *const m_factory;
+--- a/src/core/compositor/native_skia_output_device.cpp
++++ b/src/core/compositor/native_skia_output_device.cpp
+@@ -23,9 +23,31 @@
+ #include <QGuiApplication>
+ #include <QScreen>
+ 
++#include <QHash>
++
+ #include <algorithm>
++#include <atomic>
+ #include <cstdio>
+ 
++#if BUILDFLAG(IS_OZONE)
++#include "base/posix/eintr_wrapper.h"
++#include "ui/gfx/linux/drm_util_linux.h"
++
++#include <qpa/qplatformnativeinterface.h>
++#include <wayland-client-core.h>
++
++#include <cerrno>
++#include <climits>
++#include <cstring>
++#include <dlfcn.h>
++#include <mutex>
++#include <poll.h>
++#include <set>
++#include <sys/eventfd.h>
++#include <thread>
++#include <unistd.h>
++#endif
++
+ #if BUILDFLAG(ENABLE_VULKAN)
+ #include "ui/base/ozone_buildflags.h"
+ #if BUILDFLAG(IS_OZONE_X11)
+@@ -88,6 +110,19 @@
+     return on;
+ }
+ 
++// QTWEBENGINE_DIRECT_DEBUG: what direct presentation does (Omarchy Mobile
++// patch), on stderr.
++bool directDebug()
++{
++    static const bool on = qEnvironmentVariableIsSet("QTWEBENGINE_DIRECT_DEBUG");
++    return on;
++}
++#define DIRECT_LOG(...) \
++    do { \
++        if (directDebug()) \
++            fprintf(stderr, "webengine direct: " __VA_ARGS__); \
++    } while (0)
++
+ // Frames that may wait for Qt (Omarchy Mobile patch). Two absorb a late Qt
+ // frame without dropping one; Chromium then waits for Qt.
+ constexpr size_t kQueueDepth = 2;
+@@ -97,7 +132,491 @@
+     return (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds();
+ }
+ 
++// Devices by id, for the compositor's events (Omarchy Mobile patch).
++std::atomic<uint64_t> g_nextDeviceId{ 1 };
++std::atomic<uint64_t> g_nextBufferSerial{ 1 };
++QMutex g_directDevicesMutex;
++QHash<uint64_t, NativeSkiaOutputDevice *> g_directDevices;
++
++} // namespace
++
++#if BUILDFLAG(IS_OZONE)
++// Direct presentation (Omarchy Mobile patch) --------------------------------
++//
++// Qt Quick redraws its whole window for every frame Chromium hands it, and
++// the Wayland compositor then recomposes the whole window: when a page
++// changed a few pixels, Chromium, Qt and the compositor each redrew the full
++// screen (a 57-pixel animation cost as much GPU and memory power as a
++// full-screen one on a Pixel 7 Pro, October 7). Here the frames go to the
++// compositor as a sub-surface below Qt's window, which shows them through a
++// transparent hole, each with the area that changed; Chromium redraws only
++// that area of its buffer, and Qt draws nothing at all for a page's frames.
++//
++// libwayland-client is the one Qt's Wayland plugin loaded (this library does
++// not link it), looked up at run time. The protocol objects live on an event
++// queue of their own, read by a thread here that also waits for each frame's
++// GPU work; their events are handed to Chromium's GPU thread.
++namespace {
++
++enum DirectEventKind { kFrameDone, kBufferReleased, kFenceSignaled };
++
++// Request opcodes, from the protocols' XML.
++constexpr uint32_t kDisplayGetRegistry = 1;
++constexpr uint32_t kRegistryBind = 0;
++constexpr uint32_t kCompositorCreateSurface = 0;
++constexpr uint32_t kCompositorCreateRegion = 1;
++constexpr uint32_t kSubcompositorGetSubsurface = 1;
++constexpr uint32_t kSurfaceDestroy = 0;
++constexpr uint32_t kSurfaceAttach = 1;
++constexpr uint32_t kSurfaceFrame = 3;
++constexpr uint32_t kSurfaceSetOpaqueRegion = 4;
++constexpr uint32_t kSurfaceSetInputRegion = 5;
++constexpr uint32_t kSurfaceCommit = 6;
++constexpr uint32_t kSurfaceDamageBuffer = 9;
++constexpr uint32_t kSubsurfaceDestroy = 0;
++constexpr uint32_t kSubsurfaceSetPosition = 1;
++constexpr uint32_t kSubsurfacePlaceBelow = 3;
++constexpr uint32_t kSubsurfaceSetDesync = 5;
++constexpr uint32_t kRegionDestroy = 0;
++constexpr uint32_t kRegionAdd = 1;
++constexpr uint32_t kBufferDestroy = 0;
++constexpr uint32_t kDmabufCreateParams = 1;
++constexpr uint32_t kParamsDestroy = 0;
++constexpr uint32_t kParamsAdd = 1;
++constexpr uint32_t kParamsCreateImmed = 3;
++constexpr uint32_t kViewporterGetViewport = 1;
++constexpr uint32_t kViewportDestroy = 0;
++constexpr uint32_t kViewportSetSource = 1;
++constexpr uint32_t kViewportSetDestination = 2;
++constexpr uint32_t kMarshalFlagDestroy = 1;
++
++// zwp_linux_dmabuf_v1 (version 3) and wp_viewporter, as wayland-scanner
++// would write them; the core interfaces they name are filled in at load.
++const wl_interface *g_noTypes[6] = {};
++const wl_interface *g_createParamsTypes[1];
++const wl_interface *g_createImmedTypes[5];
++const wl_interface *g_createdTypes[1];
++const wl_interface *g_getViewportTypes[2];
++const wl_message g_dmabufRequests[] = {
++    { "destroy", "", g_noTypes },
++    { "create_params", "n", g_createParamsTypes },
++};
++const wl_message g_dmabufEvents[] = {
++    { "format", "u", g_noTypes },
++    { "modifier", "3uuu", g_noTypes },
++};
++const wl_interface g_dmabufInterface = { "zwp_linux_dmabuf_v1", 3, 2, g_dmabufRequests, 2, g_dmabufEvents };
++const wl_message g_paramsRequests[] = {
++    { "destroy", "", g_noTypes },
++    { "add", "huuuuu", g_noTypes },
++    { "create", "iiuu", g_noTypes },
++    { "create_immed", "2niiuu", g_createImmedTypes },
++};
++const wl_message g_paramsEvents[] = {
++    { "created", "n", g_createdTypes },
++    { "failed", "", g_noTypes },
++};
++const wl_interface g_paramsInterface = { "zwp_linux_buffer_params_v1", 3, 4, g_paramsRequests, 2, g_paramsEvents };
++const wl_message g_viewporterRequests[] = {
++    { "destroy", "", g_noTypes },
++    { "get_viewport", "no", g_getViewportTypes },
++};
++const wl_interface g_viewporterInterface = { "wp_viewporter", 1, 2, g_viewporterRequests, 0, nullptr };
++const wl_message g_viewportRequests[] = {
++    { "destroy", "", g_noTypes },
++    { "set_source", "ffff", g_noTypes },
++    { "set_destination", "ii", g_noTypes },
++};
++const wl_interface g_viewportInterface = { "wp_viewport", 1, 3, g_viewportRequests, 0, nullptr };
++
++// Which device and buffer an event is for (a listener's data).
++struct DirectTag
++{
++    uint64_t device;
++    uint64_t serial;
++};
++
++class WaylandDirect
++{
++public:
++    using Handler = void (*)(uint64_t device, int kind, uint64_t serial);
++
++    // The process's one, made on first use; null when the compositor lacks
++    // something it needs.
++    static WaylandDirect *instance(wl_display *display,
++                                   scoped_refptr<base::SingleThreadTaskRunner> runner,
++                                   Handler handler)
++    {
++        static QMutex mutex;
++        static WaylandDirect *direct = nullptr;
++        static bool tried = false;
++        QMutexLocker locker(&mutex);
++        if (!tried) {
++            tried = true;
++            auto *candidate = new WaylandDirect;
++            if (candidate->initialize(display, std::move(runner), handler)) {
++                direct = candidate;
++                s_instance.store(direct);
++                qInfo("webengine: frames go to the compositor directly (sub-surface)");
++            } else {
++                qWarning("webengine: direct presentation unavailable, Qt draws the frames");
++            }
++        }
++        return direct;
++    }
++    static WaylandDirect *existing() { return s_instance.load(); }
++
++    // A request with no new object, or one making `iface`.
++    template<typename... Args>
++    wl_proxy *call(wl_proxy *proxy, uint32_t opcode, const wl_interface *iface, Args... args)
++    {
++        return m_wl.marshalFlags(proxy, opcode, iface, m_wl.getVersion(proxy), 0, args...);
++    }
++    void listen(wl_proxy *proxy, const void *listener, void *data)
++    {
++        m_wl.addListener(proxy, reinterpret_cast<void (**)(void)>(const_cast<void *>(listener)), data);
++    }
++    void flush() { m_wl.flush(m_display); }
++    // An object with no events, destroyed at once.
++    void destroyNow(wl_proxy *proxy, uint32_t destructor)
++    {
++        m_wl.marshalFlags(proxy, destructor, nullptr, m_wl.getVersion(proxy), kMarshalFlagDestroy);
++    }
++    bool supports(uint32_t format, uint64_t modifier) const
++    {
++        return m_formats.count({ format, modifier }) > 0;
++    }
++    const wl_interface *bufferInterface() const { return m_wl.buffer; }
++    const wl_interface *callbackInterface() const { return m_wl.callback; }
++    const wl_interface *surfaceInterface() const { return m_wl.surface; }
++    const wl_interface *subsurfaceInterface() const { return m_wl.subsurface; }
++    const wl_interface *regionInterface() const { return m_wl.region; }
++    wl_proxy *compositor() const { return m_compositor; }
++    wl_proxy *subcompositor() const { return m_subcompositor; }
++    wl_proxy *dmabuf() const { return m_dmabuf; }
++    wl_proxy *viewporter() const { return m_viewporter; }
++
++    // A frame callback whose done event is handed to the GPU thread.
++    void requestFrame(wl_proxy *surface, uint64_t device)
++    {
++        static const struct
++        {
++            void (*done)(void *, wl_proxy *, uint32_t);
++        } listener = { [](void *data, wl_proxy *callback, uint32_t) {
++            auto *tag = static_cast<DirectTag *>(data);
++            WaylandDirect *self = existing();
++            self->post(tag->device, kFrameDone, 0);
++            self->m_wl.proxyDestroy(callback);
++            delete tag;
++        } };
++        wl_proxy *callback = call(surface, kSurfaceFrame, m_wl.callback, nullptr);
++        listen(callback, &listener, new DirectTag{ device, 0 });
++    }
++    void listenForRelease(wl_proxy *buffer, DirectTag *tag)
++    {
++        static const struct
++        {
++            void (*release)(void *, wl_proxy *);
++        } listener = { [](void *data, wl_proxy *) {
++            auto *tag = static_cast<DirectTag *>(data);
++            existing()->post(tag->device, kBufferReleased, tag->serial);
++        } };
++        listen(buffer, &listener, tag);
++    }
++
++    // Destroys an object on the thread reading its events, so that no event
++    // is handled for it afterwards (`destructor` is its destroy request's
++    // opcode, or -1); `tag`, its listener's data, goes with it.
++    void destroyLater(wl_proxy *proxy, int destructor, DirectTag *tag = nullptr)
++    {
++        {
++            std::lock_guard<std::mutex> locker(m_commandMutex);
++            m_destroy.push_back({ proxy, destructor, tag });
++        }
++        wake();
++    }
++    // `fd` (a sync file, owned) signals that a buffer's GPU work is done.
++    void watchFence(int fd, uint64_t device, uint64_t serial)
++    {
++        {
++            std::lock_guard<std::mutex> locker(m_commandMutex);
++            m_fences.push_back({ fd, device, serial });
++        }
++        wake();
++    }
++
++private:
++    struct Destroy
++    {
++        wl_proxy *proxy;
++        int destructor;
++        DirectTag *tag;
++    };
++    struct Fence
++    {
++        int fd;
++        uint64_t device;
++        uint64_t serial;
++    };
++    struct Api
++    {
++        wl_proxy *(*marshalFlags)(wl_proxy *, uint32_t, const wl_interface *, uint32_t, uint32_t, ...);
++        int (*addListener)(wl_proxy *, void (**)(void), void *);
++        void (*proxyDestroy)(wl_proxy *);
++        uint32_t (*getVersion)(wl_proxy *);
++        void *(*createWrapper)(void *);
++        void (*wrapperDestroy)(void *);
++        void (*setQueue)(wl_proxy *, wl_event_queue *);
++        wl_event_queue *(*createQueue)(wl_display *);
++        int (*prepareReadQueue)(wl_display *, wl_event_queue *);
++        int (*dispatchQueuePending)(wl_display *, wl_event_queue *);
++        int (*readEvents)(wl_display *);
++        void (*cancelRead)(wl_display *);
++        int (*flush)(wl_display *);
++        int (*getFd)(wl_display *);
++        int (*roundtripQueue)(wl_display *, wl_event_queue *);
++        const wl_interface *registry, *compositor, *subcompositor, *surface, *subsurface, *region,
++                *buffer, *callback;
++    };
++
++    bool load()
++    {
++        void *lib = dlopen("libwayland-client.so.0", RTLD_NOW | RTLD_NOLOAD);
++        if (!lib)
++            return false;
++        bool ok = true;
++        auto get = [&](auto &field, const char *name) {
++            field = reinterpret_cast<std::remove_reference_t<decltype(field)>>(dlsym(lib, name));
++            ok = ok && field;
++        };
++        get(m_wl.marshalFlags, "wl_proxy_marshal_flags");
++        get(m_wl.addListener, "wl_proxy_add_listener");
++        get(m_wl.proxyDestroy, "wl_proxy_destroy");
++        get(m_wl.getVersion, "wl_proxy_get_version");
++        get(m_wl.createWrapper, "wl_proxy_create_wrapper");
++        get(m_wl.wrapperDestroy, "wl_proxy_wrapper_destroy");
++        get(m_wl.setQueue, "wl_proxy_set_queue");
++        get(m_wl.createQueue, "wl_display_create_queue");
++        get(m_wl.prepareReadQueue, "wl_display_prepare_read_queue");
++        get(m_wl.dispatchQueuePending, "wl_display_dispatch_queue_pending");
++        get(m_wl.readEvents, "wl_display_read_events");
++        get(m_wl.cancelRead, "wl_display_cancel_read");
++        get(m_wl.flush, "wl_display_flush");
++        get(m_wl.getFd, "wl_display_get_fd");
++        get(m_wl.roundtripQueue, "wl_display_roundtrip_queue");
++        get(m_wl.registry, "wl_registry_interface");
++        get(m_wl.compositor, "wl_compositor_interface");
++        get(m_wl.subcompositor, "wl_subcompositor_interface");
++        get(m_wl.surface, "wl_surface_interface");
++        get(m_wl.subsurface, "wl_subsurface_interface");
++        get(m_wl.region, "wl_region_interface");
++        get(m_wl.buffer, "wl_buffer_interface");
++        get(m_wl.callback, "wl_callback_interface");
++        if (!ok)
++            return false;
++        g_createParamsTypes[0] = &g_paramsInterface;
++        g_createImmedTypes[0] = m_wl.buffer;
++        g_createdTypes[0] = m_wl.buffer;
++        g_getViewportTypes[0] = &g_viewportInterface;
++        g_getViewportTypes[1] = m_wl.surface;
++        return true;
++    }
++
++    bool initialize(wl_display *display, scoped_refptr<base::SingleThreadTaskRunner> runner,
++                    Handler handler)
++    {
++        if (!display || !runner || !load())
++            return false;
++        m_display = display;
++        m_runner = std::move(runner);
++        m_handler = handler;
++        m_queue = m_wl.createQueue(display);
++        auto *wrapper = static_cast<wl_proxy *>(m_wl.createWrapper(display));
++        if (!m_queue || !wrapper)
++            return false;
++        m_wl.setQueue(wrapper, m_queue);
++        wl_proxy *registry = call(wrapper, kDisplayGetRegistry, m_wl.registry, nullptr);
++        m_wl.wrapperDestroy(wrapper);
++        static const struct
++        {
++            void (*global)(void *, wl_proxy *, uint32_t, const char *, uint32_t);
++            void (*globalRemove)(void *, wl_proxy *, uint32_t);
++        } registryListener = {
++            [](void *data, wl_proxy *registry, uint32_t name, const char *interface, uint32_t version) {
++                auto *self = static_cast<WaylandDirect *>(data);
++                auto bind = [&](const wl_interface *iface, uint32_t want) {
++                    const uint32_t v = std::min(version, want);
++                    return self->m_wl.marshalFlags(registry, kRegistryBind, iface, v, 0, name,
++                                                   iface->name, v, nullptr);
++                };
++                if (!strcmp(interface, "wl_compositor") && version >= 4) {
++                    self->m_compositor = bind(self->m_wl.compositor, 4);
++                } else if (!strcmp(interface, "wl_subcompositor")) {
++                    self->m_subcompositor = bind(self->m_wl.subcompositor, 1);
++                } else if (!strcmp(interface, "wp_viewporter")) {
++                    self->m_viewporter = bind(&g_viewporterInterface, 1);
++                } else if (!strcmp(interface, "zwp_linux_dmabuf_v1") && version >= 3) {
++                    // Version 3 lists the formats and modifiers as events.
++                    self->m_dmabuf = bind(&g_dmabufInterface, 3);
++                    static const struct
++                    {
++                        void (*format)(void *, wl_proxy *, uint32_t);
++                        void (*modifier)(void *, wl_proxy *, uint32_t, uint32_t, uint32_t);
++                    } dmabufListener = {
++                        [](void *, wl_proxy *, uint32_t) {},
++                        [](void *data, wl_proxy *, uint32_t format, uint32_t high, uint32_t low) {
++                            static_cast<WaylandDirect *>(data)->m_formats.insert(
++                                    { format, (uint64_t(high) << 32) | low });
++                        },
++                    };
++                    self->listen(self->m_dmabuf, &dmabufListener, self);
++                }
++            },
++            [](void *, wl_proxy *, uint32_t) {},
++        };
++        listen(registry, &registryListener, this);
++        // Globals, then the formats of the dma-buf global.
++        if (m_wl.roundtripQueue(display, m_queue) < 0 || m_wl.roundtripQueue(display, m_queue) < 0)
++            return false;
++        m_wl.proxyDestroy(registry);
++        if (!m_compositor || !m_subcompositor || !m_viewporter || !m_dmabuf || m_formats.empty())
++            return false;
++        m_wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
++        if (m_wakeFd < 0)
++            return false;
++        std::thread(&WaylandDirect::run, this).detach();
++        return true;
++    }
++
++    void wake()
++    {
++        const uint64_t one = 1;
++        [[maybe_unused]] ssize_t written = write(m_wakeFd, &one, sizeof(one));
++    }
++
++    void post(uint64_t device, int kind, uint64_t serial)
++    {
++        m_runner->PostTask(FROM_HERE, base::BindOnce(m_handler, device, kind, serial));
++    }
++
++    // Destroy requests and fence waits from other threads.
++    void runCommands(std::vector<Fence> &fences)
++    {
++        std::vector<Destroy> destroy;
++        {
++            std::lock_guard<std::mutex> locker(m_commandMutex);
++            destroy.swap(m_destroy);
++            fences.insert(fences.end(), m_fences.begin(), m_fences.end());
++            m_fences.clear();
++        }
++        for (const Destroy &d : destroy) {
++            if (d.destructor >= 0)
++                m_wl.marshalFlags(d.proxy, d.destructor, nullptr, m_wl.getVersion(d.proxy),
++                                  kMarshalFlagDestroy);
++            else
++                m_wl.proxyDestroy(d.proxy);
++            delete d.tag;
++        }
++        if (!destroy.empty())
++            m_wl.flush(m_display);
++    }
++
++    void run()
++    {
++        std::vector<Fence> fences;
++        std::vector<pollfd> fds;
++        for (;;) {
++            while (m_wl.prepareReadQueue(m_display, m_queue) != 0)
++                m_wl.dispatchQueuePending(m_display, m_queue);
++            runCommands(fences);
++            m_wl.flush(m_display);
++            fds.assign({ { m_wl.getFd(m_display), POLLIN, 0 }, { m_wakeFd, POLLIN, 0 } });
++            for (const Fence &f : fences)
++                fds.push_back({ f.fd, POLLIN, 0 });
++            if (poll(fds.data(), fds.size(), -1) < 0) {
++                m_wl.cancelRead(m_display);
++                if (errno == EINTR)
++                    continue;
++                qWarning("webengine: direct presentation thread stops: %s", strerror(errno));
++                return;
++            }
++            if (fds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
++                if (m_wl.readEvents(m_display) < 0) {
++                    qWarning("webengine: direct presentation thread stops: the display is gone");
++                    return;
++                }
++            } else {
++                m_wl.cancelRead(m_display);
++            }
++            if (fds[1].revents & POLLIN) {
++                uint64_t count;
++                [[maybe_unused]] ssize_t read_ = read(m_wakeFd, &count, sizeof(count));
++            }
++            // Frames whose GPU work is done.
++            for (size_t i = fences.size(); i-- > 0;) {
++                if (fds[i + 2].revents) {
++                    close(fences[i].fd);
++                    post(fences[i].device, kFenceSignaled, fences[i].serial);
++                    fences.erase(fences.begin() + i);
++                }
++            }
++            m_wl.dispatchQueuePending(m_display, m_queue);
++        }
++    }
++
++    static inline std::atomic<WaylandDirect *> s_instance{ nullptr };
++    Api m_wl{};
++    wl_display *m_display = nullptr;
++    wl_event_queue *m_queue = nullptr;
++    wl_proxy *m_compositor = nullptr, *m_subcompositor = nullptr, *m_dmabuf = nullptr,
++             *m_viewporter = nullptr;
++    std::set<std::pair<uint32_t, uint64_t>> m_formats;
++    scoped_refptr<base::SingleThreadTaskRunner> m_runner;
++    Handler m_handler = nullptr;
++    int m_wakeFd = -1;
++    std::mutex m_commandMutex;
++    std::vector<Destroy> m_destroy;
++    std::vector<Fence> m_fences;
++};
++
+ } // namespace
++#endif // BUILDFLAG(IS_OZONE)
++
++#if BUILDFLAG(IS_OZONE)
++struct NativeSkiaOutputDevice::Direct
++{
++    WaylandDirect *wl = nullptr;
++    // Qt's window surface, and the sub-surface below it.
++    wl_proxy *parent = nullptr;
++    wl_proxy *surface = nullptr;
++    wl_proxy *subsurface = nullptr;
++    wl_proxy *viewport = nullptr;
++    QPoint position{ INT_MIN, INT_MIN };
++    QSize destination;
++    QRect source;
++    // Where Qt wants the frames (logical pixels in the window), and whether.
++    QRectF rect;
++    bool wanted = false;
++    // A buffer is attached (the sub-surface shows).
++    bool mapped = false;
++    // Qt draws the frames again: the sub-surface goes after Qt's frame.
++    bool hideAfterQtFrame = false;
++    // A frame callback not yet done: the next frame waits for it.
++    bool framePending = false;
++    // The compositor cannot show these buffers.
++    bool broken = false;
++    // The next frame, waiting for its GPU work.
++    std::unique_ptr<Buffer> fenced;
++    // Frames replaced on screen that the compositor has not released yet.
++    std::vector<std::unique_ptr<Buffer>> held;
++    // Changed since the last frame the compositor got.
++    gfx::Rect damage;
++};
++#else
++struct NativeSkiaOutputDevice::Direct
++{
++};
++#endif
+ 
+ NativeSkiaOutputDevice::NativeSkiaOutputDevice(
+         scoped_refptr<gpu::SharedContextState> contextState, bool requiresAlpha,
+@@ -121,6 +640,17 @@
+     capabilities_.supports_surfaceless = true;
+     capabilities_.supports_viewporter = true;
+     capabilities_.output_surface_origin = gfx::SurfaceOrigin::kTopLeft;
++    // Chromium redraws only what changed in the buffer it draws into
++    // (Omarchy Mobile patch): each swap reports what of the next buffer is
++    // older than the newest frame.
++    capabilities_.supports_post_sub_buffer = true;
++    capabilities_.damage_area_from_skia_output_device = true;
++
++    m_deviceId = g_nextDeviceId++;
++    {
++        QMutexLocker locker(&g_directDevicesMutex);
++        g_directDevices.insert(m_deviceId, this);
++    }
+ 
+ #if BUILDFLAG(IS_OZONE)
+     m_isNativeBufferSupported = ui::OzonePlatform::GetInstance()
+@@ -146,6 +676,17 @@
+ 
+ NativeSkiaOutputDevice::~NativeSkiaOutputDevice()
+ {
++    {
++        QMutexLocker locker(&g_directDevicesMutex);
++        g_directDevices.remove(m_deviceId);
++    }
++#if BUILDFLAG(IS_OZONE)
++    {
++        QMutexLocker locker(&m_mutex);
++        if (m_direct)
++            directTeardown();
++    }
++#endif
+     unbind();
+ }
+ 
+@@ -186,8 +727,20 @@
+     }
+     StartSwapBuffers(std::move(feedback));
+     bool deferred;
++    bool direct = false;
++    gfx::Rect nextDamage;
+     {
+         QMutexLocker locker(&m_mutex);
++        // What this frame changed is missing from every other buffer.
++        const gfx::Rect full(m_shape.imageInfo.width(), m_shape.imageInfo.height());
++        gfx::Rect damage = update_rect ? *update_rect : full;
++        damage.Intersect(full);
++        forEachBuffer([&](Buffer *buffer) {
++            if (buffer != m_backBuffer.get())
++                buffer->stale.Union(damage);
++        });
++        m_backBuffer->stale = gfx::Rect();
++        m_backBuffer->damage = damage;
+         m_backBuffer->createFence();
+         m_gpuTaskRunner = base::SingleThreadTaskRunner::GetCurrentDefault();
+         // The frame joins the queue Qt takes from, one per Qt frame and in
+@@ -200,6 +753,8 @@
+         if (m_ready.size() > kQueueDepth) {
+             dropped = std::move(m_ready.front());
+             m_ready.pop_front();
++            // The next frame shows what the dropped one changed too.
++            m_ready.front()->damage.Union(dropped->damage);
+         }
+         m_backBuffer = dropped ? std::move(dropped) : takeSpare();
+         // Room for another frame: Chromium goes on now. A full queue (or a
+@@ -208,6 +763,15 @@
+         m_swapDeferred = deferred;
+         if (deferred)
+             m_frame = std::move(frame);
++#if BUILDFLAG(IS_OZONE)
++        // Shown directly: to the compositor, not through Qt.
++        if (m_direct && m_direct->wanted && m_direct->mapped) {
++            direct = true;
++            directPresentNext();
++        }
++#endif
++        if (!deferred)
++            nextDamage = nextBufferDamage();
+         if (frameStats()) {
+             m_statsDropped += dropped != nullptr;
+             m_statsQueued[std::min<size_t>(2, waiting)]++;
+@@ -239,8 +803,9 @@
+     if (!deferred)
+         FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
+                           gfx::Size(m_shape.imageInfo.width(), m_shape.imageInfo.height()),
+-                          std::move(frame));
+-    readyToSwap();
++                          std::move(frame), nextDamage);
++    if (!direct)
++        readyToSwap();
+ }
+ 
+ // A buffer for Chromium's next frame, from those Qt let go of; others are
+@@ -248,20 +813,31 @@
+ std::unique_ptr<NativeSkiaOutputDevice::Buffer> NativeSkiaOutputDevice::takeSpare()
+ {
+     std::unique_ptr<Buffer> spare;
++    std::vector<std::unique_ptr<Buffer>> inUse;
+     while (!m_spareBuffers.empty()) {
+         std::unique_ptr<Buffer> buffer = std::move(m_spareBuffers.back());
+         m_spareBuffers.pop_back();
+-        if (!spare && buffer->shape() == m_shape)
++        // Still read (by the compositor, Omarchy Mobile patch): kept until
++        // it is let go, never drawn into.
++        if (buffer->inUse())
++            inUse.push_back(std::move(buffer));
++        else if (!spare && buffer->shape() == m_shape)
+             spare = std::move(buffer);
+     }
++    m_spareBuffers = std::move(inUse);
+     return spare;
+ }
+ 
+ void NativeSkiaOutputDevice::finishDeferredSwap()
+ {
++    gfx::Rect nextDamage;
++    {
++        QMutexLocker locker(&m_mutex);
++        nextDamage = nextBufferDamage();
++    }
+     FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
+                       gfx::Size(m_shape.imageInfo.width(), m_shape.imageInfo.height()),
+-                      std::move(m_frame));
++                      std::move(m_frame), nextDamage);
+ }
+ 
+ // Qt's render thread takes a frame just after the compositor's frame
+@@ -407,8 +983,422 @@
+     return m_frontBuffer ? m_frontBuffer->shape().devicePixelRatio : 1;
+ }
+ 
++// Damage (Omarchy Mobile patch) ----------------------------------------------
++
++template<typename F>
++void NativeSkiaOutputDevice::forEachBuffer(F f)
++{
++    for (auto &buffer : m_ready)
++        f(buffer.get());
++    for (auto &buffer : m_spareBuffers)
++        f(buffer.get());
++    if (m_frontBuffer)
++        f(m_frontBuffer.get());
++    if (m_backBuffer)
++        f(m_backBuffer.get());
++#if BUILDFLAG(IS_OZONE)
++    if (m_direct) {
++        for (auto &buffer : m_direct->held)
++            f(buffer.get());
++        if (m_direct->fenced)
++            f(m_direct->fenced.get());
++    }
++#endif
++}
++
++// Chromium redraws only what changed since the buffer it draws into next
++// was drawn (it reports this with each swap).
++gfx::Rect NativeSkiaOutputDevice::nextBufferDamage()
++{
++    const gfx::Rect full(m_shape.imageInfo.width(), m_shape.imageInfo.height());
++    if (!m_backBuffer)
++        m_backBuffer = takeSpare();
++    if (!m_backBuffer || m_backBuffer->shape() != m_shape)
++        return full;
++    gfx::Rect stale = m_backBuffer->stale;
++    stale.Intersect(full);
++    return stale;
++}
++
++void NativeSkiaOutputDevice::SetViewportSize(const gfx::Size &viewport_size)
++{
++    m_viewportSize = viewport_size;
++}
++
++#if BUILDFLAG(IS_OZONE)
++// Direct presentation (Omarchy Mobile patch) ---------------------------------
++
++void NativeSkiaOutputDevice::directEvent(uint64_t device, int kind, uint64_t serial)
++{
++    NativeSkiaOutputDevice *self;
++    {
++        QMutexLocker locker(&g_directDevicesMutex);
++        self = g_directDevices.value(device);
++    }
++    // Devices are destroyed on this (the GPU) thread too.
++    if (!self)
++        return;
++    QMutexLocker locker(&self->m_mutex);
++    if (!self->m_direct)
++        return;
++    switch (kind) {
++    case kFrameDone:
++        self->directFrameDone();
++        break;
++    case kBufferReleased:
++        self->directReleased(serial);
++        break;
++    case kFenceSignaled:
++        self->directFenceSignaled(serial);
++        break;
++    }
++}
++
++bool NativeSkiaOutputDevice::setDirect(const DirectTarget *target, bool immediate)
++{
++    QMutexLocker locker(&m_mutex);
++    if (!target) {
++        if (!m_direct)
++            return false;
++        Direct &d = *m_direct;
++        if (d.wanted) {
++            DIRECT_LOG("leave%s\n", immediate ? " (hidden)" : "");
++            d.wanted = false;
++            // A frame still waiting for its GPU work goes back to Qt's queue.
++            if (d.fenced) {
++                d.fenced->endPresent();
++                m_ready.push_front(std::move(d.fenced));
++            }
++            // Qt draws the frame on screen from this frame on (a hold of its
++            // own), and the sub-surface goes once that frame is out.
++            if (m_frontBuffer && !m_readyWithTexture) {
++                m_frontBuffer->beginPresent();
++                m_readyWithTexture = true;
++            }
++            d.hideAfterQtFrame = true;
++        }
++        if (immediate) {
++            directHide();
++            d.hideAfterQtFrame = false;
++        }
++        return false;
++    }
++
++    if (!m_gpuTaskRunner || (m_direct && m_direct->broken))
++        return false;
++    QPlatformNativeInterface *native = QGuiApplication::platformNativeInterface();
++    if (!native || !QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
++        return false;
++    auto *display = static_cast<wl_display *>(native->nativeResourceForIntegration("wl_display"));
++    auto *parent = static_cast<wl_proxy *>(native->nativeResourceForWindow("surface", target->window));
++    if (!display || !parent)
++        return false;
++    if (!m_direct)
++        m_direct = std::make_unique<Direct>();
++    Direct &d = *m_direct;
++    if (!d.wl) {
++        d.wl = WaylandDirect::instance(display, m_gpuTaskRunner, &NativeSkiaOutputDevice::directEvent);
++        if (!d.wl) {
++            d.broken = true;
++            return false;
++        }
++    }
++    WaylandDirect &w = *d.wl;
++
++    // A new window surface (Qt makes one again after a hide): a new
++    // sub-surface below it, placed when Qt next commits its window.
++    if (d.parent != parent) {
++        directTeardown();
++        d.parent = parent;
++        d.surface = w.call(w.compositor(), kCompositorCreateSurface, w.surfaceInterface(), nullptr);
++        d.subsurface = w.call(w.subcompositor(), kSubcompositorGetSubsurface,
++                              w.subsurfaceInterface(), nullptr, d.surface, parent);
++        w.call(d.subsurface, kSubsurfacePlaceBelow, nullptr, parent);
++        DIRECT_LOG("sub-surface for window surface %p\n", static_cast<void *>(parent));
++        w.call(d.subsurface, kSubsurfaceSetDesync, nullptr);
++        d.viewport = w.call(w.viewporter(), kViewporterGetViewport, &g_viewportInterface, nullptr,
++                            d.surface);
++        // Touches go to Qt's window above.
++        wl_proxy *region = w.call(w.compositor(), kCompositorCreateRegion, w.regionInterface(), nullptr);
++        w.call(d.surface, kSurfaceSetInputRegion, nullptr, region);
++        if (!m_requiresAlpha) {
++            wl_proxy *opaque = w.call(w.compositor(), kCompositorCreateRegion, w.regionInterface(), nullptr);
++            w.call(opaque, kRegionAdd, nullptr, 0, 0, 1 << 20, 1 << 20);
++            w.call(d.surface, kSurfaceSetOpaqueRegion, nullptr, opaque);
++            w.destroyNow(opaque, kRegionDestroy);
++        }
++        w.destroyNow(region, kRegionDestroy);
++        d.position = QPoint(INT_MIN, INT_MIN);
++        d.destination = QSize();
++        d.source = QRect();
++    }
++
++    // The position is the window's state: it moves with Qt's next commit,
++    // which comes right after this sync.
++    const QPoint position = target->rect.topLeft().toPoint();
++    if (position != d.position) {
++        w.call(d.subsurface, kSubsurfaceSetPosition, nullptr, position.x(), position.y());
++        d.position = position;
++    }
++    const bool resized = d.rect.size() != target->rect.size();
++    d.rect = target->rect;
++    d.hideAfterQtFrame = false;
++
++    if (!d.wanted) {
++        DIRECT_LOG("enter at %.0f,%.0f %.0fx%.0f, front %s, %zu waiting\n", target->rect.x(),
++                   target->rect.y(), target->rect.width(), target->rect.height(),
++                   m_frontBuffer ? "yes" : "no", m_ready.size());
++        // Qt shows the first frames; from there the frame on screen is
++        // handed over.
++        if (!m_frontBuffer)
++            return false;
++        d.wanted = true;
++        // Qt's texture of the frame on screen goes with Qt's node.
++        if (m_readyWithTexture) {
++            m_frontBuffer->endPresent();
++            m_readyWithTexture = false;
++        }
++        m_frontBuffer->freeTexture();
++        // The sub-surface shows it at once, so the hole Qt now leaves and
++        // the page appear together.
++        if (!d.mapped) {
++            std::unique_ptr<Buffer> front = std::move(m_frontBuffer);
++            front->beginPresent();
++            directAttach(std::move(front));
++        }
++        directPresentNext();
++    } else if (resized && d.mapped && m_frontBuffer) {
++        // The new size at once; Chromium's frame of that size follows.
++        directAttach(nullptr);
++    }
++    if (d.broken) {
++        // Qt draws the frames again, from this frame on.
++        d.wanted = false;
++        directHide();
++        if (m_frontBuffer && !m_readyWithTexture) {
++            m_frontBuffer->beginPresent();
++            m_readyWithTexture = true;
++        }
++        return false;
++    }
++    return d.mapped;
++}
++
++void NativeSkiaOutputDevice::directFrameEnd()
++{
++    QMutexLocker locker(&m_mutex);
++    if (m_direct && m_direct->hideAfterQtFrame && !m_direct->wanted) {
++        directHide();
++        m_direct->hideAfterQtFrame = false;
++    }
++}
++
++// The next frame in the queue to the compositor, if it can take one.
++void NativeSkiaOutputDevice::directPresentNext()
++{
++    Direct &d = *m_direct;
++    if (!d.wanted || !d.surface || d.framePending || d.fenced || m_ready.empty())
++        return;
++    std::unique_ptr<Buffer> buffer = std::move(m_ready.front());
++    m_ready.pop_front();
++    buffer->beginPresent();
++    d.damage.Union(buffer->damage);
++    const int fence = buffer->takeAcquireFenceFd();
++    pollfd done = { fence, POLLIN, 0 };
++    if (fence >= 0 && poll(&done, 1, 0) != 1) {
++        d.fenced = std::move(buffer);
++        d.wl->watchFence(fence, m_deviceId, d.fenced->serial);
++    } else {
++        if (fence >= 0)
++            close(fence);
++        directAttach(std::move(buffer));
++    }
++    directFinishDeferredSwap();
++}
++
++void NativeSkiaOutputDevice::directFinishDeferredSwap()
++{
++    if (m_swapDeferred && m_ready.size() < kQueueDepth) {
++        m_swapDeferred = false;
++        m_gpuTaskRunner->PostTask(FROM_HERE,
++                                  base::BindOnce(&NativeSkiaOutputDevice::finishDeferredSwap,
++                                                 base::Unretained(this)));
++    }
++}
++
++// Shows `buffer` (or, if null, the frame on screen at a new size).
++void NativeSkiaOutputDevice::directAttach(std::unique_ptr<Buffer> buffer)
++{
++    Direct &d = *m_direct;
++    WaylandDirect &w = *d.wl;
++    Buffer *shown = buffer ? buffer.get() : m_frontBuffer.get();
++    if (!shown || !d.surface)
++        return;
++    if (buffer && !buffer->wlBuffer) {
++        scoped_refptr<gfx::NativePixmap> pixmap = buffer->nativePixmap();
++        // The format with its alpha channel even for an opaque page:
++        // Hyprland 0.56 draws an alpha-less (XBGR) sub-surface below its
++        // parent as white. The opaque region says it is opaque.
++        const uint32_t format = pixmap ? ui::GetFourCCFormatFromBufferFormat(pixmap->GetBufferFormat()) : 0;
++        const uint64_t modifier = pixmap ? pixmap->GetBufferFormatModifier() : 0;
++        if (!pixmap || pixmap->GetNumberOfPlanes() != 1 || !w.supports(format, modifier)) {
++            fprintf(stderr, "webengine: the compositor cannot show these buffers (format %08x, modifier %llx)\n",
++                     format, (unsigned long long)modifier);
++            d.broken = true;
++            buffer->endPresent();
++            if (!m_frontBuffer)
++                m_frontBuffer = std::move(buffer);
++            else
++                m_ready.push_front(std::move(buffer));
++            return;
++        }
++        wl_proxy *params = w.call(w.dmabuf(), kDmabufCreateParams, &g_paramsInterface, nullptr);
++        w.call(params, kParamsAdd, nullptr, pixmap->GetDmaBufFd(0), 0u,
++               uint32_t(pixmap->GetDmaBufOffset(0)), uint32_t(pixmap->GetDmaBufPitch(0)),
++               uint32_t(modifier >> 32), uint32_t(modifier & 0xffffffff));
++        const gfx::Size size = pixmap->GetBufferSize();
++        buffer->wlBuffer = w.call(params, kParamsCreateImmed, w.bufferInterface(), nullptr,
++                                  size.width(), size.height(), format, 0u);
++        w.destroyNow(params, kParamsDestroy);
++        auto *tag = new DirectTag{ m_deviceId, buffer->serial };
++        buffer->wlTag = tag;
++        w.listenForRelease(buffer->wlBuffer, tag);
++    }
++
++    // The part of the buffer Qt would show, at the item's size.
++    const Shape &shape = shown->shape();
++    const QSize pixels(shape.imageInfo.width(), shape.imageInfo.height());
++    const QSize logical(qMax(1, qRound(d.rect.width())), qMax(1, qRound(d.rect.height())));
++    const QSize used = (QSizeF(logical) * shape.devicePixelRatio).toSize().boundedTo(pixels);
++    const QRect source(QPoint(0, 0), used.expandedTo(QSize(1, 1)));
++    if (source != d.source) {
++        w.call(d.viewport, kViewportSetSource, nullptr, wl_fixed_from_int(0), wl_fixed_from_int(0),
++               wl_fixed_from_int(source.width()), wl_fixed_from_int(source.height()));
++        d.source = source;
++    }
++    if (logical != d.destination) {
++        w.call(d.viewport, kViewportSetDestination, nullptr, logical.width(), logical.height());
++        d.destination = logical;
++    }
++
++    if (buffer) {
++        w.call(d.surface, kSurfaceAttach, nullptr, buffer->wlBuffer, 0, 0);
++        gfx::Rect damage = d.mapped ? d.damage : gfx::Rect(pixels.width(), pixels.height());
++        damage.Intersect(gfx::Rect(pixels.width(), pixels.height()));
++        DIRECT_LOG("attach %llu damage %s source %dx%d dest %dx%d\n",
++                   (unsigned long long)buffer->serial, damage.ToString().c_str(), source.width(),
++                   source.height(), logical.width(), logical.height());
++        if (!damage.IsEmpty())
++            w.call(d.surface, kSurfaceDamageBuffer, nullptr, damage.x(), damage.y(),
++                   damage.width(), damage.height());
++        d.damage = gfx::Rect();
++        w.requestFrame(d.surface, m_deviceId);
++        d.framePending = true;
++        buffer->onWayland = true;
++        // The frame shown before stays the compositor's until it lets go.
++        if (m_frontBuffer) {
++            if (m_frontBuffer->onWayland)
++                d.held.push_back(std::move(m_frontBuffer));
++            else
++                m_spareBuffers.push_back(std::move(m_frontBuffer));
++        }
++        m_frontBuffer = std::move(buffer);
++        m_readyWithTexture = false;
++    } else {
++        w.call(d.surface, kSurfaceDamageBuffer, nullptr, 0, 0, pixels.width(), pixels.height());
++    }
++    w.call(d.surface, kSurfaceCommit, nullptr);
++    w.flush();
++    d.mapped = true;
++}
++
++void NativeSkiaOutputDevice::directHide()
++{
++    Direct &d = *m_direct;
++    if (!d.mapped || !d.surface)
++        return;
++    WaylandDirect &w = *d.wl;
++    w.call(d.surface, kSurfaceAttach, nullptr, nullptr, 0, 0);
++    w.call(d.surface, kSurfaceCommit, nullptr);
++    w.flush();
++    DIRECT_LOG("hide\n");
++    d.mapped = false;
++    // An unmapped surface gets no frame callbacks.
++    d.framePending = false;
++}
++
++void NativeSkiaOutputDevice::directTeardown()
++{
++    Direct &d = *m_direct;
++    if (d.fenced) {
++        d.fenced->endPresent();
++        m_ready.push_front(std::move(d.fenced));
++    }
++    directHide();
++    if (d.surface) {
++        WaylandDirect &w = *d.wl;
++        w.destroyLater(d.viewport, kViewportDestroy);
++        w.destroyLater(d.subsurface, kSubsurfaceDestroy);
++        w.destroyLater(d.surface, kSurfaceDestroy);
++    }
++    d.surface = d.subsurface = d.viewport = nullptr;
++    d.parent = nullptr;
++    d.mapped = false;
++}
++
++void NativeSkiaOutputDevice::directFrameDone()
++{
++    Direct &d = *m_direct;
++    if (!d.framePending)
++        return;
++    d.framePending = false;
++    noteQtFrame();
++    directPresentNext();
++}
++
++void NativeSkiaOutputDevice::directReleased(uint64_t serial)
++{
++    Direct &d = *m_direct;
++    for (auto it = d.held.begin(); it != d.held.end(); ++it) {
++        if ((*it)->serial == serial) {
++            (*it)->onWayland = false;
++            (*it)->endPresent();
++            m_spareBuffers.push_back(std::move(*it));
++            d.held.erase(it);
++            return;
++        }
++    }
++    // Released while still on screen, or after Qt took it back.
++    forEachBuffer([serial](Buffer *buffer) {
++        if (buffer->serial == serial && buffer->onWayland) {
++            buffer->onWayland = false;
++            buffer->endPresent();
++        }
++    });
++}
++
++void NativeSkiaOutputDevice::directFenceSignaled(uint64_t serial)
++{
++    Direct &d = *m_direct;
++    if (!d.fenced || d.fenced->serial != serial)
++        return;
++    directAttach(std::move(d.fenced));
++    directPresentNext();
++}
++#else
++bool NativeSkiaOutputDevice::setDirect(const DirectTarget *, bool)
++{
++    return false;
++}
++
++void NativeSkiaOutputDevice::directFrameEnd() { }
++#endif // BUILDFLAG(IS_OZONE)
++
+ NativeSkiaOutputDevice::Buffer::Buffer(NativeSkiaOutputDevice *parent)
+-    : m_parent(parent), m_shape(m_parent->m_shape)
++    : stale(parent->m_shape.imageInfo.width(), parent->m_shape.imageInfo.height())
++    , serial(g_nextBufferSerial++)
++    , m_parent(parent)
++    , m_shape(m_parent->m_shape)
+ {
+ }
+ 
+@@ -436,6 +1426,21 @@
+ 
+     if (!m_mailbox.IsZero() && m_parent->m_factory)
+         m_parent->m_factory->DestroySharedImage(m_mailbox);
++#if BUILDFLAG(IS_OZONE)
++    if (wlBuffer) {
++        if (WaylandDirect *direct = WaylandDirect::existing())
++            direct->destroyLater(wlBuffer, kBufferDestroy, static_cast<DirectTag *>(wlTag));
++    }
++#endif
++}
++
++int NativeSkiaOutputDevice::Buffer::takeAcquireFenceFd()
++{
++#if BUILDFLAG(IS_OZONE)
++    if (m_acquireFence)
++        return HANDLE_EINTR(dup(m_acquireFence->GetGpuFenceHandle().Peek()));
++#endif
++    return -1;
+ }
+ 
+ // The following Buffer methods are based on
+--- a/src/core/render_widget_host_view_qt_delegate_item.h
++++ b/src/core/render_widget_host_view_qt_delegate_item.h
+@@ -121,6 +121,18 @@
+     QList<QMetaObject::Connection> m_windowConnections;
+     WebContentsAdapterClient *m_adapterClient = nullptr;
+     WidgetDelegate *m_widgetDelegate = nullptr;
++
++    // Direct presentation (Omarchy Mobile patch): where the compositor
++    // shows the frames, in whole logical pixels of the window, if it may.
++    bool directRect(QQuickWindow *win, QRectF *rect) const;
++    void stopDirect();
++    // The paint node is the hole the sub-surface shows through, at this
++    // rectangle (set while Qt syncs).
++    bool m_directNode = false;
++    // The sub-surface kept, with its last frame, for a page hidden while its
++    // window was off screen.
++    bool m_directKept = false;
++    QRectF m_directRect;
+ };
+ 
+ } // namespace QtWebEngineCore
+--- a/src/core/render_widget_host_view_qt_delegate_item.cpp
++++ b/src/core/render_widget_host_view_qt_delegate_item.cpp
+@@ -11,7 +11,10 @@
+ #include <QtGui/qevent.h>
+ #include <QtGui/qguiapplication.h>
+ #include <QtGui/qwindow.h>
++#include <QtQuick/qsgflatcolormaterial.h>
++#include <QtQuick/qsggeometry.h>
+ #include <QtQuick/qsgimagenode.h>
++#include <QtQuick/qsgnode.h>
+ #include <rhi/qrhi.h>
+ 
+ #if QT_CONFIG(accessibility)
+@@ -22,6 +25,39 @@
+ 
+ namespace QtWebEngineCore {
+ 
++namespace {
++// Where the compositor shows a page's frames itself (Omarchy Mobile patch):
++// transparent pixels written over what Qt drew below, not blended with it,
++// so the sub-surface below the window shows through. Items drawn above the
++// page still blend over it.
++class DirectHoleNode : public QSGGeometryNode
++{
++public:
++    DirectHoleNode() : m_geometry(QSGGeometry::defaultAttributes_Point2D(), 4)
++    {
++        setGeometry(&m_geometry);
++        // Transparent black (Qt::transparent is transparent white, which
++        // the compositor adds to what is below).
++        m_material.setColor(QColor(0, 0, 0, 0));
++        m_material.setFlag(QSGMaterial::Blending, false);
++        setMaterial(&m_material);
++    }
++    void setRect(const QRectF &rect)
++    {
++        if (rect == m_rect)
++            return;
++        m_rect = rect;
++        QSGGeometry::updateRectGeometry(&m_geometry, rect);
++        markDirty(QSGNode::DirtyGeometry);
++    }
++
++private:
++    QSGGeometry m_geometry;
++    QSGFlatColorMaterial m_material;
++    QRectF m_rect;
++};
++} // namespace
++
+ RenderWidgetHostViewQtDelegateItem::RenderWidgetHostViewQtDelegateItem(RenderWidgetHostViewQtDelegateClient *client, bool isPopup)
+     : m_client(client)
+     , m_isPopup(isPopup)
+@@ -41,6 +77,7 @@
+ 
+ RenderWidgetHostViewQtDelegateItem::~RenderWidgetHostViewQtDelegateItem()
+ {
++    stopDirect();
+     if (QQuickItem::window())
+         releaseResources();
+ 
+@@ -339,6 +376,7 @@
+ {
+     QQuickItem::itemChange(change, value);
+     if (change == QQuickItem::ItemSceneChange) {
++        stopDirect();
+         if (!m_windowConnections.isEmpty()) {
+             for (const QMetaObject::Connection &c : std::as_const(m_windowConnections))
+                 disconnect(c);
+@@ -362,12 +400,43 @@
+                     &RenderWidgetHostViewQtDelegateItem::releaseResources, Qt::DirectConnection));
+             if (!m_isPopup)
+                 m_windowConnections.append(connect(value.window, SIGNAL(closing(QQuickCloseEvent*)), SLOT(onHide())));
++            // Direct presentation: the hole and the sub-surface move with
++            // the page, and Qt draws it again when it may no longer be
++            // shown directly (a fade, a scale).
++            m_windowConnections.append(connect(value.window, &QQuickWindow::afterAnimating, this,
++                                               [this, win = value.window] {
++                // A frame kept while the window was off screen goes with the
++                // window's first frame back if its page is still hidden.
++                if (m_directKept && !isVisible()) {
++                    m_directKept = false;
++                    stopDirect();
++                }
++                QRectF rect;
++                const bool direct = directRect(win, &rect);
++                if (direct != m_directNode || (direct && rect != m_directRect))
++                    update();
++            }));
+         }
+         polish();
+     } else if (change == QQuickItem::ItemVisibleHasChanged) {
+         if (value.boolValue) {
+             m_client->notifyShown();
++            m_directKept = false;
++            // The sub-surface comes back with this frame (it went when hidden).
++            if (m_directNode)
++                update();
+         } else {
++            // A page hidden while its window is off screen (Omarchy Mobile's
++            // browser hides its pages then, so Chromium treats them as
++            // background tabs) keeps its last frame in the sub-surface: Qt
++            // cannot draw the window again until it is back, and the frame
++            // it last drew has the hole, so a picture of the window (the
++            // switcher's) showed nothing there.
++            QQuickWindow *win = QQuickItem::window();
++            if (m_directNode && win && !win->isExposed())
++                m_directKept = true;
++            else
++                stopDirect();
+             if (!m_widgetDelegate)
+                 return;
+             m_client->notifyHidden();
+@@ -459,6 +528,30 @@
+ 
+     QQuickWindow *win = QQuickItem::window();
+ 
++    // Direct presentation (Omarchy Mobile patch): the compositor shows the
++    // frames in a sub-surface below the window; Qt leaves a hole for it.
++    if (comp->type() == Compositor::Type::Native) {
++        QRectF rect;
++        const bool wanted = directRect(win, &rect);
++        const Compositor::DirectTarget target{ win, rect };
++        if (comp->setDirect(wanted ? &target : nullptr)) {
++            auto *hole = m_directNode ? static_cast<DirectHoleNode *>(oldNode) : nullptr;
++            if (!hole) {
++                delete oldNode;
++                hole = new DirectHoleNode;
++            }
++            m_directNode = true;
++            m_directRect = rect;
++            hole->setRect(QRectF(mapFromScene(rect.topLeft()), rect.size()));
++            return hole;
++        }
++        if (m_directNode) {
++            delete oldNode;
++            oldNode = nullptr;
++            m_directNode = false;
++        }
++    }
++
+     QSGImageNode *node = nullptr;
+     // Delete old node before swapFrame to decrement refcount of
+     // QImage in software mode.
+@@ -524,6 +617,37 @@
+     if (!comp || comp->type() != Compositor::Type::Native)
+         return;
+     comp->releaseTexture();
++    comp->directFrameEnd();
++}
++
++// Direct presentation (Omarchy Mobile patch) is for a window asking for it
++// (the dynamic property `_q_webengine_direct`) with an alpha channel, and a
++// page item that is not a popup, faded, scaled or rotated.
++bool RenderWidgetHostViewQtDelegateItem::directRect(QQuickWindow *win, QRectF *rect) const
++{
++    if (m_isPopup || !win || !isVisible() || win->format().alphaBufferSize() <= 0
++        || !win->property("_q_webengine_direct").toBool())
++        return false;
++    qreal opacity = 1;
++    for (const QQuickItem *item = this; item; item = item->parentItem())
++        opacity *= item->opacity();
++    if (opacity < 1 || itemTransform(nullptr, nullptr).type() > QTransform::TxTranslate)
++        return false;
++    const QRectF scene = mapRectToScene(QRectF(0, 0, width(), height()));
++    if (scene.width() < 1 || scene.height() < 1)
++        return false;
++    *rect = QRectF(QPointF(qRound(scene.x()), qRound(scene.y())),
++                   QSizeF(qRound(scene.width()), qRound(scene.height())));
++    return true;
++}
++
++// The sub-surface goes at once (the item is hidden or leaves its window).
++void RenderWidgetHostViewQtDelegateItem::stopDirect()
++{
++    if (auto comp = compositor()) {
++        if (comp->type() == Compositor::Type::Native)
++            comp->setDirect(nullptr, true);
++    }
+ }
+ 
+ void RenderWidgetHostViewQtDelegateItem::onWindowPosChanged()
+--- a/src/3rdparty/chromium/components/viz/service/display_embedder/skia_output_surface_impl.cc
++++ b/src/3rdparty/chromium/components/viz/service/display_embedder/skia_output_surface_impl.cc
+@@ -1298,8 +1298,10 @@
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+   DCHECK(client_);
+ 
+-  if (capabilities_.damage_area_from_skia_output_device) {
+-    DCHECK(params.frame_buffer_damage_area);
++  // A skipped swap (no damage area) leaves the buffer to draw into as it
++  // was (Qt WebEngine, Omarchy Mobile patch).
++  if (capabilities_.damage_area_from_skia_output_device &&
++      params.frame_buffer_damage_area) {
+     damage_of_current_buffer_ = params.frame_buffer_damage_area;
+   }
+ 

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: CC0-1.0
-# Samsung GM5 (Pixel 7 Pro telephoto) for libcamera's software ISP. Identity
-# colour matrix until a calibration. No autofocus: its SEM1215SA actuator is
-# not driven yet.
+# Samsung GM5 (Pixel 7 Pro telephoto) for libcamera's software ISP, with
+# contrast autofocus on its SEM1215SA lens (pixel-camera, 0-1023; its factory
+# calibration puts infinity near 286 and macro near 756). Identity colour
+# matrix until a calibration.
 %YAML 1.1
 ---
 version: 1
@@ -18,4 +19,5 @@ algorithms:
       contrast: 1.2
       saturation: 1.1
   - Agc:
+  - Af:
 ...

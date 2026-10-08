@@ -1,8 +1,8 @@
 # libcamera for the Pixel 7 Pro
 
 The Pixel uses the OnePlus package's libcamera 0.7.2 and its patches
-(`devices/oneplus7pro/adapter/camera/libcamera/0001`–`0021`), plus two of its
-own:
+(`devices/oneplus7pro/adapter/camera/libcamera/0001`–`0021`), plus four of
+its own:
 
 - `0022`: the simple pipeline runs the software ISP on the `pixel-camera`
   media device (`kernel/camera/pixel-camera.c`);
@@ -10,6 +10,25 @@ own:
   (front), S5KGN1 (main) and S5KGM5 (telephoto): the Sony gain model
   1024 / (1024 − code), Samsung's code / 32, the 64-code black level and
   unit cell sizes.
+- `0024`: low-light digital gain in the software ISP's AGC (October 1). Once
+  the exposure and the analogue gain are at their limits, up to 4× more as
+  digital gain. The ultra-wide and the telephoto sat at 16× analogue gain in
+  a dim room and stayed darker than the main camera. It is generic, and could
+  join the shared series.
+- `0025`: the simple pipeline accepts a sensor configuration whose largest
+  output is within 1% of the requested stream, then adjusts the stream to it
+  (October 2). The debayer's 8-column margin kept the front camera's binned
+  1920x1368 mode from covering a 1920x1080 video, so it ran the 3840x2736
+  mode instead. Front video is now 1912x1080 from the binned mode, at half
+  the software ISP time per frame; every other camera and role keeps its
+  mode. Generic too.
+
+Measuring frame rates over SSH needs the session's Mesa
+(`__EGL_VENDOR_LIBRARY_FILENAMES=/opt/pixel-mesa/share/glvnd/egl_vendor.d/50_mesa.json`,
+`GBM_BACKENDS_PATH=/opt/pixel-mesa/lib/gbm`, `LD_LIBRARY_PATH=/opt/pixel-mesa/lib`).
+Without it the debayer falls back to llvmpipe on the CPU (`GL_RENDERER:
+llvmpipe` in the eGL log) at about 43 ms a frame, and every camera reads
+about 23 fps.
 
 ## Building on the phone
 

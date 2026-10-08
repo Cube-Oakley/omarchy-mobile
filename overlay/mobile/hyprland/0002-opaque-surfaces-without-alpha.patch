@@ -1,0 +1,30 @@
+Draw a surface its opaque region covers without its alpha (Omarchy Mobile)
+
+A client's opaque region says its content is opaque there, but Hyprland
+drew such a surface with the alpha of its buffer. Chromium (Qt WebEngine)
+leaves an opaque page's alpha at 0 in a buffer that has an alpha channel:
+on screen nothing shows (nothing is drawn below an opaque surface and the
+output has no alpha), but every picture of the window, a toplevel capture
+for an app switcher's card or a screenshot, was transparent where the page
+was. A surface whose opaque region covers it is drawn as RGBX instead.
+
+--- a/src/render/OpenGL.cpp
++++ b/src/render/OpenGL.cpp
+@@ -1308,6 +1308,17 @@
+     const auto surface                       = g_pHyprRenderer->m_renderData.surface;
+     const auto WORK_BUFFER_IMAGE_DESCRIPTION = g_pHyprRenderer->m_renderData.pMonitor->workBufferImageDescription();
+ 
++    // A surface whose opaque region covers it is drawn without its alpha: the
++    // client says it is opaque there. Chromium leaves an opaque page's alpha
++    // at 0 in a buffer that has one; drawn with it, pictures of the window (a
++    // toplevel capture, a screenshot) were transparent where the page was.
++    if ((shaderFeatures & SH_FEAT_RGBA) && surface.valid() && !surface->m_current.opaque.empty()) {
++        CRegion uncovered{CBox{{}, surface->m_current.size}};
++        uncovered.subtract(surface->m_current.opaque);
++        if (uncovered.empty())
++            shaderFeatures &= ~SH_FEAT_RGBA;
++    }
++
+     // chosenSdrEotf contains the valid eotf for this display
+ 
+     const auto SOURCE_IMAGE_DESCRIPTION = [&] {

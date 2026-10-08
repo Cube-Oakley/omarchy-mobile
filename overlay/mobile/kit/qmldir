@@ -23,5 +23,9 @@ BluetoothPage 1.0 BluetoothPage.qml
 DisplayPage 1.0 DisplayPage.qml
 StoragePage 1.0 StoragePage.qml
 AppsPage 1.0 AppsPage.qml
+ActivityPage 1.0 ActivityPage.qml
+KeyboardPage 1.0 KeyboardPage.qml
 WeatherPage 1.0 WeatherPage.qml
 Avatar 1.0 Avatar.qml
+SecurityPage 1.0 SecurityPage.qml
+PinEntry 1.0 PinEntry.qml

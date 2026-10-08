@@ -3,8 +3,9 @@
 """Single-owner Pixel modem service for the native Phone and Messages apps.
 
 Start with a supervised ONLINE modem; --bringup registers a fresh CP first.
-A private Unix socket accepts same-uid clients; no radio/NV/SIM commands are
-exposed to applications.
+A private Unix socket accepts root and the desktop's account
+(/etc/omarchy-mobile/session); no radio/NV/SIM commands are exposed to
+applications.
 """
 import argparse
 import hashlib
@@ -12,6 +13,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import pwd
 import signal
 import socket
 import sqlite3
@@ -40,6 +42,10 @@ def database(path):
       CREATE TABLE IF NOT EXISTS parts (id TEXT PRIMARY KEY, sender TEXT, reference INTEGER, total INTEGER, seq INTEGER, text TEXT, timestamp TEXT, received REAL);
       CREATE TABLE IF NOT EXISTS outgoing (id TEXT PRIMARY KEY, digest TEXT, state TEXT, error TEXT, completed INTEGER DEFAULT 0);
     ''')
+    # WAP pushes (MMS notifications) keep their bytes, as hex, for Messages.
+    for table in ('received','parts'):
+        if 'data' not in {c[1] for c in db.execute(f'PRAGMA table_info({table})')}:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN data TEXT NOT NULL DEFAULT ''")
     # A request interrupted by a process restart must never be retried blindly.
     db.execute("UPDATE outgoing SET state='unknown', error='Delivery uncertain after service restart; check with the recipient' WHERE state='sending'")
     db.commit()
@@ -100,23 +106,24 @@ class Service:
             except (ValueError,IndexError,UnicodeError):
                 print('Stored SMS could not be decoded; original retained privately',flush=True)
                 return
-            concat=sms.pop('concat')
+            concat=sms.pop('concat'); data=sms.pop('data').hex(); sms.pop('port')
             if concat:
                 ref,total,seq=concat
-                self.db.execute('INSERT OR IGNORE INTO parts VALUES (?,?,?,?,?,?,?,?)',
-                                (key,sms['number'],ref,total,seq,sms['text'],sms['timestamp'],time.time()))
+                self.db.execute('INSERT OR IGNORE INTO parts(id,sender,reference,total,seq,text,timestamp,received,data) VALUES (?,?,?,?,?,?,?,?,?)',
+                                (key,sms['number'],ref,total,seq,sms['text'],sms['timestamp'],time.time(),data))
                 parts=self.db.execute('SELECT * FROM parts WHERE sender=? AND reference=? AND total=? AND received>? ORDER BY received',
                                       (sms['number'],ref,total,time.time()-86400)).fetchall()
                 by_seq={p['seq']:p for p in parts}
                 if len(by_seq)==total:
                     sms['text']=''.join(by_seq[i]['text'] for i in range(1,total+1))
+                    data=''.join(by_seq[i]['data'] for i in range(1,total+1))
                     sms['timestamp']=by_seq[1]['timestamp']
-                    self.db.execute('INSERT OR IGNORE INTO received(id,number,text,timestamp) VALUES (?,?,?,?)',
-                                    (key,sms['number'],sms['text'],sms['timestamp']))
+                    self.db.execute('INSERT OR IGNORE INTO received(id,number,text,timestamp,data) VALUES (?,?,?,?,?)',
+                                    (key,sms['number'],sms['text'],sms['timestamp'],data))
                     self.db.execute('DELETE FROM parts WHERE sender=? AND reference=? AND total=?',(sms['number'],ref,total))
             else:
-                self.db.execute('INSERT OR IGNORE INTO received(id,number,text,timestamp) VALUES (?,?,?,?)',
-                                (key,sms['number'],sms['text'],sms['timestamp']))
+                self.db.execute('INSERT OR IGNORE INTO received(id,number,text,timestamp,data) VALUES (?,?,?,?,?)',
+                                (key,sms['number'],sms['text'],sms['timestamp'],data))
         self.db.execute('INSERT OR IGNORE INTO imported VALUES (?)',(key,)); self.db.commit()
 
     def event(self, packet):
@@ -219,7 +226,7 @@ class Service:
                         calls=[{k:v for k,v in c.items() if k!='modem_id'} for c in self.calls.values()],
                         audio=dict(available=True,running=self.audio is not None,mute=self.muted,speaker=False,speaker_available=False,error=''))
         if action=='sms-list':
-            return [dict(path='pixel:'+r['id'],number=r['number'],text=r['text'],timestamp=r['timestamp'],data='',pdu='deliver',state='received',delivery='')
+            return [dict(path='pixel:'+r['id'],number=r['number'],text=r['text'],timestamp=r['timestamp'],data=r['data'],pdu='deliver',state='received',delivery='')
                     for r in self.db.execute('SELECT * FROM received WHERE consumed=0')]
         if action=='sms-delete':
             self.db.execute('UPDATE received SET consumed=1 WHERE id=?',(request['id'].removeprefix('pixel:'),)); self.db.commit(); return {}
@@ -288,6 +295,20 @@ class Service:
         raise ValueError('Unsupported phone action')
 
 
+def session_account():
+    """The desktop's account (/etc/omarchy-mobile/session, "user=NAME"),
+    which may use the socket; None for root's own desktop."""
+    try:
+        for line in Path('/etc/omarchy-mobile/session').read_text().splitlines():
+            key,_,value=line.partition('=')
+            if key.strip()=='user' and value.strip():
+                account=pwd.getpwnam(value.strip())
+                return account if account.pw_uid else None
+    except (OSError,KeyError):
+        pass
+    return None
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bringup',action='store_true',help='register a freshly booted supervised CP')
@@ -310,6 +331,13 @@ def main():
             from bringup import start
             start(service,lambda: stopping)
         path.unlink(missing_ok=True); server.bind(str(path)); server.listen(16); server.settimeout(.1)
+        # The desktop's account reaches the socket (its group) and is served
+        # (its uid); the rest of the directory stays root's (0600 files,
+        # found only by name).
+        account=session_account(); clients={os.getuid()}
+        if account:
+            os.chown(ROOT,0,account.pw_gid); ROOT.chmod(0o710); os.chown(path,0,account.pw_gid); path.chmod(0o660)
+            clients.add(account.pw_uid)
         (ROOT/'service.pid').write_text(str(os.getpid()))
         print('Phone and Messages modem service ready',flush=True)
         while not stopping:
@@ -324,7 +352,7 @@ def main():
                 connection.settimeout(2)
                 try:
                     _,uid,_=struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
-                    if uid!=os.getuid(): raise PermissionError('Phone service access denied')
+                    if uid not in clients: raise PermissionError('Phone service access denied')
                     body=b''
                     while b'\n' not in body:
                         chunk=connection.recv(4096)

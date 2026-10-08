@@ -11,6 +11,12 @@
  * sleep=1 (the display hook writes it at screen-off) holds the controller in
  * reset, as the bootloader leaves it, until sleep=0 restarts it: about 5 mA
  * less in system sleep (docs/suspend-20260930.md).
+ * gesture=1 instead puts it in its wakeup gesture mode (dynamic config 0x09,
+ * as Google's syna_tcm2 does at suspend): it scans slowly and reports only
+ * gestures, a single tap (6) or a long press (11) with their position, which
+ * the always-on display's fingerprint sensor needs. On a gesture it scans
+ * normally again, so the finger still down is reported as a touch, and goes
+ * back to gestures after 3 s without contact while gesture is still 1.
  */
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -68,6 +74,14 @@ static int sleep_set(const char *val, const struct kernel_param *kp)
 static const struct kernel_param_ops sleep_ops = { .set = sleep_set, .get = param_get_bool };
 module_param_cb(sleep, &sleep_ops, &sleep_req, 0644);
 MODULE_PARM_DESC(sleep, "Write 1 to hold the controller in reset (screen off), 0 to restart it");
+static bool gesture_req;
+module_param_cb(gesture, &sleep_ops, &gesture_req, 0644);
+MODULE_PARM_DESC(gesture, "Write 1 for the controller's wakeup gesture mode (always-on display), 0 for normal scanning");
+/* The controller's mode, and when it may go back to gestures after one. */
+static bool gesture_on;
+static unsigned long gesture_pause_until;
+static u64 gestures;
+module_param_named(gestures_seen, gestures, ullong, 0444);
 static bool hwspi;
 module_param(hwspi, bool, 0400);
 MODULE_PARM_DESC(hwspi, "Use the SPI0 controller (PERIC1 USI0) instead of GPIO bit-banging");
@@ -297,12 +311,37 @@ static int get_info(u8 cmd)
         memcmp(body+2, expected_config, sizeof(expected_config)))) return -EPROTO;
     return 0;
 }
+/* Dynamic config 0x09: the wakeup gesture mode on or off. */
+static int set_gesture_mode(bool on)
+{
+    u8 payload[3]={0x09, on, 0}, body[259];
+    int ret=command(0x24, payload, sizeof(payload), body);
+    if (ret < 0) {
+        pr_err("pixel-touch: gesture mode %s failed (%d)\n", on ? "on" : "off", ret);
+        return ret;
+    }
+    gesture_on=on;
+    pr_info("pixel-touch: gesture mode %s\n", on ? "on" : "off");
+    return 0;
+}
+/* A report's header: the gesture id (p[0]) and its data, x and y first. */
+static void report_gesture(const u8 *p)
+{
+    if (!p[0]) return;
+    gestures++;
+    pr_info("pixel-touch: gesture %u at (%u, %u) major %u minor %u\n", p[0],
+        get_unaligned_le16(p+1), get_unaligned_le16(p+3), p[5], p[6]);
+    /* Scan normally for the finger still down. */
+    gesture_pause_until=jiffies+3*HZ;
+}
 static int report_touch(const u8 *p, unsigned int len)
 {
     unsigned long seen=0;
     unsigned int count;
     if (len < 11) return -EPROTO;
+    report_gesture(p);
     count=p[10];
+    if (count) gesture_pause_until=max(gesture_pause_until, jiffies+3*HZ);
     if (count > 10 || len != 11+12*count) return -EPROTO;
     /* Validate complete packet before publishing any input events. */
     for (unsigned int n=0; n<count; n++) {
@@ -437,6 +476,7 @@ static int chip_start(void)
 {
     u8 reply[64], body[259], id=0xc3;
     int ret;
+    gesture_on=false;	/* a reset leaves it scanning normally */
     bits(peri+0x64,4,0); msleep(20); bits(peri+0x64,4,4); msleep(200);
     pr_info("pixel-touch-probe: after reset IRQ=%08x ACK=%08x\n",readl(far+0x24),readl(far+0x44));
     if (readl(far+0x44)&0x80) return -EBUSY;
@@ -561,6 +601,15 @@ static int poll_touch(void *unused)
         }
         if (readl(far+0x44)&0x80) { ret=-EBUSY; goto fail; }
         if (READ_ONCE(restart)) { WRITE_ONCE(restart, 0); ret=-ERESTART; goto fail; }
+        {
+            bool want=READ_ONCE(gesture_req) && time_after(jiffies, gesture_pause_until);
+            if (want != gesture_on) {
+                ret=set_gesture_mode(want);
+                if (ret) goto fail;
+                active_until=jiffies;
+                continue;
+            }
+        }
         if (readl(far+0x24)&1) { idle_wait(active_until); continue; }
         ret=read_packet(header,4);
         if (ret) goto fail;

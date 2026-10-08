@@ -1,0 +1,246 @@
+--- a/arch/arm64/kernel/pixel_gpu.c
++++ b/arch/arm64/kernel/pixel_gpu.c
+@@ -87,34 +87,53 @@
+ 
+ static struct notifier_block gpu_clk_nb = { .notifier_call = gpu_clk_notify };
+ 
+-/* The G3D zone has only a critical reboot trip, so cap the GPU here: 603 MHz
+- * from 60 C, 302 MHz from 65 C, uncapped again below 55 C. The cap changes
+- * the clock only while the GPU is powered; while it is suspended the next poll
+- * retries.
++/* The G3D zone has only a critical reboot trip (99 C), so cap the GPU here, in
++ * steps toward stock's control range (its G3D zone switches its power
++ * allocator on at 75 C and holds 95 C): uncapped below 85 C, then 750, 603,
++ * 470 and 302 MHz from 85, 90, 94 and 97 C. A step clears 5 C below its
++ * threshold. Comfort is the skin guard's job (skin_max_khz, written by
++ * pixel-skin-guard from the board thermistors, as stock's thermal HAL does);
++ * the lower of the two applies. The cap changes the clock only while the GPU
++ * is powered; while it is suspended the next poll retries.
+  */
++static const struct { int temp; s32 khz; } gpu_thermal_levels[] = {
++	{ 0, PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE }, { 85000, 750000 }, { 90000, 603000 },
++	{ 94000, 470000 }, { 97000, 302000 },
++};
++static unsigned int gpu_thermal_level;
++static int gpu_skin_khz;
++module_param_named(skin_max_khz, gpu_skin_khz, int, 0644);
++
+ static void gpu_thermal_poll(struct work_struct *work)
+ {
+-	s32 cap = gpu_thermal_cap;
++	unsigned int level = gpu_thermal_level;
++	s32 cap;
+ 	int temp = 0;
+ 
+ 	if (!thermal_zone_get_temp(gpu_tz, &temp)) {
+-		if (temp >= 65000)
+-			cap = 302000;
+-		else if (temp >= 60000)
+-			cap = min_t(s32, cap, 603000);
+-		else if (temp < 55000)
+-			cap = PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE;
++		while (level + 1 < ARRAY_SIZE(gpu_thermal_levels) &&
++		       temp >= gpu_thermal_levels[level + 1].temp)
++			level++;
++		while (level > 0 && temp < gpu_thermal_levels[level].temp - 5000)
++			level--;
++	} else {
++		level = max(level, 2U);
+ 	}
++	cap = gpu_thermal_levels[level].khz;
++	if (gpu_skin_khz > 0)
++		cap = min_t(s32, cap, max(gpu_skin_khz, 302000));
+ 	if (cap != gpu_thermal_cap && pm_runtime_get_if_active(gpu_dev) > 0) {
+ 		if (dev_pm_qos_update_request(&gpu_thermal_qos, cap) >= 0) {
+-			pr_info("Pixel GPU: thermal cap %s at %d mC\n",
+-				cap == PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE ? "released" :
+-				cap == 302000 ? "302 MHz" : "603 MHz", temp);
++			pr_info_ratelimited("Pixel GPU: cap %d kHz at %d mC (skin %d kHz)\n",
++					    cap, temp, gpu_skin_khz);
+ 			gpu_thermal_cap = cap;
++			gpu_thermal_level = level;
+ 		}
+ 		pm_runtime_put(gpu_dev);
++	} else if (cap == gpu_thermal_cap) {
++		gpu_thermal_level = level;
+ 	}
+-	schedule_delayed_work(&gpu_thermal_work, msecs_to_jiffies(500));
++	schedule_delayed_work(&gpu_thermal_work, msecs_to_jiffies(temp >= 80000 ? 250 : 500));
+ }
+ 
+ static int gpu_test_probe(struct platform_device *pdev)
+--- a/arch/arm64/kernel/pixel_acpm.c
++++ b/arch/arm64/kernel/pixel_acpm.c
+@@ -342,22 +342,25 @@
+ /* Fast CPU thermal cap. The polled thermal zones react every 100-250 ms, but
+  * a BIG core at 2850 MHz heats its sensor about 37 C per second. This thread
+  * reads the BIG and MID sensors every 20 ms and caps both clusters in one
+- * step. The full stock rates are allowed below 75 C. From 75 C the caps are
+- * the sustained 2048/1999 MHz, from 85 C 1582/1663 MHz, and from 92 C
+- * 1106/1197 MHz. A level clears 5 C below its threshold, but no sooner than
+- * a second after it was raised: the sensor swings about 10 C within one poll,
+- * and every change is a firmware voltage and clock transition. A failed read
+- * means the sustained caps. The zones' own trips (75 C passive, 95 C
+- * critical) stay behind it. Below 60 C it polls every 100 ms instead: a BIG
+- * core gains under 4 C in that time, and idle CPUs are not woken 50 times
+- * a second.
++ * step. The full stock rates are allowed below 85 C. From 85 C the caps are
++ * the sustained 2048/1999 MHz, from 91 C 1582/1663 MHz, and from 95 C
++ * 1106/1197 MHz: stock's zones switch their power allocator on at 75 C and
++ * hold 95 C, with hardware limits from 102 C. A level clears 5 C below its
++ * threshold, but no sooner than a second after it was raised: the sensor
++ * swings about 10 C within one poll, and every change is a firmware voltage
++ * and clock transition. A failed read means the sustained caps. The zones'
++ * own trips (88 C passive, 99 C critical) stay behind it, and comfort is the
++ * skin guard's (pixel-skin-guard limits scaling_max_freq from the board
++ * thermistors, as stock's thermal HAL does). Below 70 C it polls every
++ * 100 ms instead: a BIG core gains under 4 C in that time, and idle CPUs are
++ * not woken 50 times a second.
+  */
+ static const struct {
+ 	int temp;
+ 	unsigned int big, mid;
+ } boost_levels[] = {
+-	{ 0, 2850000, 2348000 }, { 75, 2048000, 1999000 },
+-	{ 85, 1582000, 1663000 }, { 92, 1106000, 1197000 },
++	{ 0, 2850000, 2348000 }, { 85, 2048000, 1999000 },
++	{ 91, 1582000, 1663000 }, { 95, 1106000, 1197000 },
+ };
+ static struct freq_qos_request big_cap, mid_cap;
+ static unsigned int boost_level = 1;
+@@ -397,7 +400,7 @@
+ 			       time_after(jiffies, boost_raised + HZ))
+ 				want--;
+ 			boost_apply(want, hot);
+-			cool = hot < 60;
++			cool = hot < 70;
+ 		}
+ 		if (cool)
+ 			usleep_range_state(100000, 110000, TASK_INTERRUPTIBLE);
+--- a/mainline/pixel-acpm-overlay.dts
++++ b/mainline/pixel-acpm-overlay.dts
+@@ -111,17 +111,18 @@
+ 				polling-delay = <250>;
+ 				polling-delay-passive = <100>;
+ 				thermal-sensors = <&gs201_thermal 0>;
+-				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
+-				 * well before, and reboot below them; a reboot resumes stock control. */
++				/* Stock GS201 trips: power allocator from 75 C holding 95-98 C,
++				 * hardware DFS 102-115 C, hot 120 C. pixel-cpu-thermal caps from
++				 * 85 C; these throttle from 88 C and reboot at 99 C. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					big_passive: passive {
+-						temperature = <75000>;
++						temperature = <88000>;
+ 						hysteresis = <2000>;
+ 						type = "passive";
+ 					};
+ 					critical {
+-						temperature = <95000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};
+@@ -138,17 +139,18 @@
+ 				polling-delay = <250>;
+ 				polling-delay-passive = <100>;
+ 				thermal-sensors = <&gs201_thermal 1>;
+-				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
+-				 * well before, and reboot below them; a reboot resumes stock control. */
++				/* Stock GS201 trips: power allocator from 75 C holding 95-98 C,
++				 * hardware DFS 102-115 C, hot 120 C. pixel-cpu-thermal caps from
++				 * 85 C; these throttle from 88 C and reboot at 99 C. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					mid_passive: passive {
+-						temperature = <75000>;
++						temperature = <88000>;
+ 						hysteresis = <2000>;
+ 						type = "passive";
+ 					};
+ 					critical {
+-						temperature = <95000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};
+@@ -165,17 +167,18 @@
+ 				polling-delay = <250>;
+ 				polling-delay-passive = <100>;
+ 				thermal-sensors = <&gs201_thermal 2>;
+-				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
+-				 * well before, and reboot below them; a reboot resumes stock control. */
++				/* Stock GS201 trips: power allocator from 75 C holding 95-98 C,
++				 * hardware DFS 102-115 C, hot 120 C. pixel-cpu-thermal caps from
++				 * 85 C; these throttle from 88 C and reboot at 99 C. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					little_passive: passive {
+-						temperature = <75000>;
++						temperature = <88000>;
+ 						hysteresis = <2000>;
+ 						type = "passive";
+ 					};
+ 					critical {
+-						temperature = <95000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};
+@@ -192,11 +195,11 @@
+ 				polling-delay = <1000>;
+ 				polling-delay-passive = <250>;
+ 				thermal-sensors = <&gs201_thermal 3>;
+-				/* RAM bring-up limit; reboot resumes stock thermal control. */
++				/* Below stock's 102 C hardware limits; pixel_gpu caps G3D from 85 C. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					critical {
+-						temperature = <80000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};
+@@ -206,11 +209,11 @@
+ 				polling-delay = <1000>;
+ 				polling-delay-passive = <250>;
+ 				thermal-sensors = <&gs201_thermal 4>;
+-				/* RAM bring-up limit; reboot resumes stock thermal control. */
++				/* Below stock's 102 C hardware limits. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					critical {
+-						temperature = <80000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};
+@@ -220,11 +223,11 @@
+ 				polling-delay = <1000>;
+ 				polling-delay-passive = <250>;
+ 				thermal-sensors = <&gs201_thermal 5>;
+-				/* RAM bring-up limit; reboot resumes stock thermal control. */
++				/* Below stock's 102 C hardware limits. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					critical {
+-						temperature = <80000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};
+@@ -234,11 +237,11 @@
+ 				polling-delay = <1000>;
+ 				polling-delay-passive = <250>;
+ 				thermal-sensors = <&gs201_thermal 6>;
+-				/* RAM bring-up limit; reboot resumes stock thermal control. */
++				/* Below stock's 102 C hardware limits. */
+ 				critical-action = "reboot";
+ 				trips {
+ 					critical {
+-						temperature = <80000>;
++						temperature = <99000>;
+ 						hysteresis = <2000>;
+ 						type = "critical";
+ 					};

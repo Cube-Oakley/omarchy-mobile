@@ -2,6 +2,7 @@
 
 #include "framequeue.h"
 #include "rawmerge.h"
+#include "videorecorder.h"
 
 #include <QImage>
 #include <QObject>
@@ -18,6 +19,8 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <libcamera/libcamera.h>
@@ -28,6 +31,7 @@ struct StillInfo {
     qint64 exposureUs = 0;
     double analogueGain = 0.0;
     QString model;              // sensor model, from libcamera
+    double zoom = 1.0;          // digital zoom: the photo is the centre 1/zoom of the frame
 };
 
 class CameraWorker;
@@ -56,6 +60,16 @@ class CameraSession : public QObject
     Q_PROPERTY(QString lastPhoto READ lastPhoto NOTIFY lastPhotoChanged)
     // Photos taken but still being merged and saved.
     Q_PROPERTY(int pending READ pending NOTIFY pendingChanged)
+    // Video: whether an encoder is installed, whether the camera is set up
+    // for video (16:9, no photos) or photos, whether it is recording, and
+    // the newest video saved.
+    Q_PROPERTY(bool canRecord READ canRecord CONSTANT)
+    Q_PROPERTY(bool video READ video WRITE setVideo NOTIFY videoChanged)
+    Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)
+    Q_PROPERTY(QString lastVideo READ lastVideo NOTIFY lastVideoChanged)
+    // Digital zoom on top of the lens (1 = none): the app scales the preview,
+    // and photos keep the centre 1/zoom of the frame.
+    Q_PROPERTY(qreal digitalZoom READ digitalZoom WRITE setDigitalZoom NOTIFY digitalZoomChanged)
 
 public:
     explicit CameraSession(QObject *parent = nullptr);
@@ -79,6 +93,13 @@ public:
     void setPhotoFolder(const QString &folder);
     QString lastPhoto() const { return lastPhoto_; }
     int pending() const { return pending_; }
+    bool canRecord() const { return canRecord_; }
+    bool video() const { return video_; }
+    void setVideo(bool video);
+    bool recording() const { return recording_; }
+    QString lastVideo() const { return lastVideo_; }
+    qreal digitalZoom() const { return digitalZoom_; }
+    void setDigitalZoom(qreal zoom);
 
     FrameQueue *frames() { return &frames_; }
 
@@ -86,6 +107,10 @@ public:
     Q_INVOKABLE void focusAt(qreal x, qreal y);
     Q_INVOKABLE void resetFocus();
     Q_INVOKABLE void capture();
+    // In video mode: 1080p video with sound into the photo folder, until
+    // stopRecording().
+    Q_INVOKABLE void startRecording();
+    Q_INVOKABLE void stopRecording();
 
 Q_SIGNALS:
     void activeChanged();
@@ -100,6 +125,12 @@ Q_SIGNALS:
     void frameReady();
     void photoSaved(const QString &path);
     void photoFailed(const QString &reason);
+    void videoChanged();
+    void recordingChanged();
+    void lastVideoChanged();
+    void videoSaved(const QString &path);
+    void videoFailed(const QString &reason);
+    void digitalZoomChanged();
 
 private:
     void setState(const QString &state, const QString &error = {});
@@ -109,6 +140,9 @@ private:
     void finishPhoto(const QString &result);
 
     FrameQueue frames_;
+    qreal digitalZoom_ = 1.0;
+    // The digital zoom when the photo being saved was taken.
+    qreal captureZoom_ = 1.0;
     QThread thread_;
     CameraWorker *worker_ = nullptr;
     bool active_ = false;
@@ -126,6 +160,10 @@ private:
     QString photoFolder_;
     QString lastPhoto_;
     int pending_ = 0;
+    bool canRecord_ = false;
+    bool video_ = false;
+    bool recording_ = false;
+    QString lastVideo_;
 };
 
 // Owns libcamera. Every libcamera call except queueRequest() happens on this
@@ -146,6 +184,9 @@ public:
     void setFocusWindow(QPointF framePoint, bool enabled);
     void capture();
     void requeue(const CameraFrame &frame);
+    void setVideo(bool video);
+    void startRecording(const QString &folder);
+    void stopRecording();
 
     // Called on libcamera's thread with a finished burst.
     std::function<void(std::shared_ptr<std::vector<RawFrame>>, RawLayout, int, QString)> burstDone;
@@ -161,6 +202,8 @@ Q_SIGNALS:
                        double gain, const QString &model);
     void burstStarted();
     void stillFailed(const QString &message);
+    // A video ended: path empty on failure, with the reason in error.
+    void recordingStopped(const QString &path, const QString &error);
 
 private:
     enum Mode { Off, Preview, Still };
@@ -177,6 +220,8 @@ private:
     void captureBurst();
     void keepBurstFrame(libcamera::Request *request, const libcamera::FrameBuffer *raw);
     void dumpBurstFrame(libcamera::Request *request, const RawFrame &frame);
+    void recordFrame(libcamera::Request *request, const libcamera::FrameBuffer *buffer);
+    void unmapFrames();
 
     FrameQueue *frames_;
     std::unique_ptr<libcamera::CameraManager> manager_;
@@ -223,4 +268,11 @@ private:
     QString model_;
     bool focusWindow_ = false;
     QPointF focusPoint_;
+    // Video: the preview is set up for recording, and frames go to the
+    // recorder from libcamera's thread while recordingFrames_ is set.
+    bool video_ = false;
+    VideoRecorder recorder_;
+    std::atomic<bool> recordingFrames_{false};
+    // Frame buffers mapped for the recorder, by dma-buf fd: address, length.
+    std::unordered_map<int, std::pair<void *, size_t>> maps_;
 };

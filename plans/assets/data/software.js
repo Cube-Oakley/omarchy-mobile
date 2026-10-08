@@ -328,7 +328,10 @@ PAGE_SOFTWARE = {
                 + "out whatever moved, on the sharpest frame; our own renderer takes off lens glare, tone-maps "
                 + "locally and keeps night looking like night, close to a Pixel 9 Pro's. Themed with Omarchy; "
                 + "the test camera apps are gone. 0.6×, 1× and 3× buttons switch between the ultra-wide, the "
-                + "main camera and the telephoto. No video yet.",
+                + "main camera and the telephoto. Video (October 1, installed on the Pixel): "
+                + "a Photo/Video switch records 1080p H.264 with Opus sound into MP4 through GStreamer, the "
+                + "viewfinder showing the 16:9 frame. x264 on the CPU for now, about 28 fps on the Pixel's main "
+                + "camera and 17 on its telephoto.",
               ref: "devices/oneplus7pro/docs/camera-20260922.md" },
             { n: "Settings application", s: "partial",
               on: { pixel7pro: { s: "partial", note: "Opens and renders on the Pixel; its panels have not been checked one by one there.",
@@ -563,17 +566,23 @@ PAGE_SOFTWARE = {
               + "minute updates.",
           items: [
             { n: "Panel low-power mode", s: "absent",
-              on: { pixel7pro: { s: "no", note: "The S6E3HC4 has one, and Google's GPL panel driver has its commands; not ported yet.",
-                                 ref: "docs/mobile-roadmap.md" } },
+              on: { pixel7pro: { s: "ok", note: "The S6E3HC4's AOD mode, from Google's GPL panel driver: 30 Hz fixed TE, the panel refreshing itself at 10 Hz from its memory, 10 nit. The display pipeline powers off between frames. Kernel v28; v30 keeps the panel's TE settings across screen-off, whose loss had stopped the clock.",
+                                 ref: "devices/pixel7pro/kernel/display-v30/README.md" } },
               note: "The OnePlus panel has no low-power mode (stock's commands for it are empty), so its ambient "
                   + "clock runs in the normal mode.",
               ref: "devices/oneplus7pro/docs/always-on-display-20260924.md" },
             { n: "Phone asleep between clock updates", s: "no",
-              on: { pixel7pro: { s: "no", note: "Needs the panel kept powered and in its low-power mode through SYS_SLEEP, with an RTC wake each minute to draw the time.",
-                                 ref: "docs/mobile-roadmap.md" } },
+              on: { pixel7pro: { s: "ok", note: "SYS_SLEEP under the clock with the panel's supplies held on. The suspend adapter wakes for about a second each minute to draw the time, and sleeps again (v30). Showing the clock costs about 25 mA asleep; the panel's share is the next target.",
+                                 ref: "devices/pixel7pro/kernel/display-v30/README.md" } },
               note: "Today the ambient clock keeps the phone awake. Planned: deep sleep between minute updates, "
                   + "with the panel holding the last frame.", ref: "docs/mobile-roadmap.md" },
+            { n: "More on the always-on display", s: "no",
+              note: "Weather, the next calendar event and similar glanceable items beside the clock. They cost "
+                  + "nothing extra in sleep: they are drawn into the same frame at each minute's update.",
+              ref: "docs/mobile-roadmap.md" },
             { n: "Fully off face down or in a pocket", s: "ok",
+              on: { pixel7pro: { s: "partial", note: "The watcher works while the phone is awake. Asleep under the clock, which is nearly all the time, nothing watches. Planned: proximity as a wake-up sensor in the AoC, so covering or uncovering the phone wakes it; failing that, a tilt and proximity check at each minute's wake. In a pocket the panel goes fully off and the minute wakes stop.",
+                                 ref: "overlay/mobile/ambient.py" } },
               note: "Tilt, light and proximity turn the panel fully off, and the clock comes back when the phone "
                   + "is picked up.", ref: "devices/oneplus7pro/docs/always-on-display-20260924.md" }
           ]

@@ -1,0 +1,206 @@
+--- a/src/3rdparty/chromium/media/base/media_switches.cc
++++ b/src/3rdparty/chromium/media/base/media_switches.cc
+@@ -800,7 +800,8 @@
+ // on chromeos, but needs an experiment on linux.
+ BASE_FEATURE(kAcceleratedVideoDecodeLinux,
+              "AcceleratedVideoDecoder",
+-#if BUILDFLAG(USE_VAAPI)
++// Omarchy Mobile: V4L2 decoders (the Pixel 7 Pro's MFC) as VA-API's.
++#if BUILDFLAG(USE_VAAPI) || BUILDFLAG(USE_V4L2_CODEC)
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ #else
+              base::FEATURE_DISABLED_BY_DEFAULT);
+--- a/src/3rdparty/chromium/media/gpu/v4l2/v4l2_device.cc
++++ b/src/3rdparty/chromium/media/gpu/v4l2/v4l2_device.cc
+@@ -883,7 +883,9 @@
+   static const std::string kJpegDecoderDevicePattern = "/dev/jpeg-dec";
+   static const std::string kJpegEncoderDevicePattern = "/dev/jpeg-enc";
+ #else
+-  static const std::string kDecoderDevicePattern = "/dev/video";
++  // Omarchy Mobile: decoders by ChromeOS's name, a link the phone makes to
++  // its codec's node (/dev/video-dec0), so the camera nodes are never opened.
++  static const std::string kDecoderDevicePattern = "/dev/video-dec";
+   static const std::string kEncoderDevicePattern = "/dev/video";
+   static const std::string kImageProcessorDevicePattern = "/dev/video";
+   static const std::string kJpegDecoderDevicePattern = "/dev/video";
+--- a/src/3rdparty/chromium/media/gpu/v4l2/v4l2_utils.cc
++++ b/src/3rdparty/chromium/media/gpu/v4l2/v4l2_utils.cc
+@@ -573,7 +573,7 @@
+   SupportedVideoDecoderConfigs supported_media_configs;
+   std::vector<std::string> candidate_paths;
+ 
+-#if BUILDFLAG(IS_CHROMEOS)
++#if BUILDFLAG(IS_CHROMEOS) || 1  // Omarchy Mobile: see v4l2_device.cc
+   constexpr char kVideoDevicePattern[] = "/dev/video-dec0";
+   candidate_paths.push_back(kVideoDevicePattern);
+ #else
+--- a/src/3rdparty/chromium/media/gpu/v4l2/v4l2_stateful_video_decoder.cc
++++ b/src/3rdparty/chromium/media/gpu/v4l2/v4l2_stateful_video_decoder.cc
+@@ -193,6 +193,18 @@
+ 
+ namespace media {
+ 
++namespace {
++// Omarchy Mobile: the decoder's own (V4L2_MEMORY_MMAP) buffers always. The
++// Pixel 7 Pro's MFC runs without its IOMMU, so it can only write to
++// physically contiguous memory from its own CMA area, above its firmware;
++// the frame pool's GBM buffers (the GPU's) are neither. The decoder's
++// buffers are exported as DMA-bufs for the GPU instead.
++template <typename T>
++bool UseV4L2AllocatedBuffers(const T& client) {
++  return true;
++}
++}  // namespace
++
+ // Stateful drivers need to be passed whole frames (see IsNewH264Frame() above).
+ // Some implementations (Hana MTK8173, but not Trogdor SC7180), don't support
+ // multiple whole frames enqueued in a single OUTPUT queue buffer. This class
+@@ -220,7 +232,7 @@
+   // Used for End-of-Stream situations when a caller needs to reassemble
+   // explicitly (an EOS marks a frame boundary, we can't parse it).
+   scoped_refptr<DecoderBuffer> AssembleAndFlushFragments() {
+-    return ReassembleFragments(frame_fragments_);
++    return WithPrefix(ReassembleFragments(frame_fragments_));
+   }
+   bool HasFragments() const { return !frame_fragments_.empty(); }
+ 
+@@ -237,6 +249,9 @@
+     bool is_start_of_new_frame;
+     // Size in bytes of the NALU under analysis.
+     off_t nalu_size;
++    // Omarchy Mobile: true for a NALU that is not a picture's (SPS, PPS, SEI,
++    // AUD and the rest). It goes in front of the next picture (WithPrefix()).
++    bool is_prefix = false;
+   };
+   // Parses |data| and returns either std::nullopt, if parsing |data| fails, or
+   // a FrameBoundaryInfo describing the first |nalu_size| bytes of |data|.
+@@ -246,6 +261,19 @@
+       const uint8_t* const data,
+       size_t size);
+ 
++  // Omarchy Mobile: Samsung's MFC (s5p-mfc) finds no header in a buffer
++  // with an SPS alone (ERR_HEADER_NOT_FOUND, and the instance is lost), as
++  // Chromium's old V4L2VideoDecodeAccelerator knew: the parameter sets, SEI
++  // and AUD wait here and go in one buffer with the next picture, a whole
++  // access unit as other V4L2 clients (GStreamer, FFmpeg) send.
++  scoped_refptr<DecoderBuffer> WithPrefix(scoped_refptr<DecoderBuffer> frame) {
++    if (prefix_.empty())
++      return frame;
++    prefix_.push_back(std::move(frame));
++    return ReassembleFragments(prefix_);
++  }
++  std::vector<scoped_refptr<DecoderBuffer>> prefix_;
++
+   H264Parser h264_parser_;
+   static constexpr int kInvalidSPS = -1;
+   int sps_id_ = kInvalidSPS;
+@@ -740,7 +768,7 @@
+ 
+   // If our |client_| has a VideoFramePool to allocate buffers for us, we'll
+   // use it, otherwise we have to ask the driver.
+-  const bool use_v4l2_allocated_buffers = !client_->GetVideoFramePool();
++  const bool use_v4l2_allocated_buffers = UseV4L2AllocatedBuffers(client_);
+ 
+   const v4l2_memory buffer_type =
+       use_v4l2_allocated_buffers ? V4L2_MEMORY_MMAP : V4L2_MEMORY_DMABUF;
+@@ -748,9 +776,14 @@
+   // (VIDEO_MAX_FRAME) since they are shallow allocations. Otherwise, allocate
+   // |num_codec_reference_frames| plus one for the video frame being decoded,
+   // and one for our client (presumably |client_|s ImageProcessor).
+-  const size_t v4l2_num_buffers = use_v4l2_allocated_buffers
+-                                      ? num_codec_reference_frames + 2
+-                                      : VIDEO_MAX_FRAME;
++  // Omarchy Mobile: with no ImageProcessor the decoder's own buffers go
++  // to the renderer, which holds several (its queue of decoded frames, the
++  // one on screen) while the driver keeps the reference frames: six more.
++  constexpr size_t kRendererFrames = 6;
++  const size_t v4l2_num_buffers =
++      use_v4l2_allocated_buffers
++          ? num_codec_reference_frames + 2 + kRendererFrames
++          : VIDEO_MAX_FRAME;
+ 
+   if (!use_v4l2_allocated_buffers) {
+     std::optional<GpuBufferLayout> layout =
+@@ -910,7 +943,7 @@
+ 
+   const v4l2_memory queue_type = CAPTURE_queue_->GetMemoryType();
+   DCHECK(queue_type == V4L2_MEMORY_MMAP || queue_type == V4L2_MEMORY_DMABUF);
+-  const bool use_v4l2_allocated_buffers = !client_->GetVideoFramePool();
++  const bool use_v4l2_allocated_buffers = UseV4L2AllocatedBuffers(client_);
+   DCHECK((queue_type == V4L2_MEMORY_MMAP && use_v4l2_allocated_buffers) ||
+          (queue_type == V4L2_MEMORY_DMABUF && !use_v4l2_allocated_buffers));
+ 
+@@ -1237,16 +1270,23 @@
+     if (nalu_info->is_start_of_new_frame && HasFragments()) {
+       VLOGF(4) << frame_fragments_.size()
+                << " currently stored frame fragment(s) can be reassembled.";
+-      frames.emplace_back(ReassembleFragments(frame_fragments_),
++      frames.emplace_back(WithPrefix(ReassembleFragments(frame_fragments_)),
+                           base::DoNothing());
+     }
+ 
++    if (nalu_info->is_prefix) {
++      prefix_.push_back(
++          DecoderBuffer::CopyFrom(remaining.take_first(found_nalu_size)));
++      prefix_.back()->set_timestamp(buffer->timestamp());
++      continue;
++    }
++
+     if (nalu_info->is_whole_frame) {
+       VLOGF(3) << "Found a whole frame, size=" << found_nalu_size << " bytes";
+-      frames.emplace_back(
+-          DecoderBuffer::CopyFrom(remaining.take_first(found_nalu_size)),
+-          base::DoNothing());
+-      frames.back().first->set_timestamp(buffer->timestamp());
++      auto frame =
++          DecoderBuffer::CopyFrom(remaining.take_first(found_nalu_size));
++      frame->set_timestamp(buffer->timestamp());
++      frames.emplace_back(WithPrefix(std::move(frame)), base::DoNothing());
+       continue;
+     }
+ 
+@@ -1324,7 +1364,8 @@
+         previous_slice_header_.reset();
+         return FrameBoundaryInfo{.is_whole_frame = true,
+                                  .is_start_of_new_frame = true,
+-                                 .nalu_size = nalu_size};
++                                 .nalu_size = nalu_size,
++                                 .is_prefix = true};
+       case H264NALU::kPPS:
+         result = h264_parser_.ParsePPS(&pps_id_);
+         if (result != H264Parser::kOk) {
+@@ -1334,7 +1375,8 @@
+         previous_slice_header_.reset();
+         return FrameBoundaryInfo{.is_whole_frame = true,
+                                  .is_start_of_new_frame = true,
+-                                 .nalu_size = nalu_size};
++                                 .nalu_size = nalu_size,
++                                 .is_prefix = true};
+       case H264NALU::kNonIDRSlice:
+       case H264NALU::kIDRSlice: {
+         H264SliceHeader curr_slice_header;
+@@ -1373,7 +1415,8 @@
+         previous_slice_header_.reset();
+         return FrameBoundaryInfo{.is_whole_frame = true,
+                                  .is_start_of_new_frame = true,
+-                                 .nalu_size = nalu_size};
++                                 .nalu_size = nalu_size,
++                                 .is_prefix = true};
+       default:
+         VLOGF(4) << "Unsupported NALU " << kKnownNALUNames[nalu.nal_unit_type];
+     }
+--- a/src/3rdparty/chromium/media/mojo/services/gpu_mojo_media_client_linux.cc
++++ b/src/3rdparty/chromium/media/mojo/services/gpu_mojo_media_client_linux.cc
+@@ -67,6 +67,12 @@
+                   .supported_buffer_formats_for_gl_native_pixmap_import,
+               gfx::BufferFormat::YUV_420_BIPLANAR)) {
+         renderable_fourccs.emplace_back(Fourcc::NV12);
++#if BUILDFLAG(USE_V4L2_CODEC)
++        // Omarchy Mobile: NV12 with its two planes in separate buffers, as
++        // the Pixel 7 Pro's MFC (s5p-mfc) decodes. Each plane is its own
++        // DMA-buf, which the import takes as well.
++        renderable_fourccs.emplace_back(Fourcc::NM12);
++#endif
+       }
+       if (base::Contains(
+               gpu_feature_info

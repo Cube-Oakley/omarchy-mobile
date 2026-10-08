@@ -196,6 +196,36 @@ key and screen timeout were never affected: they run inside the session.
 The Pixel's Hyprland configuration also hides the pointer now
 (`cursor.invisible`), which had shown the default Hyprland cursor.
 
+## Swiping a card away (October 4)
+
+The user saw the swipe-up close in the switcher stutter some of the time.
+
+- **Measurement:** `scripts/ui-tests/switcher-close-test.py` (needs the
+  rebuilt `uinput.ko` and debugfs) runs one synthetic touchscreen. It opens the switcher from the app in
+  front, flicks the middle card up, and samples `starts` every millisecond.
+  Four apps were opened from home first, one card each.
+- **Before:** every close had one 25–42 ms frame, then a 16 ms frame, about
+  270 ms after release. That is when the card finishes flying off and its
+  app closes.
+- **Rebuilt cards:** the switcher's Repeater took a new JavaScript array on
+  every sync. That destroyed and recreated every card and restarted every
+  window capture. `CardList.qml` now edits a ListModel in place: a close
+  removes one delegate, a reorder moves delegates, and a card keeps its
+  delegate when its workspace number changes.
+- **Forked dispatch:** each close ran `hyprctl` through `execDetached`, which
+  forks the whole shell on the UI thread. `dispatch()` now uses
+  `Hyprland.dispatch` over the socket.
+- **After:** across eight closes, one frame of 16 ms; the others stayed at
+  8–10 ms per frame. Gaps after about 530 ms are idle time once the slide
+  ends, not stalls.
+- **Still slow at the start:** the user then saw a brief slowdown in the first
+  half of the fly-off. That was the curve, not dropped frames: `InCubic`
+  starts at zero speed, so after a flick at 2,500 px/s the card moved about
+  5 px in its first 50 ms. `PreviewGestures` now reports the release speed
+  over the last 60 ms, and `CardThrow.qml` builds a cubic whose starting
+  slope is that speed (150–320 ms; a slow release still speeds up toward the
+  end).
+
 ## Remaining
 
 - Opening the switcher for the first time after the shell starts costs one

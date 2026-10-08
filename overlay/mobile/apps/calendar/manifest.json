@@ -1,0 +1,7 @@
+{
+  "id": "calendar",
+  "name": "Calendar",
+  "comment": "Your calendars, events and reminders",
+  "icon": "x-office-calendar",
+  "permissions": ["calendar", "files.home"]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "wisp",
+  "name": "Wisp",
+  "comment": "An assistant that runs on the phone: text, voice and pictures",
+  "icon": "omarchy-wisp",
+  "permissions": ["microphone"]
+}

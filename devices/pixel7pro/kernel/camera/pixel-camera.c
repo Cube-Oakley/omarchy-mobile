@@ -124,6 +124,7 @@ static const u16 phy_off[8] = { 0x1300, 0x1b00, 0x2300, 0x2800, 0x2b00, 0x3000, 
 
 /* Sensor registers (MIPI CCS addresses; Sony takes them as byte pairs) */
 #define REG_MODE_SELECT		0x0100
+#define REG_ORIENTATION		0x0101	/* bit 0 horizontal mirror, bit 1 vertical flip */
 #define REG_GROUP_HOLD		0x0104
 #define REG_EXPOSURE		0x0202
 #define REG_ANALOGUE_GAIN	0x0204
@@ -137,6 +138,26 @@ static const u16 phy_off[8] = { 0x1300, 0x1b00, 0x2300, 0x2800, 0x2b00, 0x3000, 
 #define LENS_STANDBY		0x40
 #define LENS_MAX		4095
 #define LENS_DEFAULT		1400	/* a desk at 0.5-1 m (README.md) */
+
+/* SEMCO SEM1215SA, the tele's AF and OIS controller: 16-bit registers, 8-bit
+ * values. From the stock HAL's ACT-SEM121FAMILY register table (README.md):
+ * only these AF registers are written; never its calibration, gyro, OIS
+ * tuning or flash window. */
+enum { LENS_AK737X, LENS_SEM1215 };
+#define SEM_AF_READY		0x0201	/* reads 1 once the controller is up */
+#define SEM_AF_ENABLE		0x0200
+#define SEM_STATUS_MONITOR	0x0b00
+#define SEM_POSITION		0x0204	/* low byte, then 0x0205 high: 10 bits */
+#define SEM_READBACK		0x0206	/* low, high */
+#define SEM_CAL_INFINITY	0xc7b6	/* EEPROM window, big-endian s16, forward pose */
+#define SEM_CAL_MACRO		0xc7bc
+#define SEM_MAX			1023
+#define SEM_DEFAULT		512
+#define SEM_CAL_MARGIN		40	/* codes either side of the calibrated span */
+
+static bool lens_debug;
+module_param(lens_debug, bool, 0644);
+MODULE_PARM_DESC(lens_debug, "Log the SEM1215SA's position readback after each move");
 
 /* D-PHY settle values for rate 4500 - 10 * i Mbps (stock HAL via the Pixel 6 port) */
 static const u8 dphy_settle[] = {
@@ -178,6 +199,7 @@ struct pc_mode {
 	struct v4l2_rect crop;		/* the mode's area of the pixel array */
 	u32 hts, vts, fps;		/* line and frame length, frame rate at vts */
 	const char *fw;			/* firmware suffix; NULL: <name>.bin */
+	u32 rate;			/* link rate if its OP PLL differs, else 0 */
 };
 
 struct pc_desc {
@@ -197,7 +219,9 @@ struct pc_desc {
 	u32 exp_margin;
 	u32 gain_min, gain_max, gain_def;
 	u32 orientation, rotation;
-	u8 lens_addr;			/* AK737x AF actuator on the same bus, or 0 */
+	u8 lens_addr;			/* AF actuator on the same bus, or 0 */
+	u8 lens_type;			/* LENS_AK737X or LENS_SEM1215 */
+	u8 orient;			/* REG_ORIENTATION after the tables; 0 leaves it */
 	u32 cam_khz;			/* CAM DVFS while streaming */
 	const struct pc_mode *full;	/* a second, full-resolution mode, or NULL */
 };
@@ -207,6 +231,30 @@ struct pc_desc {
 static const struct pc_mode gn1_full = {
 	.width = 4080, .height = 3072, .crop = { 0, 0, 8160, 6144 },
 	.hts = 5776, .vts = 7546, .fps = 30, .fw = "4080x3072",
+};
+
+/* IMX386 4032x3016 (stock mode 0x918ca0): no binning, 30 fps. Its VT PLL
+ * is 195/6 against the binned mode's 151/4; the OP PLL, and so the link
+ * rate, are the same. */
+static const struct pc_mode imx386_full = {
+	.width = 4032, .height = 3016, .crop = { 0, 0, 4032, 3016 },
+	.hts = 4296, .vts = 3098, .fps = 30, .fw = "4032x3016",
+};
+
+/* GM5 4032x3024 (stock mode 0x908a64): no binning, twice the line length at
+ * the same pixel clock, 30 fps. Its OP PLL multiplier (0x0310) is 249
+ * against 220, so the link runs at about 1200 Msps. */
+static const struct pc_mode gm5_full = {
+	.width = 4032, .height = 3024, .crop = { 0, 0, 4032, 3024 },
+	.hts = 5568, .vts = 5456, .fps = 30, .fw = "4032x3024", .rate = 1200,
+};
+
+/* 3J1 3840x2736 (stock mode 0): no binning, 30 fps at its tables' frame
+ * length (measured: twice that gave 15 fps), the same pixel rate as the
+ * binned mode. The OP PLL, and so the link rate, are the same. */
+static const struct pc_mode s5k3j1_full = {
+	.width = 3840, .height = 2736, .crop = { 0, 0, 3840, 2736 },
+	.hts = 9384, .vts = 2874, .fps = 30, .fw = "3840x2736",
 };
 
 static const struct pc_desc descs[] = {
@@ -219,8 +267,11 @@ static const struct pc_desc descs[] = {
 		.crop = { 0, 0, 4032, 3016 },
 		.hts = 4296, .vts = 1799, .fps = 60, .exp_margin = 20,
 		.gain_min = 0, .gain_max = 960, .gain_def = 0,
-		.orientation = V4L2_CAMERA_ORIENTATION_BACK, .rotation = 90,
+		/* Mounted the other way up from the main camera: its frames
+		 * came out upside down at 90 (October 1). */
+		.orientation = V4L2_CAMERA_ORIENTATION_BACK, .rotation = 270,
 		.lens_addr = 0x0f, .cam_khz = 400000,
+		.full = &imx386_full,
 	},
 	{
 		.name = "front", .model = "s5k3j1", .adapter = "Pixel hsi2c_2", .addr = 0x10,
@@ -233,6 +284,7 @@ static const struct pc_desc descs[] = {
 		.gain_min = 0x20, .gain_max = 0x200, .gain_def = 0x20,
 		.orientation = V4L2_CAMERA_ORIENTATION_FRONT, .rotation = 270,
 		.cam_khz = 400000,
+		.full = &s5k3j1_full,
 	},
 	{
 		.name = "main", .model = "s5kgn1", .adapter = "Pixel hsi2c_1", .addr = 0x3d,
@@ -255,13 +307,19 @@ static const struct pc_desc descs[] = {
 		 * its OP PLL against the GN1's, and LRTE packet delimiters: with
 		 * EPD off the link decodes frame starts and nothing else. */
 		.link = 4, .phy = 4, .lanes = 2, .cphy = true, .epd = true, .rate = 1060,
-		.width = 2016, .height = 1512, .code = MEDIA_BUS_FMT_SGRBG10_1X10,
-		.pixfmt = V4L2_PIX_FMT_SGRBG10P, .array_w = 4032, .array_h = 3024,
+		.width = 2016, .height = 1512, .code = MEDIA_BUS_FMT_SBGGR10_1X10,
+		.pixfmt = V4L2_PIX_FMT_SBGGR10P, .array_w = 4032, .array_h = 3024,
 		.crop = { 0, 0, 4032, 3024 },
 		.hts = 2784, .vts = 5456, .fps = 60, .exp_margin = 16,
 		.gain_min = 0x20, .gain_max = 0x200, .gain_def = 0x20,
-		.orientation = V4L2_CAMERA_ORIENTATION_BACK, .rotation = 90,
+		/* Mirrored at 270 (upside down at 90): the sensor reads its
+		 * rows the other way from the others. A vertical flip puts it
+		 * right; flipped, its rows start on the colour filter's B G
+		 * line (October 1). */
+		.orientation = V4L2_CAMERA_ORIENTATION_BACK, .rotation = 270, .orient = 0x02,
+		.lens_addr = 0x34, .lens_type = LENS_SEM1215,
 		.cam_khz = 533000,
+		.full = &gm5_full,
 	},
 };
 #define NCAMS ARRAY_SIZE(descs)
@@ -300,7 +358,7 @@ struct pc_cam {
 	struct v4l2_subdev sd;
 	struct media_pad sd_pad;
 	struct v4l2_ctrl_handler ctrls;
-	struct v4l2_ctrl *exposure, *gain, *vblank, *hblank;
+	struct v4l2_ctrl *exposure, *gain, *vblank, *hblank, *pixel_rate;
 	bool powered;
 	struct v4l2_subdev lens;
 	struct v4l2_ctrl_handler lens_ctrls;
@@ -346,6 +404,27 @@ static u32 mode_stride(const struct pc_mode *m)
 static u32 mode_size(const struct pc_mode *m)
 {
 	return mode_stride(m) * m->height;
+}
+
+/* The link rate of a mode: its own when its OP PLL differs. */
+static u32 mode_rate(const struct pc_desc *d, const struct pc_mode *m)
+{
+	return m->rate ?: d->rate;
+}
+
+static u64 mode_pixel_rate(const struct pc_mode *m)
+{
+	return (u64)m->hts * m->vts * m->fps;
+}
+
+/* Blanking for a frame length of at most 30 frames a second: video wants
+ * exposures as long as a 30 fps frame, and libcamera's simple pipeline never
+ * sets VBLANK. The mode's own faster rate stays a VBLANK write away. */
+static u32 mode_vblank(const struct pc_mode *m)
+{
+	u32 vts = m->fps > 30 ? DIV_ROUND_UP(m->vts * m->fps, 30) : m->vts;
+
+	return min(vts, 0xffffu) - m->height;
 }
 
 static unsigned int desc_modes(const struct pc_desc *d)
@@ -483,15 +562,24 @@ static int cam_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_state 
 	return 0;
 }
 
-/* Exposure and blanking ranges follow the mode's frame and line length. */
+/* Exposure and blanking ranges follow the mode's frame and line length, and
+ * the pixel rate (exposure time per line) its pixel clock. */
 static void cam_mode_controls(struct pc_cam *c)
 {
 	const struct pc_mode *m = &c->mode;
 	u32 vblank = m->vts - m->height, hblank = m->hts - m->width;
+	u32 def = mode_vblank(m);
+	s64 rate = mode_pixel_rate(m);
 
-	__v4l2_ctrl_modify_range(c->vblank, vblank, 0xffff - m->height, 1, vblank);
-	__v4l2_ctrl_s_ctrl(c->vblank, vblank);
-	__v4l2_ctrl_modify_range(c->exposure, 1, m->vts - c->d->exp_margin, 1, m->vts / 2);
+	if (c->pixel_rate) {
+		__v4l2_ctrl_modify_range(c->pixel_rate, rate, rate, 1, rate);
+		__v4l2_ctrl_s_ctrl_int64(c->pixel_rate, rate);
+	}
+
+	__v4l2_ctrl_modify_range(c->vblank, vblank, 0xffff - m->height, 1, def);
+	__v4l2_ctrl_s_ctrl(c->vblank, def);
+	__v4l2_ctrl_modify_range(c->exposure, 1, m->height + def - c->d->exp_margin, 1,
+				 m->vts / 2);
 	if (c->hblank)
 		__v4l2_ctrl_modify_range(c->hblank, hblank, hblank, 1, hblank);
 }
@@ -601,23 +689,24 @@ static int cam_init_controls(struct pc_cam *c)
 	const struct pc_desc *d = c->d;
 	struct v4l2_ctrl_handler *h = &c->ctrls;
 	u64 pixel_rate = (u64)d->hts * d->vts * d->fps;
-	u32 vblank = d->vts - d->height, hblank = d->hts - d->width;
+	struct pc_mode m = desc_mode(d, 0);
+	u32 vblank = d->vts - d->height, hblank = d->hts - d->width, def = mode_vblank(&m);
 	static s64 link_freq[1];
 	struct v4l2_ctrl *ctrl;
 
 	link_freq[0] = d->cphy ? (s64)d->rate * 1000000 / 2 : (s64)d->rate * 1000000 / 2;
 	v4l2_ctrl_handler_init(h, 10);
 	c->exposure = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_EXPOSURE, 1,
-					d->vts - d->exp_margin, 1, d->vts / 2);
+					d->height + def - d->exp_margin, 1, d->vts / 2);
 	c->gain = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_ANALOGUE_GAIN, d->gain_min,
 				    d->gain_max, 1, d->gain_def);
 	c->vblank = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_VBLANK, vblank,
-				      0xffff - d->height, 1, vblank);
+				      0xffff - d->height, 1, def);
 	c->hblank = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_HBLANK, hblank, hblank, 1, hblank);
 	if (c->hblank)
 		c->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
-	v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_PIXEL_RATE, pixel_rate, pixel_rate, 1,
-			  pixel_rate);
+	c->pixel_rate = v4l2_ctrl_new_std(h, &cam_ctrl_ops, V4L2_CID_PIXEL_RATE, pixel_rate,
+					  pixel_rate, 1, pixel_rate);
 	ctrl = v4l2_ctrl_new_int_menu(h, &cam_ctrl_ops, V4L2_CID_LINK_FREQ, 0, 0, link_freq);
 	if (ctrl)
 		ctrl->flags |= V4L2_CTRL_FLAG_READ_ONLY;
@@ -644,18 +733,118 @@ static int lens_write(struct pc_cam *c, u8 reg, const u8 *val, unsigned int len)
 	return ret == 1 ? 0 : ret < 0 ? ret : -EIO;
 }
 
+static int sem_write(struct pc_cam *c, u16 reg, u8 val)
+{
+	u8 buf[3] = { reg >> 8, reg & 0xff, val };
+	struct i2c_msg msg = { .addr = c->d->lens_addr, .buf = buf, .len = 3 };
+	int ret = i2c_transfer(c->adap, &msg, 1);
+
+	return ret == 1 ? 0 : ret < 0 ? ret : -EIO;
+}
+
+static int sem_read(struct pc_cam *c, u16 reg, u8 *val, unsigned int len)
+{
+	u8 addr[2] = { reg >> 8, reg & 0xff };
+	struct i2c_msg msg[2] = {
+		{ .addr = c->d->lens_addr, .buf = addr, .len = 2 },
+		{ .addr = c->d->lens_addr, .flags = I2C_M_RD, .buf = val, .len = len },
+	};
+	int ret = i2c_transfer(c->adap, msg, 2);
+
+	return ret == 2 ? 0 : ret < 0 ? ret : -EIO;
+}
+
 static int lens_move(struct pc_cam *c, u32 pos)
 {
 	u8 v[2] = { pos >> 4, (pos & 0xf) << 4 };
+	int ret;
 
-	return lens_write(c, LENS_POSITION, v, 2);
+	if (c->d->lens_type != LENS_SEM1215)
+		return lens_write(c, LENS_POSITION, v, 2);
+	pos = min_t(u32, pos, SEM_MAX);
+	ret = sem_write(c, SEM_POSITION, pos & 0xff);
+	ret = ret ?: sem_write(c, SEM_POSITION + 1, pos >> 8);
+	if (!ret && lens_debug) {
+		usleep_range(5000, 6000);	/* the HAL samples it every 5 ms */
+		if (!sem_read(c, SEM_READBACK, v, 2))
+			dev_info(c->pc->dev, "%s: lens to %u, reads %u\n", c->d->name, pos,
+				 v[0] | (v[1] & 3) << 8);
+	}
+	return ret;
+}
+
+static int sem_wait_ready(struct pc_cam *c)
+{
+	u8 v = 0;
+	int i, ret = -ETIMEDOUT;
+
+	for (i = 0; i < 20; i++) {
+		ret = sem_read(c, SEM_AF_READY, &v, 1);
+		if (!ret && v == 1)
+			return 0;
+		usleep_range(1000, 1500);
+	}
+	return ret ?: -ETIMEDOUT;
+}
+
+/* The HAL's power-up: wait for AF ready, AF on, status monitor on. */
+static int sem_power(struct pc_cam *c, bool on)
+{
+	int ret;
+
+	if (!on)
+		return sem_write(c, SEM_AF_ENABLE, 0);
+	ret = sem_wait_ready(c);
+	if (ret) {
+		dev_err(c->pc->dev, "%s: SEM1215SA not ready (%d)\n", c->d->name, ret);
+		return ret;
+	}
+	ret = sem_write(c, SEM_AF_ENABLE, 1);
+	ret = ret ?: sem_write(c, SEM_STATUS_MONITOR, 1);
+	if (ret)
+		return ret;
+	return lens_move(c, c->focus->val);
+}
+
+/* The focus range libcamera's AF sweeps: the module's calibrated infinity to
+ * macro span, read once at load (powering the tele for a moment), with a
+ * margin. Positions outside it are never sharp. 0-1023 if it cannot be read. */
+static void sem_range(struct pc_cam *c, u32 *lo, u32 *hi, u32 *def)
+{
+	s16 inf = -1, macro = -1;
+	u8 cal[2];
+
+	*lo = 0;
+	*hi = SEM_MAX;
+	*def = SEM_DEFAULT;
+	if (pixel_camera_power_set(c->d->name, true))
+		return;
+	if (!sem_wait_ready(c) && !sem_read(c, SEM_CAL_INFINITY, cal, 2)) {
+		inf = (s16)(cal[0] << 8 | cal[1]);
+		if (!sem_read(c, SEM_CAL_MACRO, cal, 2))
+			macro = (s16)(cal[0] << 8 | cal[1]);
+	}
+	pixel_camera_power_set(c->d->name, false);
+	if (inf < 0 || macro <= inf || macro > SEM_MAX) {
+		dev_warn(c->pc->dev, "%s: no usable AF calibration (%d, %d), full range\n",
+			 c->d->name, inf, macro);
+		return;
+	}
+	*lo = max(0, inf - SEM_CAL_MARGIN);
+	*hi = min(SEM_MAX, macro + SEM_CAL_MARGIN);
+	*def = inf + (macro - inf) / 4;
+	dev_info(c->pc->dev, "%s: AF calibration infinity %d, macro %d: focus range %u-%u\n",
+		 c->d->name, inf, macro, *lo, *hi);
 }
 
 static int lens_power(struct pc_cam *c, bool on)
 {
 	u8 mode = on ? LENS_ACTIVE : LENS_STANDBY;
-	int ret = lens_write(c, LENS_MODE, &mode, 1);
+	int ret;
 
+	if (c->d->lens_type == LENS_SEM1215)
+		return sem_power(c, on);
+	ret = lens_write(c, LENS_MODE, &mode, 1);
 	if (!ret && on) {
 		usleep_range(10000, 11000);	/* the first write after waking NACKs */
 		ret = lens_move(c, c->focus->val);
@@ -680,9 +869,14 @@ static int lens_register(struct pc_dev *pc, struct pc_cam *c)
 {
 	int ret;
 
+	bool sem = c->d->lens_type == LENS_SEM1215;
+	u32 lo = 0, hi = LENS_MAX, def = LENS_DEFAULT;
+
+	if (sem)
+		sem_range(c, &lo, &hi, &def);
 	v4l2_ctrl_handler_init(&c->lens_ctrls, 1);
-	c->focus = v4l2_ctrl_new_std(&c->lens_ctrls, &lens_ctrl_ops, V4L2_CID_FOCUS_ABSOLUTE, 0,
-				     LENS_MAX, 1, LENS_DEFAULT);
+	c->focus = v4l2_ctrl_new_std(&c->lens_ctrls, &lens_ctrl_ops, V4L2_CID_FOCUS_ABSOLUTE, lo,
+				     hi, 1, def);
 	if (c->lens_ctrls.error) {
 		ret = c->lens_ctrls.error;
 		goto free;
@@ -693,7 +887,8 @@ static int lens_register(struct pc_dev *pc, struct pc_cam *c)
 	c->lens.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	c->lens.ctrl_handler = &c->lens_ctrls;
 	c->lens.entity.function = MEDIA_ENT_F_LENS;
-	snprintf(c->lens.name, sizeof(c->lens.name), "ak7375 %d-%04x", c->adap->nr, c->d->lens_addr);
+	snprintf(c->lens.name, sizeof(c->lens.name), "%s %d-%04x", sem ? "sem1215sa" : "ak7375",
+		 c->adap->nr, c->d->lens_addr);
 	ret = media_entity_pads_init(&c->lens.entity, 0, NULL);
 	ret = ret ?: v4l2_device_register_subdev(&pc->v4l2, &c->lens);
 	if (ret)
@@ -802,9 +997,9 @@ static void link_setup(struct pc_dev *pc, const struct pc_desc *d, const struct 
 
 	writel(readl(pc->sys + SYSREG_PHY_RESET) | phy_mask(d), pc->sys + SYSREG_PHY_RESET);
 	if (d->cphy)
-		cphy_set(pc, phy_off[d->phy], d->lanes, d->rate);
+		cphy_set(pc, phy_off[d->phy], d->lanes, mode_rate(d, m));
 	else
-		dphy_set(pc, phy_off[d->phy], d->lanes, d->rate);
+		dphy_set(pc, phy_off[d->phy], d->lanes, mode_rate(d, m));
 
 	writel(readl(l + LINK_CMN_CTRL) | CMN_SW_RESET, l + LINK_CMN_CTRL);
 	usleep_range(1000, 1500);
@@ -1094,6 +1289,8 @@ static int pc_start_streaming(struct vb2_queue *q, unsigned int count)
 		goto power_off;
 	}
 	ret = sensor_load_tables(c);
+	if (!ret && d->orient)
+		ret = sensor_write(c, REG_ORIENTATION, d->orient, 1);
 	if (ret)
 		goto power_off;
 	c->powered = true;

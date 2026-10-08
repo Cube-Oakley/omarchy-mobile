@@ -1,0 +1,285 @@
+Pace Chromium's frames by Qt's (Omarchy Mobile).
+
+Chromium took each of its own swaps' start as the display's vsync, so its
+frame clock drifted against Qt's frames and doubled up or skipped; and it
+could not draw a frame until Qt had taken the previous one (one swap in
+flight), which left a 7 ms draw no slack at 120 Hz.
+
+Now the frame is reported as presented at Qt's next frame, which a filtered
+phase follows from the times Qt takes frames (QTWEBENGINE_FRAME_PHASE_US
+moves Chromium's frame start against it). A swap finishes at once while Qt
+keeps up; a frame drawn while Qt still has the previous one waiting replaces
+it, and that swap finishes when Qt takes a frame, so a window that is not
+drawn stops Chromium after one frame. QTWEBENGINE_FRAME_STATS=1 prints where
+presents land relative to Qt's frames.
+
+--- a/src/core/compositor/native_skia_output_device.h
++++ b/src/core/compositor/native_skia_output_device.h
+@@ -14,6 +14,9 @@
+ 
+ #include <QMutex>
+ 
++#include <atomic>
++#include <vector>
++
+ #if defined(Q_OS_WIN)
+ #include "ui/gl/dc_layer_overlay_image.h"
+ #endif
+@@ -163,7 +166,12 @@
+ private:
+     friend class NativeSkiaOutputDevice::Buffer;
+ 
+-    void SwapBuffersFinished();
++    // Frame pacing (Omarchy Mobile patch): Chromium's frame clock follows
++    // the times Qt takes frames, and Chromium may draw one frame ahead of Qt.
++    void noteQtFrame();
++    base::TimeTicks nextQtFrame() const;
++    std::unique_ptr<Buffer> takeSpare();
++    void finishDeferredSwap();
+ 
+     bool m_requiresAlpha;
+     gpu::SharedImageFactory *const m_factory;
+@@ -176,6 +184,18 @@
+     viz::OutputSurfaceFrame m_frame;
+     bool m_readyToUpdate = false;
+     scoped_refptr<base::SingleThreadTaskRunner> m_gpuTaskRunner;
++    // Buffers Qt has let go of, for Chromium to draw into again.
++    std::vector<std::unique_ptr<Buffer>> m_spareBuffers;
++    // The swap of a frame drawn while Qt still had the previous one waiting:
++    // finished when Qt takes a frame, so a window that is not drawn stops
++    // Chromium after one frame.
++    bool m_swapDeferred = false;
++    // Where Qt's frames fall, in microseconds of base::TimeTicks.
++    std::atomic<int64_t> m_qtPhaseUs{0};
++    // QTWEBENGINE_FRAME_STATS: when presents land relative to Qt's frames.
++    int m_statsPresents = 0;
++    int m_statsDeferred = 0;
++    int m_statsBins[10] = {};
+ };
+ 
+ } // namespace QtWebEngineCore
+--- a/src/core/compositor/native_skia_output_device.cpp
++++ b/src/core/compositor/native_skia_output_device.cpp
+@@ -23,6 +23,9 @@
+ #include <QGuiApplication>
+ #include <QScreen>
+ 
++#include <algorithm>
++#include <cstdio>
++
+ #if BUILDFLAG(ENABLE_VULKAN)
+ #include "ui/base/ozone_buildflags.h"
+ #if BUILDFLAG(IS_OZONE_X11)
+@@ -71,6 +74,25 @@
+     return interval;
+ }
+ 
++// Where Chromium's frames start relative to Qt's (QTWEBENGINE_FRAME_PHASE_US,
++// microseconds, may be negative). (Omarchy Mobile patch.)
++int64_t framePhaseOffsetUs()
++{
++    static const int64_t offset = qEnvironmentVariableIntValue("QTWEBENGINE_FRAME_PHASE_US");
++    return offset;
++}
++
++bool frameStats()
++{
++    static const bool on = qEnvironmentVariableIsSet("QTWEBENGINE_FRAME_STATS");
++    return on;
++}
++
++int64_t nowUs()
++{
++    return (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds();
++}
++
+ } // namespace
+ 
+ NativeSkiaOutputDevice::NativeSkiaOutputDevice(
+@@ -141,29 +163,129 @@
+ {
+     DCHECK(m_backBuffer);
+ 
++    // The frame is reported as presented at Qt's next frame, at the screen's
++    // interval: Chromium's frame clock then ticks in step with Qt's frames
++    // instead of with its own swaps (it took each swap's start as a vsync).
+     const base::TimeDelta interval = displayInterval();
+     if (feedback && !interval.is_zero()) {
+         feedback = base::BindOnce(
+-                [](BufferPresentedCallback callback, base::TimeDelta interval,
+-                   const gfx::PresentationFeedback &presented) {
++                [](NativeSkiaOutputDevice *device, BufferPresentedCallback callback,
++                   base::TimeDelta interval, const gfx::PresentationFeedback &presented) {
+                     gfx::PresentationFeedback withInterval = presented;
+                     withInterval.interval = interval;
++                    const base::TimeTicks next = device->nextQtFrame();
++                    if (!next.is_null())
++                        withInterval.timestamp = next;
+                     std::move(callback).Run(withInterval);
+                 },
+-                std::move(feedback), interval);
++                base::Unretained(this), std::move(feedback), interval);
+     }
+     StartSwapBuffers(std::move(feedback));
+-    m_frame = std::move(frame);
++    bool deferred;
+     {
+         QMutexLocker locker(&m_mutex);
+         m_backBuffer->createFence();
+         m_gpuTaskRunner = base::SingleThreadTaskRunner::GetCurrentDefault();
+-        std::swap(m_middleBuffer, m_backBuffer);
++        // A frame Qt has not taken yet gives way to this newer one, and its
++        // buffer is drawn into next.
++        std::unique_ptr<Buffer> unpicked;
++        if (m_readyToUpdate)
++            unpicked = std::move(m_middleBuffer);
++        else if (m_middleBuffer)
++            m_spareBuffers.push_back(std::move(m_middleBuffer));
++        m_middleBuffer = std::move(m_backBuffer);
++        m_backBuffer = unpicked ? std::move(unpicked) : takeSpare();
++        // Qt keeping up: Chromium may go on with the next frame now. Qt behind
++        // (or not drawing at all): the swap ends when Qt takes this frame.
++        deferred = m_readyToUpdate;
++        m_swapDeferred = deferred;
++        if (deferred)
++            m_frame = std::move(frame);
+         m_readyToUpdate = true;
++
++        if (frameStats() && !interval.is_zero()) {
++            const int64_t phase = m_qtPhaseUs.load(std::memory_order_relaxed);
++            const int64_t step = interval.InMicroseconds();
++            if (phase) {
++                const int64_t offset = ((nowUs() - phase) % step + step) % step;
++                m_statsBins[std::min<int64_t>(9, offset * 9 / step)]++;
++            }
++            m_statsDeferred += deferred;
++            if (++m_statsPresents == 600) {
++                fprintf(stderr, "webengine frames: 600 presents, %d while Qt had the previous one;"
++                                " present time after Qt's frame (ninths of %lld us):"
++                                " %d %d %d %d %d %d %d %d %d\n",
++                        m_statsDeferred, (long long)step, m_statsBins[0], m_statsBins[1],
++                        m_statsBins[2], m_statsBins[3], m_statsBins[4], m_statsBins[5],
++                        m_statsBins[6], m_statsBins[7], m_statsBins[8]);
++                m_statsPresents = m_statsDeferred = 0;
++                std::fill(std::begin(m_statsBins), std::end(m_statsBins), 0);
++            }
++        }
+     }
++    if (!deferred)
++        FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
++                          gfx::Size(m_shape.imageInfo.width(), m_shape.imageInfo.height()),
++                          std::move(frame));
+     readyToSwap();
+ }
+ 
++// A buffer for Chromium's next frame, from those Qt let go of; others are
++// destroyed here, on the GPU thread (called with m_mutex held).
++std::unique_ptr<NativeSkiaOutputDevice::Buffer> NativeSkiaOutputDevice::takeSpare()
++{
++    std::unique_ptr<Buffer> spare;
++    while (!m_spareBuffers.empty()) {
++        std::unique_ptr<Buffer> buffer = std::move(m_spareBuffers.back());
++        m_spareBuffers.pop_back();
++        if (!spare && buffer->shape() == m_shape)
++            spare = std::move(buffer);
++    }
++    return spare;
++}
++
++void NativeSkiaOutputDevice::finishDeferredSwap()
++{
++    FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
++                      gfx::Size(m_shape.imageInfo.width(), m_shape.imageInfo.height()),
++                      std::move(m_frame));
++}
++
++// Qt's render thread takes a frame just after the compositor's frame
++// callback, or later when its GUI thread is busy, never earlier: earlier
++// samples are followed at once (half way), later ones slowly (the panel's
++// own drift).
++void NativeSkiaOutputDevice::noteQtFrame()
++{
++    const int64_t step = displayInterval().InMicroseconds();
++    if (step <= 0)
++        return;
++    const int64_t now = nowUs();
++    const int64_t phase = m_qtPhaseUs.load(std::memory_order_relaxed);
++    if (!phase) {
++        m_qtPhaseUs.store(now, std::memory_order_relaxed);
++        return;
++    }
++    int64_t error = ((now - phase) % step + step) % step;
++    if (error > step / 2)
++        error -= step;
++    const int64_t correction = error < 0 ? error / 2 : error / 32;
++    m_qtPhaseUs.store(now - error + correction, std::memory_order_relaxed);
++}
++
++// Qt's next frame, moved by QTWEBENGINE_FRAME_PHASE_US; null until Qt has
++// taken one.
++base::TimeTicks NativeSkiaOutputDevice::nextQtFrame() const
++{
++    const int64_t step = displayInterval().InMicroseconds();
++    const int64_t phase = m_qtPhaseUs.load(std::memory_order_relaxed);
++    if (step <= 0 || !phase)
++        return base::TimeTicks();
++    const int64_t now = nowUs();
++    const int64_t ahead = ((phase - now) % step + step) % step;
++    return base::TimeTicks() + base::Microseconds(now + ahead + framePhaseOffsetUs());
++}
++
+ void NativeSkiaOutputDevice::EnsureBackbuffer()
+ {
+ }
+@@ -199,18 +321,25 @@
+ {
+     QMutexLocker locker(&m_mutex);
+     if (m_readyToUpdate) {
+-        std::swap(m_frontBuffer, m_middleBuffer);
+-        m_gpuTaskRunner->PostTask(FROM_HERE,
+-                                  base::BindOnce(&NativeSkiaOutputDevice::SwapBuffersFinished,
+-                                                 base::Unretained(this)));
++        noteQtFrame();
++        std::unique_ptr<Buffer> previous = std::move(m_frontBuffer);
++        m_frontBuffer = std::move(m_middleBuffer);
+         m_readyToUpdate = false;
+         if (m_frontBuffer) {
+             m_readyWithTexture = true;
+             m_frontBuffer->beginPresent();
+         }
+-        if (m_middleBuffer)
+-            m_middleBuffer->freeTexture();
+-        m_gpuTaskRunner.reset();
++        if (previous) {
++            previous->endPresent();
++            previous->freeTexture();
++            m_spareBuffers.push_back(std::move(previous));
++        }
++        if (m_swapDeferred) {
++            m_swapDeferred = false;
++            m_gpuTaskRunner->PostTask(FROM_HERE,
++                                      base::BindOnce(&NativeSkiaOutputDevice::finishDeferredSwap,
++                                                     base::Unretained(this)));
++        }
+     }
+ }
+ 
+@@ -259,18 +388,6 @@
+     return m_frontBuffer ? m_frontBuffer->shape().devicePixelRatio : 1;
+ }
+ 
+-void NativeSkiaOutputDevice::SwapBuffersFinished()
+-{
+-    {
+-        QMutexLocker locker(&m_mutex);
+-        std::swap(m_backBuffer, m_middleBuffer);
+-    }
+-
+-    FinishSwapBuffers(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_ACK),
+-                      gfx::Size(m_shape.imageInfo.width(), m_shape.imageInfo.height()),
+-                      std::move(m_frame));
+-}
+-
+ NativeSkiaOutputDevice::Buffer::Buffer(NativeSkiaOutputDevice *parent)
+     : m_parent(parent), m_shape(m_parent->m_shape)
+ {

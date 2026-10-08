@@ -13,6 +13,10 @@ Item {
     signal canceled()
     signal tapped()
     property bool tracking: false
+    readonly property bool dragActive: drag.active
+    // When the drag last moved: one still for long lost its lift (the
+    // shell's stuck check).
+    property double lastMove: 0
     property bool armed: false
     property real distance: 0
     property real velocity: 0
@@ -24,6 +28,7 @@ Item {
         minimumPointCount: 1
         maximumPointCount: 1
         onActiveChanged: {
+            edge.lastMove = Date.now();
             if (active) {
                 edge.tracking = false;
                 edge.armed = false;
@@ -39,6 +44,7 @@ Item {
         }
         onActiveTranslationChanged: {
             if (!active) return;
+            edge.lastMove = Date.now();
             const up = -activeTranslation.y;
             edge.velocity = -centroid.velocity.y;
             if (!edge.tracking) {

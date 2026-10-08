@@ -118,6 +118,76 @@ says. With the screen on, the phone drew about 2.6 W, so it drained about
 - `input_limit_ma` (100–1500) changes it; 0 leaves the bootloader's setting.
 - The charger's input voltage regulation (AICL) backs off on a port that sags.
 
+**Negotiated input limit (installed 2026-10-01).** The limit
+follows what the port offers, so a weak port is never asked for more:
+- **Source:** `pixel_usb_port_offer_ma()` in pixel-usb-switch reads the Type-C
+  controller. 3000 or 1500 mA when the source advertises that Type-C current
+  on CC. Otherwise the BC1.2 type: 1500 mA for a charging (CDP) or dedicated
+  (DCP) port, 500 mA for a plain data port (SDP) or none. 500 mA while
+  detection runs. pixel-battery looks it up by name each poll, so either
+  module loads alone; without the switch module the limit stays at 500 mA.
+- **Ramp:** from 500 mA up by 500 mA per 10 s poll, to the offer and at most
+  `input_limit_ma` (now 100–3000, default 3000). It drops to a lower offer at
+  once.
+- **Sag:** if the charger's input voltage regulation acts (AICL_OK clear in
+  CHG_INT_OK), the source is sagging under the load. The limit backs off
+  250 mA and stays below that until the cable comes out.
+- **Unplugging:** the charger keeps its limit without USB, so a poll that
+  finds the cable out sets 500 mA again. Only a swap within one 10 s poll
+  keeps the old limit until the next poll, with AICL as the guard.
+- The charge current is unchanged (at most the bootloader's 1.93 A). On a
+  3 A source the battery can now get all of it, against about 1.0 A from
+  today's 1.5 A input.
+- **The development PC:** its port reads as SDP (`typec_status`: BC1.2 SDP,
+  default Type-C current), so it would get 500 mA, not the 1.5 A it supplies
+  now. Stock detected the same port as CDP. The controller's detection ran
+  when the cable went in, and running it again would disturb the USB link, so
+  a replug test decides.
+
+`sh kernel/battery/install-charging-negotiation.sh [WIFI-ADDRESS]` (from
+`devices/pixel7pro`) installs it. It reloads both modules, keeps the first
+old ones in `/root/*.before-negotiate`, and shows the limit ramping.
+
+Measured on October 1:
+- **The PC's port:** read as SDP, so the limit stayed at 500 mA. After a
+  replug, BC1.2 read "none" (also 500 mA).
+- **Lenovo 65 W USB-C brick:** advertised Rp 3.0 A. The limit ramped
+  500 → 3000 mA in 50 s, with VBUS at 4.83 V under the full load and no
+  AICL.
+- **Battery current on the brick:** first only +0.3 A at 79 %, then 0 with
+  the status "Full". That was the step-charging stall below. Once fixed: +0.77,
+  1.03, 1.62, 1.87 and 1.90 A as the input limit rose. That is the
+  bootloader's 1.93 A charge cap, about twice the +1.0 A of the fixed 1.5 A
+  input.
+
+**Step-charging stall (fixed October 1).** A tier moved on only when the
+gauge read its voltage. The charger holds the float at its own output, and
+the cell read 4.174 V under the 4.20 V float, so the charge tapered and the
+charger ended it as done at 79 %. A tier now also moves on once the charger
+is in constant voltage, top-off or done and the current is below what the
+next tier allows. A tier first holds 20 s, since the charger's state lags a
+float change.
+
+**Port temperature and a 3 A charge current (October 1, 23:00).** The user
+asked to raise the charge current if it can be done safely.
+- **The port's temperature** comes from `pixel-port-temp`
+  (`kernel/port-temp`), read each poll while USB power is there. It limits
+  the input as stock's USB throttling does:
+  - 500 mA at 45 °C, or above 42 °C when the port is also 2.5 °C over its
+    second sensor or 5 °C over the board;
+  - 1.5 A from 40 °C;
+  - 1.5 A when the temperature cannot be read. Above 1.5 A needs a working
+    port sensor.
+- **The charge current** may reach `charge_max_ma` (default 3000) with the
+  battery at 15–40 °C, still under the stock step table (at 20–42 °C:
+  1.0 C, 0.7 C and 0.5 C, so 3.0, 3.0 and 2.5 A on this 5 Ah cell). Outside
+  that range it stays at the bootloader's 1.93 A. Charging still stops at
+  45 °C.
+- **Legacy cables:** an advertised 1.5 or 3 A with a plain data port
+  (BC1.2 SDP) is a legacy A-to-C cable with the wrong pull-up on a computer.
+  It gets 500 mA.
+- **The ramp** also backs off when VBUS falls below 4.6 V.
+
 **Mode (CNFG_00).** The module only switches between 5 (charge + buck) and 4
 (buck only: the phone runs from USB and the battery rests). It never leaves
 off (0) or OTG boost.
@@ -126,7 +196,39 @@ off (0) or OTG boost.
 - **Temperature:** switches to buck only at 45 °C, resuming at 40 °C, or when
   the temperature can't be read.
 
-Unloading the module restores all four registers to the bootloader's values.
+**Wireless (October 4).** The P9412 receiver (0x3C on hsi2c_15, through
+pixel-hsi2c) feeds the charger's WCIN. The chip default already selects WCIN
+(CNFG_12 0x6a) with a 500 mA limit (CNFG_10 0x0f), and on its own the receiver
+negotiates the Qi baseline (BPP, 5 V) with its built-in calibration. On an
+INIU Qi pad that charged at 497 mA, about 2.5 W. With a transmitter present
+(WCIN_DTLS valid), the module now does what Google's `p9221_charger` does:
+- **Calibration:** it writes the foreign-object (FOD) table for the
+  negotiated mode (`fod`, or `fod_epp`) from the device tree's
+  `idt,p9412` node into the receiver (0x70, 16 bytes), and reads it back. The
+  receiver reports received power with it, and the transmitter compares that
+  with what it sends to find metal heating in the field. The receiver forgets
+  the table off the pad, so it is written each time.
+- **Input limit (CNFG_10):**
+  - BPP: 700 mA (687.5 at the charger's steps), and 900 mA (875) after 7
+    minutes on the transmitter.
+  - Other modes: 500 mA until they are characterised.
+  - 200 mA at 100 %.
+  - 500 mA from 40 °C until 37 °C.
+  - It rises 100 mA per poll and backs off and holds if AICL acts.
+  - Off the pad, or with USB in, it returns to the bootloader's value.
+  - `wireless_limit_ma` caps it (125–900; 0 leaves the bootloader's).
+- **Charging control:** step charging, the charge limit and the 45 °C pause
+  apply as with USB.
+- **Supply:** a `wireless` power supply reports online, the limit and the
+  receiver's output voltage.
+
+On the INIU pad the receiver then gave about 680 mA at 4.98 V and the battery
+took 400–570 mA at 95 %, with the receiver die at 40 °C. The receiver's
+interrupt (gpa9-5) and enable (gpp0-0, active low, left low by its
+pull-down) are not used. While the phone sleeps the 10 s poll stops: the
+charger keeps the last limit, and its own JEITA control still applies.
+
+Unloading the module restores all five registers to the bootloader's values.
 Settings are written only when CHGPROT reads unlocked, and every write is read
 back.
 
@@ -136,6 +238,9 @@ back.
 - Learned-state persistence and recovery of the historical cycle count.
 - No interrupts: a 10 s poll sends the uevents.
 - No USB PD: input is 5 V only.
+- Wireless above the Qi baseline: EPP (15 W) and Google's Pixel Stand mode
+  need a transmitter that offers them. Reverse wireless (Battery Share) is
+  not started.
 
 ## Measurement aids (October 1, 2026)
 

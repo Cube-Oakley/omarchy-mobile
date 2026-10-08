@@ -65,6 +65,15 @@ static unsigned int eint_wake[16] = { 43, 44, 62, 60 };
 static unsigned int eint_wake_n = 4;
 module_param_array(eint_wake, uint, &eint_wake_n, 0644);
 MODULE_PARM_DESC(eint_wake, "Stock EINT wake bits (default power 43, vol-down 44, vol-up 62, CP2AP 60)");
+/* The touch controller's interrupt (gpa7-0, EINT 53, denied below) wakes the
+ * phone only while this is set: pixel-display-hook sets it under the
+ * always-on display with its fingerprint sensor, when the controller is in
+ * its gesture mode and interrupts for a recognized gesture alone. Scanning
+ * normally it would wake the phone at every touch. */
+static bool touch_wake;
+module_param(touch_wake, bool, 0644);
+MODULE_PARM_DESC(touch_wake, "Let the touch controller's gesture interrupt (EINT 53) wake the phone (set by the display hook)");
+#define TOUCH_EINT	53
 static bool gate_cpucl = true;
 module_param(gate_cpucl, bool, 0644);
 MODULE_PARM_DESC(gate_cpucl, "Touch CMU_CPUCL1/2 only while that cluster is on (non-stock guard; default 1)");
@@ -80,6 +89,9 @@ MODULE_PARM_DESC(pd_restore_noc, "Also write back the interconnect (NOCL*) domai
 static unsigned int hsi2_cycle;
 module_param(hsi2_cycle, uint, 0644);
 MODULE_PARM_DESC(hsi2_cycle, "Test: with pm_test=core and dry_run=0, power HSI2 off and on at arm as stock's domain driver does: 1 with the DTZPC save/restore calls, 2 without (default 0)");
+static bool display_off_required;
+module_param(display_off_required, bool, 0644);
+MODULE_PARM_DESC(display_off_required, "Refuse while DPU or DISP is powered: set when the PMIC opmodes let PWREN drop the INT, CAM and PLL rails, which a powered display domain does not survive (pixel-scanout powers them off at screen-off)");
 static bool disp_off;
 module_param(disp_off, bool, 0644);
 MODULE_PARM_DESC(disp_off, "Test: power DPU and DISP off at arm and on at resume, as stock's genpd does before SYS_SLEEP (the display needs a reboot afterwards)");
@@ -112,6 +124,8 @@ module_param(exit_count, uint, 0444);
 #define PMU_PCIE_PHY_HSI1	0x3ec0	/* gs201-pcie.dtsi:54: bit 0 = 0 isolated */
 #define PMU_PCIE_PHY_HSI2	0x3ec4	/* gs201-pcie.dtsi:114 */
 #define PMU_G3D_STATUS		0x1e04	/* flexpmu_cal_local_gs201.h:515 */
+#define PMU_DPU_STATUS		0x2204	/* gs201-pm-domains.dtsi pd_dpu + 4 */
+#define PMU_DISP_STATUS		0x2284	/* pd_disp + 4 */
 #define STOCK_INT_EN		0x1001f0bf	/* gs201.dtsi:404 */
 /* Bits that read back as written, measured on this phone (2026-09-30):
  * EINT_WAKEUP_MASK3 implements three bits (it reads 0x7 after 0xffffffff),
@@ -718,6 +732,8 @@ static int build_masks(u32 m[3])
 			return -EINVAL;
 		m[bit / 32] &= ~BIT(bit % 32);
 	}
+	if (READ_ONCE(touch_wake))
+		m[TOUCH_EINT / 32] &= ~BIT(TOUCH_EINT % 32);
 	return 0;
 }
 
@@ -784,6 +800,9 @@ static const char *preconditions(u32 masks[3])
 		return "Wi-Fi PCIe PHY not isolated";
 	if (ps_pmu_read(PMU_G3D_STATUS) & BIT(0))
 		return "G3D powered";
+	if (display_off_required && !disp_off &&
+	    ((ps_pmu_read(PMU_DPU_STATUS) | ps_pmu_read(PMU_DISP_STATUS)) & BIT(0)))
+		return "display domains powered (the INT rails would drop under them)";
 	if (!lpm_pmu_durations_stock())
 		return "lpm_init PMU durations differ from stock (lpm_init_pmu=1)";
 	if (!acpm_idle || !acpm_idle(acpm))

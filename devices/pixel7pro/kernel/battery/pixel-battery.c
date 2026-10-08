@@ -14,6 +14,8 @@
  * - "battery": the ModelGauge m5 fuel gauge at 0x36 (5 mOhm sense resistor,
  *   per the stock DT), and the charger's view of the charge state.
  * - "usb": the charger at 0x69, for whether USB input is present and its limit.
+ * - "wireless": whether the P9412 receiver feeds the charger's WCIN (the phone
+ *   is on a wireless transmitter), and that input's limit.
  *
  * A guarded restore_model sysfs operation can restore the stock gauge model
  * after POR, using the read-only battery ID and the bootloader's device tree.
@@ -27,16 +29,23 @@
  * bootloader set. The module also changes two more things, as stock does:
  * - the USB input current limit (CHG_CNFG_09). The bootloader leaves it under
  *   the charger's own port detection (AutoIBUS), which holds a computer port
- *   to 500 mA. input_limit_ma, 1500 by default as stock sets on this host's
- *   BC1.2 charging port, is applied with NO_AUTOIBUS set, as Google's stack
- *   does once its BC1.2 detection is done. The charger's input voltage
- *   regulation (AICL) backs off if a weaker port sags.
+ *   to 500 mA. The module sets it with NO_AUTOIBUS, as Google's stack does,
+ *   to what the port offers (input_limit()): the Type-C current advertised on
+ *   CC, or what the BC1.2 port type allows, which pixel-usb-switch reads from
+ *   the Type-C controller. It starts at 500 mA and steps up each poll; if the
+ *   charger's input voltage regulation (AICL) acts, the source sags under the
+ *   load, and the limit backs off and stays there until the cable comes out.
+ *   Without pixel-usb-switch it stays at 500 mA.
+ * - the wireless input limit (CHG_CNFG_10) on a transmitter, as stock sets it
+ *   (wireless_limit()). The receiver then also gets Google's foreign-object
+ *   calibration from the device tree.
  * - the mode (CHG_CNFG_00), between charge + buck (5) and buck only (4, the
- *   system runs from USB and the battery rests), for the charge limit
+ *   system runs from the input and the battery rests), for the charge limit
  *   (charge_control_end_threshold, restart 5 % below it).
  * Charging also pauses at 45 C (resuming at 40 C) on that temperature; the
- * charger's own JEITA control on the same thermistor stays enabled.
- * Unloading restores all four registers to what the bootloader left.
+ * charger's own JEITA control on the same thermistor stays enabled. Both
+ * inputs get the step charging, the charge limit and the pause.
+ * Unloading restores all five registers to what the bootloader left.
  */
 #include <linux/bitfield.h>
 #include <linux/delay.h>
@@ -130,9 +139,12 @@
 
 #define CHG_ADDR		0x69
 #define CHG_INT_OK		0xb4
+#define AICL_OK			BIT(7)	/* clear: input voltage regulation acts */
 #define CHG_DETAILS_00		0xb5
 #define CHGIN_DTLS		GENMASK(6, 5)
 #define CHGIN_DTLS_VALID	3
+#define WCIN_DTLS		GENMASK(4, 3)
+#define WCIN_DTLS_VALID		3
 #define CHG_DETAILS_01		0xb6
 #define BAT_DTLS		GENMASK(6, 4)
 #define CHG_DTLS		GENMASK(3, 0)
@@ -152,6 +164,8 @@
 #define CHG_CNFG_09		0xc2
 #define NO_AUTOIBUS		BIT(7)
 #define CHGIN_ILIM		GENMASK(6, 0)
+#define CHG_CNFG_10		0xc3
+#define WCIN_ILIM		GENMASK(5, 0)
 #define CHG_CNFG_19		0xcc
 
 #define FG_AIN			0x27
@@ -177,12 +191,18 @@
 #define THM_DTLS		GENMASK(2, 0)
 enum { THM_COLD_SUSPEND, THM_COOL, THM_NORMAL, THM_WARM, THM_HOT_SUSPEND };
 
-static uint input_limit_ma = 1500;
+static uint input_limit_ma = 3000;
 module_param(input_limit_ma, uint, 0644);
 static bool input_off;
 module_param(input_off, bool, 0644);
+static uint charge_max_ma = 3000;
+module_param(charge_max_ma, uint, 0644);
+MODULE_PARM_DESC(charge_max_ma, "Highest charge current with the battery at 15-40 C (200-3000); outside them at most the bootloader's");
 MODULE_PARM_DESC(input_off, "Measurement: charger mode 0 with USB present, so the system runs from the battery and the gauge reads its drain (clear to resume)");
-MODULE_PARM_DESC(input_limit_ma, "USB input current limit to set when USB is present (100-1500, 0: leave)");
+MODULE_PARM_DESC(input_limit_ma, "Highest USB input current limit, below what the port offers (100-3000, 0: leave the bootloader's)");
+static uint wireless_limit_ma = 900;
+module_param(wireless_limit_ma, uint, 0644);
+MODULE_PARM_DESC(wireless_limit_ma, "Highest wireless input current limit (125-900, 0: leave the bootloader's)");
 
 enum { CHG_DTLS_PREQUAL, CHG_DTLS_CC, CHG_DTLS_CV, CHG_DTLS_TO, CHG_DTLS_DONE,
        CHG_DTLS_TIMER_FAULT = 6, CHG_DTLS_SUSP_BATT_THM, CHG_DTLS_OFF,
@@ -198,15 +218,27 @@ struct pixel_battery {
 	u32 saved[9];
 	struct power_supply *battery;
 	struct power_supply *usb;
+	struct power_supply *wireless;
 	struct delayed_work poll;
 	struct mutex lock;
 	int last_status;
 	int last_capacity;
 	bool last_online;
+	bool last_wireless;
 	u8 boot_cnfg_00;
 	u8 boot_cnfg_02;
 	u8 boot_cnfg_04;
 	u8 boot_cnfg_09;
+	u8 boot_cnfg_10;
+	/* on a wireless transmitter (wireless_limit()) */
+	unsigned long wl_since;		/* jiffies at arrival, 0 off a transmitter */
+	unsigned int wl_ma;		/* the input limit set, 0 off a transmitter */
+	unsigned int wl_ceiling;	/* where the input sagged, 0 for none */
+	int wl_mode;			/* receiver's protocol (RX_MODE_*), -1 unreadable */
+	int wl_fod;			/* the mode whose FOD table is written, -1 none */
+	int wl_fod_tries;
+	bool wl_warm;
+	int wl_vout_mv, wl_iout_ma, wl_die_c;
 	struct {
 		s32 temp[STEP_TEMPS];
 		u32 cv_uv[STEP_TIERS];
@@ -215,12 +247,16 @@ struct pixel_battery {
 		bool valid;
 	} step;
 	int tier;
+	unsigned long tier_since;	/* jiffies when the tier last changed */
 	bool cold;
 	int end_threshold;
 	bool limited;
 	bool hot;
 	bool forced_off;	/* input_off put the charger in mode 0 */
 	bool model_failed;
+	unsigned int ilim_ma;		/* the input limit set, 0 before USB */
+	unsigned int ilim_ceiling;	/* where AICL stopped it, 0 for none */
+	unsigned int port_cap;		/* the port temperature's limit, for the log */
 };
 
 static const u16 saved_regs[] = {
@@ -411,6 +447,16 @@ static bool usb_online(struct pixel_battery *b)
 	       FIELD_GET(CHGIN_DTLS, val) == CHGIN_DTLS_VALID;
 }
 
+/* The P9412 receiver's output on the charger's WCIN: the phone is on a
+ * wireless transmitter. */
+static bool wireless_online(struct pixel_battery *b)
+{
+	u8 val;
+
+	return !chg_read(b, CHG_DETAILS_00, &val) &&
+	       FIELD_GET(WCIN_DTLS, val) == WCIN_DTLS_VALID;
+}
+
 static int battery_temp(struct pixel_battery *b, int *deci_c)
 {
 	u16 ain;
@@ -440,7 +486,7 @@ static int battery_status(struct pixel_battery *b)
 		case CHG_DTLS_DONE:
 			return POWER_SUPPLY_STATUS_FULL;
 		case CHG_DTLS_OFF:
-			if (!usb_online(b))
+			if (!usb_online(b) && !wireless_online(b))
 				return POWER_SUPPLY_STATUS_DISCHARGING;
 			if (b->limited || b->hot || b->cold)
 				return POWER_SUPPLY_STATUS_NOT_CHARGING;
@@ -759,13 +805,43 @@ static void step_profile_read(struct pixel_battery *b)
  * removed; a tier with no current in this band holds the one below at its
  * voltage. The current never exceeds the bootloader's. Returns false when the
  * band allows no charging at all; *raised says the float voltage went up.
+ *
+ * The charger holds the float at its own output, and the gauge reads the
+ * cell tens of mV lower across the path (4.174 V under a 4.20 V float, at
+ * 0.3 A), so a tier's voltage may never show at the gauge, and the charge
+ * would taper away at the first float, and the charger end it there as done
+ * (79 % on October 1). So the next tier also takes over once the charger is
+ * in constant voltage, top-off or done, and the current has fallen below what
+ * that tier allows, as Google's charger moves on in CV. A tier holds at least
+ * TIER_SETTLE first: the charger's state lags a float change (a stale "done"
+ * once skipped a tier in 60 ms).
  */
+#define TIER_SETTLE		(20 * HZ)
+/* Charge currents above the bootloader's only at these battery temperatures. */
+#define CHARGE_FAST_MIN		150
+#define CHARGE_FAST_MAX		400
+
+/* The charge current's ceiling, as a CNFG_02 code: charge_max_ma with the
+ * battery at 15-40 C, else no more than the bootloader's (1.93 A here). The
+ * step table lowers it further with temperature and voltage. */
+static u8 charge_cap_code(struct pixel_battery *b, int temp)
+{
+	u8 boot = FIELD_GET(CHG_CC, b->boot_cnfg_02);
+	unsigned int ma = clamp(charge_max_ma, 200U, 3000U);
+	/* 200 mA at code 3, then 66.67 mA steps */
+	u8 code = 3 + ((ma - 200) * 100 + 3333) / 6667;
+
+	if (temp < CHARGE_FAST_MIN || temp > CHARGE_FAST_MAX)
+		return min(code, boot);
+	return code;
+}
+
 static bool charger_step(struct pixel_battery *b, int temp, bool *raised)
 {
-	int band, top, tier, cap_uah;
-	u32 vcell_uv, fv, cc_ua;
-	u8 cnfg, fv_code, cc_code;
-	u16 vcell, cap;
+	int band, top, tier, cap_uah, cap_ua;
+	u32 vcell_uv, fv, cc_ua, next_ua;
+	u8 cnfg, fv_code, cc_code, dtls, cap_code;
+	u16 vcell, cap, cur;
 	bool changed = false;
 
 	*raised = false;
@@ -788,15 +864,30 @@ static bool charger_step(struct pixel_battery *b, int temp, bool *raised)
 	    fg_charge_uah(b, cap, &cap_uah))
 		return true;
 	vcell_uv = vcell * 625 / 8;
-	while (b->tier + 1 < STEP_TIERS && vcell_uv + STEP_MARGIN_UV >= b->step.cv_uv[b->tier])
+	while (b->tier + 1 < STEP_TIERS && vcell_uv + STEP_MARGIN_UV >= b->step.cv_uv[b->tier]) {
 		b->tier++;
+		b->tier_since = jiffies;
+	}
+	cap_code = charge_cap_code(b, temp);
+	/* 200 mA at code 3, then 66.67 mA steps */
+	cap_ua = 200000 + max((int)cap_code - 3, 0) * 66670;
+	if (b->tier < top && time_after(jiffies, b->tier_since + TIER_SETTLE) &&
+	    !chg_read(b, CHG_DETAILS_01, &dtls) &&
+	    FIELD_GET(CHG_DTLS, dtls) >= CHG_DTLS_CV && FIELD_GET(CHG_DTLS, dtls) <= CHG_DTLS_DONE &&
+	    !fg_read(b, FG_CURRENT, &cur)) {
+		next_ua = min_t(u64, (u64)cap_uah * b->step.cc_pct[band][b->tier + 1] / 100, cap_ua);
+		if (fg_current_ua(cur) < (int)next_ua) {
+			b->tier++;
+			b->tier_since = jiffies;
+		}
+	}
 	tier = min(b->tier, top);
 	fv = min(b->step.cv_uv[tier], b->step.fv_max_uv);
 	fv_code = (fv - 4000000) / 10000;
 	cc_ua = (u64)cap_uah * b->step.cc_pct[band][tier] / 100;
 	/* 200 mA at code 3, then 66.67 mA steps */
 	cc_code = cc_ua > 200000 ? 3 + (cc_ua - 200000) / 66670 : 3;
-	cc_code = min(cc_code, FIELD_GET(CHG_CC, b->boot_cnfg_02));
+	cc_code = min(cc_code, cap_code);
 	/* the current comes down before the voltage goes up */
 	if (!chg_read(b, CHG_CNFG_02, &cnfg) && FIELD_GET(CHG_CC, cnfg) != cc_code &&
 	    !chg_write(b, CHG_CNFG_02, (cnfg & ~CHG_CC) | cc_code))
@@ -813,26 +904,22 @@ static bool charger_step(struct pixel_battery *b, int temp, bool *raised)
 	return true;
 }
 
-/* The charger's input limit and mode, from USB presence, the requested
+/* The charger's mode, from USB or wireless presence, the requested
  * input limit and the charge limit. Only modes 4 and 5 are ever changed:
  * charging off (0) or OTG boost stay as they are.
  */
 static void charger_update(struct pixel_battery *b)
 {
-	u8 cnfg, mode, want, ilim, dtls;
+	u8 cnfg, mode, want, dtls;
 	u16 soc;
 	int capacity, temp;
 	bool in_range, raised;
 
 	mutex_lock(&b->lock);
-	if (!usb_online(b)) {
+	if (!usb_online(b) && !wireless_online(b)) {
 		b->tier = 0;
+		b->tier_since = jiffies;
 		goto out;
-	}
-	if (input_limit_ma && !chg_read(b, CHG_CNFG_09, &cnfg)) {
-		ilim = 3 + (clamp(input_limit_ma, 100U, 1500U) - 100) / 25;
-		if (cnfg != (NO_AUTOIBUS | ilim) && !chg_write(b, CHG_CNFG_09, NO_AUTOIBUS | ilim))
-			dev_info(b->dev, "USB input limit %u mA\n", 100 + (ilim - 3) * 25);
 	}
 	if (chg_read(b, CHG_CNFG_00, &cnfg) || fg_read(b, FG_REPSOC, &soc))
 		goto out;
@@ -884,6 +971,17 @@ static void charger_update(struct pixel_battery *b)
 	    !chg_read(b, CHG_DETAILS_01, &dtls) && FIELD_GET(CHG_DTLS, dtls) == CHG_DTLS_DONE &&
 	    !chg_write(b, CHG_CNFG_00, (cnfg & ~CHG_MODE) | CHG_MODE_BUCK))
 		mode = CHG_MODE_BUCK;
+	/* The charger's fast-charge timer stops a charge that has not finished
+	 * in its time (a 500 mA computer port with the phone busy: October 6,
+	 * "Safety timer expire" at 66 %). Passing through buck-only restarts
+	 * the timer, as toggling the charge limit did by hand.
+	 */
+	if (want == CHG_MODE_CHG_BUCK && mode == want &&
+	    !chg_read(b, CHG_DETAILS_01, &dtls) && FIELD_GET(CHG_DTLS, dtls) == CHG_DTLS_TIMER_FAULT &&
+	    !chg_write(b, CHG_CNFG_00, (cnfg & ~CHG_MODE) | CHG_MODE_BUCK)) {
+		dev_info(b->dev, "charge timer expired at %d%%: restarting the charge\n", capacity);
+		mode = CHG_MODE_BUCK;
+	}
 	if (mode != want && !chg_write(b, CHG_CNFG_00, (cnfg & ~CHG_MODE) | want))
 		dev_info(b->dev, "charging %s at %d%%, %d.%d C (limit %d%%)\n",
 			 want == CHG_MODE_BUCK ? "paused" : "resumed", capacity,
@@ -933,6 +1031,374 @@ static char *usb_supplies[] = { "battery" };
 
 #include "pixel-battery-model.h"
 
+#define ILIM_START_MA		500
+#define ILIM_STEP_MA		500
+#define ILIM_BACKOFF_MA		250
+#define ILIM_MAX_MA		3000
+
+/* In pixel-usb-switch, which owns the Type-C controller, and pixel-port-temp,
+ * which reads the port's thermistors; looked up at run time, so each module
+ * loads without the others. */
+int pixel_usb_port_offer(int *ma, int *vbus_mv);
+int pixel_port_temp_mc(int *usb, int *usb2, int *neutral);
+
+struct port_state {
+	int offer;		/* mA; 0 while detecting, negative if unknown */
+	int vbus_mv;		/* 0 if unknown */
+	int temp_ret;		/* 0 when the three temperatures below are good */
+	int usb, usb2, neutral;	/* milli-degrees C */
+};
+
+static void port_read(struct port_state *port)
+{
+	int (*offer)(int *, int *) = symbol_get(pixel_usb_port_offer);
+	int (*temp)(int *, int *, int *) = symbol_get(pixel_port_temp_mc);
+
+	port->offer = -ENODEV;
+	port->vbus_mv = 0;
+	port->temp_ret = -ENODEV;
+	if (offer) {
+		if (offer(&port->offer, &port->vbus_mv))
+			port->offer = -EIO;
+		symbol_put(pixel_usb_port_offer);
+	}
+	if (temp) {
+		port->temp_ret = temp(&port->usb, &port->usb2, &port->neutral);
+		symbol_put(pixel_port_temp_mc);
+	}
+}
+
+/* What the port's temperature allows (stock's USB throttling): 500 mA when
+ * the port is hot (45 C, or 42 C and 2.5 C over its second sensor or 5 C
+ * over the board), 1.5 A from 40 C or when it cannot be read; else no limit. */
+static unsigned int port_temp_cap(const struct port_state *port)
+{
+	if (port->temp_ret)
+		return 1500;
+	if (port->usb >= 45000 ||
+	    (port->usb > 42000 && (port->usb - port->usb2 > 2500 ||
+				   port->usb - port->neutral > 5000)))
+		return ILIM_START_MA;
+	if (port->usb >= 40000)
+		return 1500;
+	return ILIM_MAX_MA;
+}
+
+/* The USB input limit, once a poll: up by ILIM_STEP_MA towards what the port
+ * offers (at most input_limit_ma and what its temperature allows), down to
+ * it at once. A source that sags under the load puts the charger in input
+ * voltage regulation (AICL), or VBUS falls below 4.6 V: then back off
+ * ILIM_BACKOFF_MA and stay below that until the cable comes out. Unknown
+ * ports, and BC1.2 detection still running, get 500 mA. The charger keeps
+ * its limit without USB, so it goes back to 500 mA as soon as a poll finds
+ * the cable out; only a swap within one poll keeps the old limit until the
+ * next.
+ */
+static void input_limit(struct pixel_battery *b, const struct port_state *port)
+{
+	unsigned int ma, target, cap;
+	u8 ok, cnfg, code;
+	bool sag;
+
+	if (!input_limit_ma)
+		return;
+	if (!usb_online(b)) {
+		code = 3 + (ILIM_START_MA - 100) / 25;
+		if (b->ilim_ma && !chg_read(b, CHG_CNFG_09, &cnfg) && cnfg != (NO_AUTOIBUS | code))
+			chg_write(b, CHG_CNFG_09, NO_AUTOIBUS | code);
+		b->ilim_ma = 0;
+		b->ilim_ceiling = 0;
+		return;
+	}
+	cap = port_temp_cap(port);
+	if (cap != b->port_cap) {
+		if (port->temp_ret)
+			dev_info(b->dev, "USB port temperature unknown (%d): input at most %u mA\n",
+				 port->temp_ret, cap);
+		else
+			dev_info(b->dev, "USB port %d.%d C (%d.%d C second, board %d.%d C): input at most %u mA\n",
+				 port->usb / 1000, abs(port->usb % 1000) / 100,
+				 port->usb2 / 1000, abs(port->usb2 % 1000) / 100,
+				 port->neutral / 1000, abs(port->neutral % 1000) / 100, cap);
+		b->port_cap = cap;
+	}
+	ma = b->ilim_ma ?: ILIM_START_MA;
+	target = port->offer > 0 ? port->offer : ILIM_START_MA;
+	target = min3(target, clamp(input_limit_ma, 100U, (uint)ILIM_MAX_MA),
+		      b->ilim_ceiling ?: ILIM_MAX_MA);
+	target = min(target, cap);
+	sag = (port->vbus_mv && port->vbus_mv < 4600) ||
+	      (!chg_read(b, CHG_INT_OK, &ok) && !(ok & AICL_OK));
+	if (b->ilim_ma > ILIM_START_MA && sag) {
+		ma = max(ma - ILIM_BACKOFF_MA, (uint)ILIM_START_MA);
+		b->ilim_ceiling = ma;
+		dev_info(b->dev, "USB input sags at %u mA (VBUS %d mV): holding %u mA\n",
+			 b->ilim_ma, port->vbus_mv, ma);
+	} else if (ma < target) {
+		ma = min(ma + ILIM_STEP_MA, target);
+	} else {
+		ma = target;
+	}
+	ma = max(ma, 100U);
+	code = 3 + (ma - 100) / 25;
+	if (!chg_read(b, CHG_CNFG_09, &cnfg) && cnfg != (NO_AUTOIBUS | code) &&
+	    !chg_write(b, CHG_CNFG_09, NO_AUTOIBUS | code)) {
+		if (port->offer < 0)
+			dev_info(b->dev, "USB input limit %u mA (port not known yet)\n", ma);
+		else
+			dev_info(b->dev, "USB input limit %u mA (port offers %d mA)\n", ma, port->offer);
+	}
+	b->ilim_ma = ma;
+}
+
+/* The P9412 wireless receiver, at 0x3C on hsi2c_15 (pixel-hsi2c), with 16-bit
+ * register addresses and little-endian values (Google's p9221_charger). It
+ * runs only from a transmitter's field: use it only with WCIN present. On its
+ * own it negotiates the Qi baseline (BPP, 5 V) with its built-in calibration.
+ */
+#define RX_ADAPTER		"Pixel hsi2c_15"
+#define RX_ADDR			0x3c
+#define RX_CHIP_ID		0x00
+#define RX_CHIP_P9412		0x9412
+#define RX_VOUT			0x42	/* mV */
+#define RX_IOUT			0x44	/* mA */
+#define RX_DIE_TEMP		0x46	/* C */
+#define RX_MODE			0x4c
+#define RX_FOD			0x70
+#define RX_FOD_LEN		16
+enum { RX_MODE_NONE, RX_MODE_BPP, RX_MODE_EPP };
+
+static int rx_adapter_match(struct device *dev, const void *name)
+{
+	struct i2c_adapter *adap = i2c_verify_adapter(dev);
+
+	return adap && !strcmp(adap->name, name);
+}
+
+static int rx_xfer(u16 reg, u8 *buf, u16 len, bool write)
+{
+	struct device *dev = bus_find_device(&i2c_bus_type, NULL, RX_ADAPTER, rx_adapter_match);
+	struct i2c_adapter *adap = dev ? i2c_get_adapter(i2c_verify_adapter(dev)->nr) : NULL;
+	u8 out[2 + RX_FOD_LEN] = { reg >> 8, reg & 0xff };
+	struct i2c_msg msgs[2] = {
+		{ .addr = RX_ADDR, .len = 2, .buf = out },
+		{ .addr = RX_ADDR, .flags = I2C_M_RD, .len = len, .buf = buf },
+	};
+	int ret, num = write ? 1 : 2;
+
+	put_device(dev);
+	if (!adap)
+		return -ENODEV;
+	if (write) {
+		if (len > RX_FOD_LEN) {
+			i2c_put_adapter(adap);
+			return -EINVAL;
+		}
+		memcpy(out + 2, buf, len);
+		msgs[0].len = 2 + len;
+	}
+	ret = i2c_transfer(adap, msgs, num);
+	i2c_put_adapter(adap);
+	return ret == num ? 0 : ret < 0 ? ret : -EIO;
+}
+
+static int rx_read16(u16 reg, u16 *val)
+{
+	u8 buf[2];
+	int ret = rx_xfer(reg, buf, 2, false);
+
+	if (!ret)
+		*val = buf[0] | buf[1] << 8;
+	return ret;
+}
+
+/* The receiver's state, and Google's foreign-object (FOD) calibration for
+ * this phone in place of its built-in one: the gains and offsets with which
+ * it reports received power, which the transmitter checks against what it
+ * sends to find metal heating in the field. Stock writes the table for the
+ * negotiated mode from the device tree whenever the receiver comes up, and
+ * reads it back; the receiver forgets it off the transmitter.
+ */
+static void wireless_receiver(struct pixel_battery *b)
+{
+	u8 mode, fod[RX_FOD_LEN], back[RX_FOD_LEN];
+	struct device_node *np;
+	u16 id, val;
+	int ret;
+
+	if (rx_read16(RX_CHIP_ID, &id) || id != RX_CHIP_P9412 || rx_xfer(RX_MODE, &mode, 1, false)) {
+		b->wl_mode = -1;
+		return;
+	}
+	if (mode != b->wl_mode)
+		dev_info(b->dev, "wireless receiver in %s mode\n",
+			 mode == RX_MODE_BPP ? "Qi baseline (BPP)" :
+			 mode == RX_MODE_EPP ? "Qi extended (EPP)" : "another");
+	b->wl_mode = mode;
+	if (!rx_read16(RX_VOUT, &val))
+		b->wl_vout_mv = val;
+	if (!rx_read16(RX_IOUT, &val))
+		b->wl_iout_ma = val;
+	if (!rx_read16(RX_DIE_TEMP, &val))
+		b->wl_die_c = val;
+	if ((mode != RX_MODE_BPP && mode != RX_MODE_EPP) || b->wl_fod == mode ||
+	    b->wl_fod_tries >= 3)
+		return;
+	b->wl_fod_tries++;
+	np = of_find_compatible_node(NULL, NULL, "idt,p9412");
+	ret = np ? of_property_read_u8_array(np, mode == RX_MODE_EPP ? "fod_epp" : "fod",
+					     fod, RX_FOD_LEN) : -ENODEV;
+	of_node_put(np);
+	if (ret) {
+		dev_warn(b->dev, "no FOD table in the device tree (%d): keeping the receiver's\n", ret);
+		b->wl_fod_tries = 3;
+		return;
+	}
+	ret = rx_xfer(RX_FOD, fod, RX_FOD_LEN, true) ?: rx_xfer(RX_FOD, back, RX_FOD_LEN, false);
+	if (ret || memcmp(fod, back, RX_FOD_LEN)) {
+		dev_warn(b->dev, "FOD write failed (%d)\n", ret);
+		return;
+	}
+	b->wl_fod = mode;
+	dev_info(b->dev, "wireless FOD table written for %s\n", mode == RX_MODE_EPP ? "EPP" : "BPP");
+}
+
+/* Stock's wireless input limits (p9221_charger): BPP 700 mA, 900 mA after 7
+ * minutes on the transmitter, 200 mA once the battery is full. Other modes
+ * keep 500 mA, the charger's own default, until they are characterised. */
+#define WL_BPP_MA		700
+#define WL_BPP_RAMP_MA		900
+#define WL_BPP_RAMP		(7 * 60 * HZ)
+#define WL_FULL_MA		200
+#define WL_OTHER_MA		500
+#define WL_START_MA		500
+#define WL_STEP_MA		100
+/* Wireless charging heats the phone: 500 mA from 40 C, until 37 C. */
+#define WL_WARM_MA		500
+#define WL_WARM_TEMP		400
+#define WL_COOL_TEMP		370
+#define WL_MAX_MA		900
+
+/* WCIN_ILIM: 125 mA up to code 3, then 31.25 mA steps (Google's max77759). */
+static u8 wl_code(unsigned int ma)
+{
+	return ma < 125 ? 0 : 3 + (ma - 125) * 100 / 3125;
+}
+
+static unsigned int wl_code_ma(u8 code)
+{
+	return !code ? 0 : code < 4 ? 125 : 125 + (code - 3) * 3125 / 100;
+}
+
+/* The wireless input limit, once a poll, as input_limit() does for USB: up
+ * WL_STEP_MA a poll towards the target, down at once, and if the receiver's
+ * output sags under the load (the charger's AICL acts), back off and hold
+ * below that until the phone leaves the transmitter. Off a transmitter, or
+ * with USB in, the limit goes back to the bootloader's. */
+static void wireless_limit(struct pixel_battery *b, int capacity)
+{
+	unsigned int ma, target;
+	u8 cnfg, ok;
+	int temp;
+
+	if (!wireless_limit_ma)
+		return;
+	if (usb_online(b) || !wireless_online(b)) {
+		if (b->wl_since) {
+			if (!chg_read(b, CHG_CNFG_10, &cnfg) && cnfg != b->boot_cnfg_10)
+				chg_write(b, CHG_CNFG_10, b->boot_cnfg_10);
+			dev_info(b->dev, "wireless input ended after %u s\n",
+				 jiffies_to_msecs(jiffies - b->wl_since) / 1000);
+		}
+		b->wl_since = 0;
+		b->wl_ma = 0;
+		b->wl_ceiling = 0;
+		b->wl_mode = RX_MODE_NONE;
+		b->wl_fod = -1;
+		b->wl_fod_tries = 0;
+		b->wl_warm = false;
+		return;
+	}
+	if (!b->wl_since) {
+		b->wl_since = jiffies;
+		dev_info(b->dev, "wireless input present\n");
+	}
+	wireless_receiver(b);
+	if (b->wl_mode == RX_MODE_BPP)
+		target = time_after(jiffies, b->wl_since + WL_BPP_RAMP) ? WL_BPP_RAMP_MA : WL_BPP_MA;
+	else
+		target = WL_OTHER_MA;
+	if (capacity >= 100)
+		target = min(target, (uint)WL_FULL_MA);
+	if (battery_temp(b, &temp) || temp >= WL_WARM_TEMP) {
+		if (!b->wl_warm)
+			dev_info(b->dev, "battery warm on wireless: input at most %u mA\n", WL_WARM_MA);
+		b->wl_warm = true;
+	} else if (b->wl_warm && temp <= WL_COOL_TEMP) {
+		b->wl_warm = false;
+	}
+	if (b->wl_warm)
+		target = min(target, (uint)WL_WARM_MA);
+	target = min3(target, clamp(wireless_limit_ma, 125U, (uint)WL_MAX_MA),
+		      b->wl_ceiling ?: WL_MAX_MA);
+	ma = b->wl_ma ?: WL_START_MA;
+	if (b->wl_ma > WL_START_MA && !chg_read(b, CHG_INT_OK, &ok) && !(ok & AICL_OK)) {
+		ma = max(ma - WL_STEP_MA, (uint)WL_START_MA);
+		b->wl_ceiling = ma;
+		dev_info(b->dev, "wireless input sags at %u mA: holding %u mA\n", b->wl_ma, ma);
+	} else if (ma < target) {
+		ma = min(ma + WL_STEP_MA, target);
+	} else {
+		ma = target;
+	}
+	if (!chg_read(b, CHG_CNFG_10, &cnfg) && FIELD_GET(WCIN_ILIM, cnfg) != wl_code(ma) &&
+	    !chg_write(b, CHG_CNFG_10, (cnfg & ~WCIN_ILIM) | wl_code(ma)))
+		dev_info(b->dev, "wireless input limit %u mA (receiver %d mV, %d mA, %d C)\n",
+			 wl_code_ma(wl_code(ma)), b->wl_vout_mv, b->wl_iout_ma, b->wl_die_c);
+	b->wl_ma = ma;
+}
+
+static int wireless_get(struct power_supply *psy, enum power_supply_property psp,
+			union power_supply_propval *out)
+{
+	struct pixel_battery *b = power_supply_get_drvdata(psy);
+	u8 val;
+	int ret;
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		out->intval = wireless_online(b);
+		return 0;
+	case POWER_SUPPLY_PROP_CURRENT_MAX:
+		ret = chg_read(b, CHG_CNFG_10, &val);
+		if (ret)
+			return ret;
+		out->intval = wl_code_ma(FIELD_GET(WCIN_ILIM, val)) * 1000;
+		return 0;
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
+		if (!READ_ONCE(b->wl_since))
+			return -ENODATA;
+		out->intval = READ_ONCE(b->wl_vout_mv) * 1000;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static const enum power_supply_property wireless_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+};
+
+static const struct power_supply_desc wireless_desc = {
+	.name = "wireless",
+	.type = POWER_SUPPLY_TYPE_WIRELESS,
+	.properties = wireless_props,
+	.num_properties = ARRAY_SIZE(wireless_props),
+	.get_property = wireless_get,
+};
+
 /* Nothing interrupts on a change yet: poll, and tell userspace (uevents) when
  * the state or percentage moves.
  */
@@ -941,9 +1407,18 @@ static void battery_poll(struct work_struct *work)
 	struct pixel_battery *b = container_of(to_delayed_work(work), struct pixel_battery, poll);
 	int status = battery_status(b);
 	bool online = usb_online(b);
+	bool wireless = wireless_online(b);
 	u16 soc;
 	int capacity = fg_read(b, FG_REPSOC, &soc) ? -1 : (soc + 128) >> 8;
+	struct port_state port = { .offer = -ENODEV, .temp_ret = -ENODEV };
 
+	/* The port is read only with USB power: its thermistors run meanwhile. */
+	if (online)
+		port_read(&port);
+	mutex_lock(&b->lock);
+	input_limit(b, &port);
+	wireless_limit(b, capacity);
+	mutex_unlock(&b->lock);
 	charger_update(b);
 	if (status != b->last_status || capacity != b->last_capacity) {
 		b->last_status = status;
@@ -953,6 +1428,10 @@ static void battery_poll(struct work_struct *work)
 	if (online != b->last_online) {
 		b->last_online = online;
 		power_supply_changed(b->usb);
+	}
+	if (wireless != b->last_wireless) {
+		b->last_wireless = wireless;
+		power_supply_changed(b->wireless);
 	}
 	schedule_delayed_work(&b->poll, 10 * HZ);
 }
@@ -1015,6 +1494,7 @@ static int pixel_battery_probe(struct platform_device *pdev)
 	b = devm_kzalloc(dev, sizeof(*b), GFP_KERNEL);
 	if (!b)
 		return -ENOMEM;
+	b->tier_since = jiffies;
 	b->dev = dev;
 	b->regs = devm_ioremap(dev, PERIC1_HSI2C13, 0x1000);
 	if (!b->regs)
@@ -1045,19 +1525,22 @@ static int pixel_battery_probe(struct platform_device *pdev)
 	if (chg_read(b, CHG_CNFG_00, &b->boot_cnfg_00) ||
 	    chg_read(b, CHG_CNFG_02, &b->boot_cnfg_02) ||
 	    chg_read(b, CHG_CNFG_04, &b->boot_cnfg_04) ||
-	    chg_read(b, CHG_CNFG_09, &b->boot_cnfg_09) || chg_read(b, CHG_CNFG_06, &conf8)) {
+	    chg_read(b, CHG_CNFG_09, &b->boot_cnfg_09) || chg_read(b, CHG_CNFG_10, &b->boot_cnfg_10) ||
+	    chg_read(b, CHG_CNFG_06, &conf8)) {
 		dev_err(dev, "no MAX77759 charger at %#x\n", CHG_ADDR);
 		return -ENODEV;
 	}
 	if (FIELD_GET(CHGPROT, conf8) != CHGPROT_UNLOCKED) {
 		dev_warn(dev, "charger settings locked (CNFG_06 %#x): read-only\n", conf8);
 		input_limit_ma = 0;
+		wireless_limit_ma = 0;
 		b->boot_cnfg_00 = 0xff;
 	} else {
 		step_profile_read(b);
 	}
 	mutex_init(&b->lock);
 	b->end_threshold = 100;
+	b->wl_fod = -1;
 
 	cfg.drv_data = b;
 	b->battery = devm_power_supply_register(dev, &battery_desc, &cfg);
@@ -1068,6 +1551,9 @@ static int pixel_battery_probe(struct platform_device *pdev)
 	b->usb = devm_power_supply_register(dev, &usb_desc, &cfg);
 	if (IS_ERR(b->usb))
 		return PTR_ERR(b->usb);
+	b->wireless = devm_power_supply_register(dev, &wireless_desc, &cfg);
+	if (IS_ERR(b->wireless))
+		return PTR_ERR(b->wireless);
 
 	platform_set_drvdata(pdev, b);
 	WRITE_ONCE(coulomb_battery, b);
@@ -1093,6 +1579,8 @@ static void pixel_battery_remove(struct platform_device *pdev)
 	/* hand the charger back as the bootloader left it */
 	if (!chg_read(b, CHG_CNFG_09, &cnfg) && cnfg != b->boot_cnfg_09)
 		chg_write(b, CHG_CNFG_09, b->boot_cnfg_09);
+	if (!chg_read(b, CHG_CNFG_10, &cnfg) && cnfg != b->boot_cnfg_10)
+		chg_write(b, CHG_CNFG_10, b->boot_cnfg_10);
 	if (!chg_read(b, CHG_CNFG_04, &cnfg) && cnfg != b->boot_cnfg_04)
 		chg_write(b, CHG_CNFG_04, b->boot_cnfg_04);
 	if (!chg_read(b, CHG_CNFG_02, &cnfg) && cnfg != b->boot_cnfg_02)

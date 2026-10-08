@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Calendar
+Comment=Your calendars, events and reminders
+Exec=omarchy-mobile-app launch calendar
+Icon=calendar-app
+Terminal=false
+Type=Application
+Categories=Office;Calendar;
+StartupNotify=true

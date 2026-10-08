@@ -1,0 +1,211 @@
+Touches in the edge strips reach the app until they swipe (Omarchy Mobile)
+
+As Android's gestures: a touch that lands in one of the shell's edge strips
+(layers omarchy-mobile-back and omarchy-mobile-back-right, back from the
+left and right edges; omarchy-mobile-navigation, home and the switcher from
+the bottom) goes to the surface under it, so taps and scrolls at the edges
+reach the app. Once it moves 12 logical pixels inward, and 1.2 times more
+than across, the app gets wl_touch.cancel and the strip gets the touch, as
+a touch down where the finger landed; its later events skip the event bus
+(through it every motion after the takeover came back cancelled). 16 pixels
+across first leave it to the app; a second finger ends the watch. Over a
+surface of the strip's own client (the shell's wallpaper in an app's
+margin) the strip takes the touch itself: Qt mixed up a touch cancelled in
+one of its windows and pressed again in another. A cancel also resets the
+seat's touch lock count, since it ends every touch point of the client.
+
+--- a/src/managers/input/Touch.cpp
++++ b/src/managers/input/Touch.cpp
+@@ -13,6 +13,66 @@
+ #include "../../protocols/core/DataDevice.hpp"
+ #include "debug/log/Logger.hpp"
+ #include "UnifiedWorkspaceSwipeGesture.hpp"
++#include "../../protocols/LayerShell.hpp"
++#include "../../protocols/core/Compositor.hpp"
++
++// The shell's edge strips (Omarchy Mobile), as Android's gestures: a touch
++// that lands in one goes to what is under it, so taps and scrolls at the edges
++// reach the app. Once it moves inward like a swipe from that edge, the app
++// gets wl_touch.cancel and the strip gets the touch, from where it landed.
++// A strip's input region is where its swipe may start.
++extern Desktop::View::CLayerSurface* g_omarchyHitTestSkip; // ViewHitTester.cpp
++
++namespace {
++    // The strips' layer names and the way into the screen from each.
++    struct SEdgeStrip {
++        const char* name;
++        Vector2D    inward;
++    };
++    const SEdgeStrip EDGE_STRIPS[] = {
++        {"omarchy-mobile-back", {1, 0}},        // back, from the left
++        {"omarchy-mobile-back-right", {-1, 0}}, // back, from the right
++        {"omarchy-mobile-navigation", {0, -1}}, // home and the switcher, from the bottom
++    };
++    // Inward travel that makes it the strip's swipe, if it is also this much
++    // more than the travel across; travel across that leaves it to the app
++    // (logical px).
++    constexpr double EDGE_CLAIM = 12;
++    constexpr double EDGE_SLANT = 1.2;
++    constexpr double EDGE_DROP  = 16;
++
++    struct {
++        bool     active = false;
++        int32_t  id     = -1;
++        Vector2D start;
++        Vector2D inward;
++        PHLLSREF layer;
++    } s_edge;
++
++    // A touch a strip has taken over is the gesture's to its end: its events
++    // skip the event bus. Through it, every motion after the takeover came
++    // back cancelled (the bus's only touch listener is drag and drop, which
++    // never ran), and the strip saw the touch stand still.
++    struct {
++        bool    active = false;
++        int32_t id     = -1;
++    } s_claimed;
++
++    // The strip that is the topmost overlay surface at coords, if any.
++    PHLLS edgeStripAt(PHLMONITOR monitor, const Vector2D& coords, Vector2D* inward) {
++        PHLLS    found;
++        Vector2D local;
++        if (!Desktop::viewState()->hitTest().layerSurfaceAt(coords, &monitor->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &local, &found) || !found)
++            return nullptr;
++        for (auto const& strip : EDGE_STRIPS) {
++            if (found->m_namespace == strip.name) {
++                *inward = strip.inward;
++                return found;
++            }
++        }
++        return nullptr;
++    }
++}
+ 
+ void CInputManager::onTouchDown(ITouch::SDownEvent e) {
+     m_lastInputTouch = true;
+@@ -41,7 +101,33 @@
+ 
+     m_touchData.lastTouchPos = TOUCH_COORDS;
+ 
++    // Another finger: not an edge swipe. A touch in an edge strip goes to what
++    // is under the strip, and is watched.
++    if (s_edge.active && e.touchID != s_edge.id)
++        s_edge.active = false;
++    Vector2D inward;
++    auto     STRIP = !s_edge.active && !g_pSessionLockManager->isSessionLocked() ? edgeStripAt(PMONITOR, TOUCH_COORDS, &inward) : nullptr;
++    g_omarchyHitTestSkip = STRIP ? STRIP.get() : nullptr;
+     refocus(TOUCH_COORDS);
++    g_omarchyHitTestSkip = nullptr;
++    // Over a surface of the strip's own client (the shell's wallpaper in an
++    // app's margin) the strip takes the touch itself: Qt mixed up a touch
++    // cancelled in one of its windows and pressed again in another.
++    if (STRIP && STRIP->m_layerSurface) {
++        const auto STRIPSURF = STRIP->m_layerSurface->m_surface.lock();
++        const auto UNDER     = m_foundSurfaceToFocus.lock();
++        if (STRIPSURF && UNDER && UNDER->client() == STRIPSURF->client()) {
++            refocus(TOUCH_COORDS);
++            STRIP = nullptr;
++        }
++    }
++    if (STRIP) {
++        s_edge.active = true;
++        s_edge.id     = e.touchID;
++        s_edge.start  = TOUCH_COORDS;
++        s_edge.inward = inward;
++        s_edge.layer  = STRIP;
++    }
+ 
+     if (m_clickBehavior == CLICKMODE_KILL) {
+         IPointer::SButtonEvent e;
+@@ -120,8 +206,15 @@
+ void CInputManager::onTouchUp(ITouch::SUpEvent e) {
+     m_lastInputTouch = true;
+ 
++    if (e.touchID == s_edge.id)
++        s_edge.active = false;
++    const bool CLAIMED = s_claimed.active && e.touchID == s_claimed.id;
++    if (CLAIMED)
++        s_claimed.active = false;
++
+     Event::SCallbackInfo info;
+-    Event::bus()->m_events.input.touch.up.emit(e, info);
++    if (!CLAIMED)
++        Event::bus()->m_events.input.touch.up.emit(e, info);
+     if (info.cancelled)
+         return;
+ 
+@@ -148,10 +241,37 @@
+         m_touchData.lastTouchPos = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
+ 
+     Event::SCallbackInfo info;
+-    Event::bus()->m_events.input.touch.motion.emit(e, info);
++    if (!s_claimed.active || e.touchID != s_claimed.id)
++        Event::bus()->m_events.input.touch.motion.emit(e, info);
+     if (info.cancelled)
+         return;
+ 
++    // A touch from an edge strip: a scroll across stays the app's; a swipe
++    // inward is taken over (the motion below then goes to the strip).
++    if (s_edge.active && e.touchID == s_edge.id) {
++        const auto   DELTA  = m_touchData.lastTouchPos - s_edge.start;
++        const double ALONG  = DELTA.x * s_edge.inward.x + DELTA.y * s_edge.inward.y;
++        const double ACROSS = std::abs(DELTA.x * s_edge.inward.y - DELTA.y * s_edge.inward.x);
++        const auto   LS     = s_edge.layer.lock();
++        const auto   SURF   = LS && LS->m_layerSurface ? LS->m_layerSurface->m_surface.lock() : nullptr;
++        if (!LS || !LS->aliveAndVisible() || !SURF)
++            s_edge.active = false;
++        else if (ACROSS >= EDGE_DROP && ACROSS > ALONG)
++            s_edge.active = false;
++        else if (ALONG >= EDGE_CLAIM && ALONG >= EDGE_SLANT * ACROSS) {
++            s_edge.active    = false;
++            s_claimed.active = true;
++            s_claimed.id     = e.touchID;
++            g_pSeatManager->sendTouchCancel();
++            m_touchData.touchFocusLockSurface.reset();
++            m_touchData.touchFocusWindow.reset();
++            m_touchData.touchFocusLS       = LS;
++            m_touchData.touchFocusSurface  = SURF;
++            m_touchData.touchSurfaceOrigin = LS->m_geometry.pos();
++            g_pSeatManager->sendTouchDown(SURF, e.timeMs, e.touchID, s_edge.start - LS->m_geometry.pos());
++        }
++    }
++
+     if (g_pUnifiedWorkspaceSwipe->isGestureInProgress()) {
+         // Do nothing if this is using a different finger.
+         if (e.touchID != g_pUnifiedWorkspaceSwipe->m_touchID)
+--- a/src/desktop/state/ViewHitTester.cpp
++++ b/src/desktop/state/ViewHitTester.cpp
+@@ -22,6 +22,10 @@
+ using namespace Desktop;
+ using namespace Desktop::View;
+ 
++// The shell's back strip, skipped while a touch that landed in it looks for
++// what is under it (managers/input/Touch.cpp, Omarchy Mobile).
++CLayerSurface* g_omarchyHitTestSkip = nullptr;
++
+ CViewHitTester::CViewHitTester(const IViewStateTracker& tracker) : m_tracker(tracker) {
+     ;
+ }
+@@ -349,6 +353,9 @@
+         if (!ls->aliveAndVisible() || (aboveLockscreen && ls->m_ruleApplicator->aboveLock().valueOrDefault() != 2))
+             continue;
+ 
++        if (g_omarchyHitTestSkip && ls.get() == g_omarchyHitTestSkip)
++            continue;
++
+         auto [surf, local] = ls->m_layerSurface->m_surface->at(pos - ls->m_geometry.pos(), true);
+ 
+         if (surf) {
+--- a/src/managers/SeatManager.cpp
++++ b/src/managers/SeatManager.cpp
+@@ -543,6 +543,10 @@
+             t->sendCancel();
+         }
+     }
++
++    // A cancel ends every touch point of the client (Omarchy Mobile: the
++    // back strip takes a touch over from an app with it).
++    m_touchLocks = 0;
+ }
+ 
+ void CSeatManager::sendTouchShape(int32_t id, const Vector2D& shape) {

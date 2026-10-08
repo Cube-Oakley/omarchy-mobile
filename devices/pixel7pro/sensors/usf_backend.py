@@ -27,12 +27,17 @@ SENSOR_ORIENTATION = 24      # fused azimuth, pitch, roll in degrees
 # read the same). The TMD3719's own light sensor in on-change mode missed a
 # fall from 60 to 30 lux; continuous, it sends every conversion (27 a second).
 SENSOR_AUTO_BRIGHTNESS = 48
+# Google's step counter on the AoC: steps since it was first enabled after
+# the AoC started, counted there with no wake-ups; on change, at most once a
+# second (pixel-sensor-proxy's Steps keeps it on while step counting is).
+SENSOR_STEP_COUNTER = 30
 # kind -> (USF sensor type, sampling period, reporting mode, physical)
 KINDS = {
     'accel': (usf.SENSOR_ACCEL, 66_666_666, usf.RPT_CONTINUOUS, True),   # 15 Hz, its slowest
     'light': (SENSOR_AUTO_BRIGHTNESS, 1_000_000_000, usf.RPT_CONTINUOUS, False),
     'proximity': (usf.SENSOR_PROX, 200_000_000, usf.RPT_ON_CHANGE, True),
     'compass': (SENSOR_ORIENTATION, 200_000_000, usf.RPT_CONTINUOUS, False),  # 5 Hz
+    'steps': (SENSOR_STEP_COUNTER, 1_000_000_000, usf.RPT_ON_CHANGE, False),
 }
 CLIENT_ID = 0x50535850   # "PXSP"
 # The TMD3719 under the panel times its conversions to the display: without
@@ -43,6 +48,23 @@ PANEL_DPMS = '/sys/class/drm/card0-DSI-1/dpms'
 PANEL_DBV = '/sys/class/backlight/pixel-panel/brightness'
 PANEL_120 = '/sys/module/pixel_scanout/parameters/panel120'
 DISPLAY_SYNCED = ('light', 'proximity')
+
+
+# Sample times are the AoC's sensor-core clock in ns; this file pairs its
+# 24.576 MHz tick counter with kernel boottime (USF-PROTOCOL.md, 1d).
+AOC_CLOCK = '/sys/devices/platform/19000000.aoc/aoc_clock_and_kernel_boottime'
+
+
+def wall_ms(aoc_ns):
+    """An AoC sample time as wall-clock ms, or now if it cannot be mapped."""
+    now_ms = int(time.time() * 1000)
+    try:
+        ticks, boot_ns = (int(v) for v in read_text(AOC_CLOCK).split()[:2])
+    except ValueError:
+        return now_ms
+    offset = ((ticks * 2666667 + 0x8000) >> 16) - boot_ns
+    age_ms = (time.clock_gettime_ns(time.CLOCK_BOOTTIME) - (aoc_ns - offset)) / 1e6
+    return now_ms - int(age_ms) if 0 <= age_ms < 86_400_000 else now_ms
 
 
 def log(msg):
@@ -211,6 +233,10 @@ class UsfBackend:
             batch = item[1]
             kind = self.kind_of.get(batch['sampling_id'])
             if not kind or not batch['samples']:
+                continue
+            if kind == 'steps':
+                # Every sample: steps buffered while the AP slept keep their times.
+                self.report('steps', [(wall_ms(ts), int(vals[0])) for ts, _acc, vals in batch['samples']])
                 continue
             _ts, _acc, vals = batch['samples'][-1]
             if kind == 'accel':

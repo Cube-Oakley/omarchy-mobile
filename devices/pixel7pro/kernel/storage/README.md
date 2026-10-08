@@ -3,7 +3,32 @@
 `pixel-ufs.c` connects the standard Linux UFS/SCSI core to cheetah's retained
 bootloader configuration. It is an experimental bring-up driver, not complete
 GS201 platform support: the bootloader still owns the clocks. Runtime suspend,
-automatic Hibern8, inline encryption and clock scaling are disabled.
+the controller's automatic Hibern8, inline encryption and clock scaling are
+disabled; the UFS core puts the idle link in Hibern8 (`idle_hibern8`, below).
+
+## Idle Hibern8 while running (October 3, 2026)
+
+Until now the HS-G4 link stayed active whenever the phone was awake. The
+PMIC meters (kernel/odpm, `survey=2`) showed what that costs: with the link
+active, L2S_PLL_MIPI_UFS drew 188 mW and L4M_HSI 72 mW with the screen on or
+off (the display link is not the load); in Hibern8, 24 and 2 mW.
+
+`idle_hibern8=1` (with `vendor_cal`; the initramfs passes it) sets the UFS
+core's clock gating with Hibern8 (`UFSHCD_CAP_CLK_GATING`,
+`UFSHCD_CAP_HIBERN8_WITH_CLK_GATING`): 150 ms (`clkgate_delay_ms`) after the
+last request the core sends Hibern8 enter, and the next request exits it,
+through the same `post_h8_enter` / `pre_h8_exit` tables as system-suspend
+Hibern8. No clock is registered, so the gating itself changes nothing else.
+`clkgate_enable` in the host's sysfs directory turns it off at run time.
+
+RAM boot of power-image-16:
+- 4 × 256 MiB random files written, synced, read back identically after
+  dropping caches, with 200 small direct reads at 200 ms gaps: about 200
+  Hibern8 round trips, no CDR timeout, no UFS error;
+- screen on, battery only, same brightness, `clkgate_enable` 1 vs 0:
+  231 vs 382 mA (two rounds of 40 s each);
+- awake with the screen off: L2S 189 -> 23 mW, L4M_HSI 72 -> 1 mW;
+- deep sleeps (link off, re-initialization) unchanged, storage intact after.
 
 ## Deep suspend with the link off (September 30, 2026)
 

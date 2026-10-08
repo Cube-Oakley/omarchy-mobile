@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Wisp
+Comment=An assistant that runs on the phone: text, voice and pictures
+Exec=omarchy-mobile-app launch wisp
+Icon=omarchy-wisp
+Terminal=false
+Type=Application
+Categories=Utility;
+Keywords=assistant;AI;chat;ask;
+StartupNotify=true

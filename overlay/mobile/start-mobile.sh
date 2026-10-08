@@ -12,9 +12,13 @@ shell_config="$config/quickshell/omarchy-mobile/shell.qml"
 # OnePlus bootstrap wrapper supplies it for its initramfs/chroot environment.
 : "${WAYLAND_DISPLAY:?Launch from a Wayland session}"
 if [[ -z ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
+    # The instance that answers: a Hyprland stopped with a signal leaves its
+    # directory and socket behind (October 7: a restarted session's shell
+    # took the dead one and lost workspaces and windows).
     for socket in "$XDG_RUNTIME_DIR"/hypr/*/.socket.sock; do
         [[ -S $socket ]] || continue
         instance=${socket%/.socket.sock}
+        HYPRLAND_INSTANCE_SIGNATURE=${instance##*/} hyprctl version >/dev/null 2>&1 || continue
         export HYPRLAND_INSTANCE_SIGNATURE=${instance##*/}
         break
     done

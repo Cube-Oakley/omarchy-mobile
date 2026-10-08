@@ -17,6 +17,9 @@ ShellRoot {
     property var threads: []
     property string query: ""
     property var current: ({})          // thread, number, name, photo, initials, contact
+    // Text shared from another app (share sheet → Messages, "draft:ID"): it
+    // waits in the next conversation opened, in the compose field.
+    property string draft: ""
     property var messages: []
     property var people: []
     property string recipient: ""
@@ -25,6 +28,14 @@ ShellRoot {
     property bool sending: false
     property var segments: ({ parts: 0, left: 160, unicode: false })
     property var menuFor: null
+    // A picture message's attachment shown full screen.
+    property var viewing: null
+    // Pictures to send with the next message, the camera's shot on its
+    // way (the path it will be written to), and the picker.
+    property var attachments: []
+    property string capturePath: ""
+    property bool pickerOpen: false
+    property var recentPhotos: []
     property var threadMenu: null
     property bool confirmDelete: false
     property var queue: []
@@ -78,8 +89,10 @@ ShellRoot {
         current = { thread: entry.thread, number: entry.number, name: entry.name, photo: entry.photo || "",
                     initials: entry.initials || "", display: entry.display || entry.number };
         messages = [];
+        list.followEnd = true;
         view = "thread";
         message = "";
+        if (draft) { compose.text = draft; draft = ""; }
         run("thread", helper(["thread", entry.thread]));
         run("read", helper(["read", entry.thread]));
     }
@@ -95,6 +108,8 @@ ShellRoot {
         if (!people.length) run("people", [bin("omarchy-mobile-contacts"), "list"]);
     }
     function goBack() {
+        if (viewing) { viewing = null; return; }
+        if (pickerOpen) { pickerOpen = false; return; }
         if (menuFor || threadMenu) { menuFor = null; threadMenu = null; confirmDelete = false; return; }
         if (composing) { stopComposing(); return; }
         if (view === "thread" || view === "new") { view = "inbox"; keyboard("hide"); refresh(); return; }
@@ -115,13 +130,35 @@ ShellRoot {
     }
     function send() {
         const text = compose.text.trim();
-        if (!text || sending || !current.number) return;
+        const files = attachments;
+        if ((!text && !files.length) || sending || !current.number) return;
         sending = true;
         // Shown at once; the helper's own record replaces it on refresh.
-        messages = messages.concat([{ id: -1, direction: "out", body: text, time: Date.now() / 1000, state: "sending" }]);
+        messages = messages.concat([{ id: -1, direction: "out", body: text, time: Date.now() / 1000, state: "sending",
+                                      kind: files.length ? "mms" : "sms",
+                                      attachments: files.map(f => ({ path: f, name: f, type: /\.png$/i.test(f) ? "image/png" : "image/jpeg" })) }]);
         compose.text = "";
+        attachments = [];
         list.positionViewAtEnd();
-        run("send", helper(["send", current.number, text]));
+        // With pictures it is a picture message (MMS), through the carrier's server.
+        run("send", files.length ? helper(["send-mms", current.number, text].concat(files)) : helper(["send", current.number, text]));
+    }
+    function openPicker() {
+        pickerOpen = true;
+        run("photos", helper(["photos"]));
+    }
+    function takePhoto() {
+        pickerOpen = false;
+        run("capture", helper(["capture"]));
+    }
+    function attach(path) {
+        if (attachments.indexOf(path) < 0 && attachments.length < 10) attachments = attachments.concat([path]);
+        pickerOpen = false;
+    }
+    function detach(path) { attachments = attachments.filter(p => p !== path); }
+    function cancelCapture() {
+        captureWait.running = false;
+        capturePath = "";
     }
     function countSegments() {
         if (segmentTool.running) { segmentAgain.restart(); return; }
@@ -190,6 +227,15 @@ ShellRoot {
                     root.allowed = true;
                     root.begin();
                 }
+            } else if (kind === "draft") {
+                if (result.ok) root.draft = result.body || "";
+            } else if (kind === "photos") {
+                if (result.ok !== false) root.recentPhotos = result.photos || [];
+            } else if (kind === "capture" && result.ok !== false) {
+                root.capturePath = result.path;
+                captureWait.command = ["sh", "-c", 'for i in $(seq 1200); do [ -s "$1" ] && exit 0; sleep 0.25; done; exit 1',
+                                       "wait", result.path];
+                captureWait.running = true;
             } else if (kind === "people") {
                 if (result.ok !== false) root.people = result.contacts || [];
             } else if (result.ok === false) {
@@ -212,7 +258,7 @@ ShellRoot {
                 root.sending = false;
                 root.message = "";
                 root.refresh();
-            } else if (kind === "retry" || kind === "delete") {
+            } else if (kind === "retry" || kind === "delete" || kind === "download") {
                 root.refresh();
             } else if (kind === "delete-thread") {
                 root.view = "inbox";
@@ -228,6 +274,8 @@ ShellRoot {
             openThread({ thread: key, number: key, name: key });
         } else if (arg.startsWith("sms:")) {
             openNumber(arg.slice(4), "", "", "");
+        } else if (arg.startsWith("draft:")) {
+            run("draft", [bin("omarchy-mobile-share"), "read", arg.slice(6)]);
         }
         refresh();
         watcher.running = true;
@@ -256,6 +304,15 @@ ShellRoot {
     Timer { id: watchRetry; interval: 3000; onTriggered: watcher.running = true }
     Timer { interval: 30000; repeat: true; running: root.allowed; onTriggered: root.now = Date.now() / 1000 }
     Process { id: keyboardTool }
+    // The camera writes the shot it keeps to capturePath; nothing comes if
+    // it was closed without one (the placeholder's × gives up waiting).
+    Process {
+        id: captureWait
+        onExited: code => {
+            if (code === 0 && root.capturePath !== "") root.attach(root.capturePath);
+            root.capturePath = "";
+        }
+    }
     Process { id: copyTool }
     Process {
         id: segmentTool
@@ -314,6 +371,25 @@ ShellRoot {
             anchors.fill: parent
             visible: root.allowed && root.view === "inbox"
             spacing: 10
+            // A shared draft: where it goes.
+            Rectangle {
+                Layout.fillWidth: true
+                visible: root.draft !== ""
+                implicitHeight: draftNote.implicitHeight + 24
+                radius: MobileTheme.radius(14)
+                color: MobileTheme.surface
+                border.width: 1
+                border.color: MobileTheme.accent
+                Text {
+                    id: draftNote
+                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 14 }
+                    text: "Choose a conversation, or start a new one, for the shared text."
+                    color: MobileTheme.foreground
+                    font.family: MobileTheme.fontFamily
+                    font.pixelSize: 14
+                    wrapMode: Text.WordWrap
+                }
+            }
             TouchTextField {
                 id: search
                 Layout.fillWidth: true
@@ -374,7 +450,7 @@ ShellRoot {
                                 Layout.fillWidth: true
                                 Text {
                                     Layout.fillWidth: true
-                                    text: (rowItem.modelData.direction === "out" ? "You: " : "") + rowItem.modelData.body.replace(/\s+/g, " ")
+                                    text: (rowItem.modelData.direction === "out" ? "You: " : "") + (rowItem.modelData.preview || rowItem.modelData.body).replace(/\s+/g, " ")
                                     textFormat: Text.PlainText
                                     color: rowItem.modelData.state === "failed" ? MobileTheme.danger
                                          : rowItem.unread ? MobileTheme.foreground : MobileTheme.secondary
@@ -582,6 +658,11 @@ ShellRoot {
                 spacing: 3
                 model: root.messages
                 onCountChanged: if (atYEnd || count < 3) Qt.callLater(positionViewAtEnd)
+                // Pictures load after the list is placed and make it taller:
+                // a list that was at its end stays there.
+                property bool followEnd: true
+                onMovementEnded: followEnd = atYEnd
+                onContentHeightChanged: if (followEnd && !moving) Qt.callLater(positionViewAtEnd)
                 delegate: Item {
                     id: bubbleRow
                     required property var modelData
@@ -591,6 +672,8 @@ ShellRoot {
                     readonly property bool newDay: !previous || new Date(previous.time * 1000).toDateString() !== new Date(modelData.time * 1000).toDateString()
                     readonly property bool gap: !previous || modelData.time - previous.time > 600 || previous.direction !== modelData.direction
                     readonly property bool showState: mine && index === root.lastOutgoing()
+                    // A picture message still to come: its state stands in the bubble.
+                    readonly property bool waiting: modelData.kind === "mms" && ["downloading", "download-failed", "expired"].indexOf(modelData.state) >= 0
                     width: list.width
                     implicitHeight: column.implicitHeight
                     Column {
@@ -610,8 +693,58 @@ ShellRoot {
                             font.letterSpacing: 1.2
                             horizontalAlignment: Text.AlignHCenter
                         }
+                        // A picture message's files: pictures as they are, others as a chip.
+                        Repeater {
+                            model: bubbleRow.modelData.attachments || []
+                            delegate: Item {
+                                id: attachment
+                                required property var modelData
+                                readonly property bool picture: modelData.type.indexOf("image/") === 0
+                                x: bubbleRow.mine ? column.width - width : 0
+                                width: picture ? column.width * 0.7 : Math.min(chip.implicitWidth + 28, column.width * 0.8)
+                                height: !picture ? 52 : shot.status === Image.Ready && shot.implicitWidth > 0
+                                        ? Math.min(width * shot.implicitHeight / shot.implicitWidth, column.width) : 200
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: MobileTheme.radius(18)
+                                    color: MobileTheme.surface
+                                    visible: !attachment.picture || shot.status !== Image.Ready
+                                }
+                                Image {
+                                    id: shot
+                                    visible: attachment.picture
+                                    anchors.fill: parent
+                                    source: attachment.picture ? "file://" + attachment.modelData.path : ""
+                                    sourceSize.width: 720
+                                    fillMode: Image.PreserveAspectFit
+                                    horizontalAlignment: bubbleRow.mine ? Image.AlignRight : Image.AlignLeft
+                                    asynchronous: true
+                                }
+                                Text {
+                                    id: chip
+                                    visible: !attachment.picture
+                                    anchors.centerIn: parent
+                                    width: Math.min(implicitWidth, column.width * 0.8 - 28)
+                                    text: "\u{F0066}  " + attachment.modelData.name
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideMiddle
+                                    color: MobileTheme.foreground
+                                    font.family: MobileTheme.fontFamily
+                                    font.pixelSize: 15
+                                }
+                                TapHandler {
+                                    longPressThreshold: 0.45
+                                    onTapped: {
+                                        if (attachment.picture) root.viewing = attachment.modelData;
+                                        else Quickshell.execDetached(["xdg-open", attachment.modelData.path]);
+                                    }
+                                    onLongPressed: root.menuFor = bubbleRow.modelData
+                                }
+                            }
+                        }
                         Rectangle {
                             id: bubble
+                            visible: bubbleRow.modelData.body !== "" || bubbleRow.waiting
                             x: bubbleRow.mine ? parent.width - width : 0
                             width: Math.min(body.implicitWidth + 28, parent.width * 0.8)
                             height: body.implicitHeight + 20
@@ -625,7 +758,11 @@ ShellRoot {
                                 id: body
                                 anchors.centerIn: parent
                                 width: Math.min(implicitWidth, bubbleRow.width * 0.8 - 28)
-                                text: bubbleRow.modelData.body
+                                text: !bubbleRow.waiting ? bubbleRow.modelData.body
+                                    : bubbleRow.modelData.state === "downloading" ? "\u{F0976}  Picture message, downloading…"
+                                    : bubbleRow.modelData.state === "expired" ? "\u{F0976}  Picture message, expired · tap to try"
+                                    : "\u{F0976}  Picture message, not downloaded · tap to try again"
+                                font.italic: bubbleRow.waiting
                                 textFormat: TextEdit.PlainText
                                 readOnly: true
                                 selectByMouse: false
@@ -636,15 +773,21 @@ ShellRoot {
                             }
                             TapHandler {
                                 longPressThreshold: 0.45
-                                onTapped: if (bubbleRow.modelData.state === "failed") root.run("retry", root.helper(["retry", String(bubbleRow.modelData.id)]))
+                                onTapped: {
+                                    if (bubbleRow.modelData.state === "failed") root.run("retry", root.helper(["retry", String(bubbleRow.modelData.id)]));
+                                    else if (bubbleRow.waiting && bubbleRow.modelData.state !== "downloading")
+                                        root.run("download", root.helper(["download", String(bubbleRow.modelData.id)]));
+                                }
                                 onLongPressed: root.menuFor = bubbleRow.modelData
                             }
                         }
                         Text {
-                            visible: bubbleRow.showState || (bubbleRow.gap && !bubbleRow.mine)
+                            visible: bubbleRow.showState || (bubbleRow.gap && !bubbleRow.mine) || (bubbleRow.modelData.group || []).length > 1
                             width: parent.width
                             text: bubbleRow.mine ? root.stateLine(bubbleRow.modelData) + " · " + root.shortTime(bubbleRow.modelData.time)
                                                  : root.shortTime(bubbleRow.modelData.time)
+                                                   + ((bubbleRow.modelData.group || []).length > 1
+                                                      ? " · group of " + bubbleRow.modelData.group.length + ", replies go to this person only" : "")
                             color: bubbleRow.modelData.state === "failed" ? MobileTheme.danger : MobileTheme.secondary
                             font.family: MobileTheme.fontFamily
                             font.pixelSize: 11
@@ -662,9 +805,59 @@ ShellRoot {
                 font.pixelSize: 13
                 wrapMode: Text.WordWrap
             }
+            // Pictures to send: tap one to take it off.
+            Flow {
+                Layout.fillWidth: true
+                visible: root.attachments.length > 0 || root.capturePath !== ""
+                spacing: 8
+                Repeater {
+                    model: root.attachments
+                    delegate: Item {
+                        required property string modelData
+                        width: 72
+                        height: 72
+                        Image {
+                            anchors.fill: parent
+                            source: "file://" + parent.modelData
+                            sourceSize.width: 144
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                        }
+                        Rectangle {
+                            anchors { top: parent.top; right: parent.right; margins: 3 }
+                            width: 24; height: 24; radius: 12
+                            color: MobileTheme.surface
+                            opacity: 0.9
+                            Glyph { anchors.centerIn: parent; text: "×"; font.pixelSize: 16 }
+                        }
+                        TapHandler { onTapped: root.detach(parent.modelData) }
+                    }
+                }
+                Rectangle {
+                    visible: root.capturePath !== ""
+                    width: 72
+                    height: 72
+                    radius: MobileTheme.radius(12)
+                    color: MobileTheme.surface
+                    Glyph { anchors.centerIn: parent; text: "\u{F0100}"; color: MobileTheme.secondary; font.pixelSize: 24 }
+                    Rectangle {
+                        anchors { top: parent.top; right: parent.right; margins: 3 }
+                        width: 24; height: 24; radius: 12
+                        color: MobileTheme.muted
+                        Glyph { anchors.centerIn: parent; text: "×"; font.pixelSize: 16 }
+                    }
+                    TapHandler { onTapped: root.cancelCapture() }
+                }
+            }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
+                IconButton {
+                    glyph: "\u{F03E2}"
+                    ink: MobileTheme.secondary
+                    enabled: !root.sending
+                    onClicked: root.openPicker()
+                }
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: Math.min(Math.max(48, compose.contentHeight + 24), 150)
@@ -734,13 +927,52 @@ ShellRoot {
                         glyph: "\u{F048A}"
                         tint: MobileTheme.accent
                         ink: MobileTheme.background
-                        enabled: compose.text.trim().length > 0 && !root.sending
+                        enabled: (compose.text.trim().length > 0 || root.attachments.length > 0) && !root.sending
                         onClicked: root.send()
                     }
                 }
             }
         }
 
+        // Pictures to attach: the camera, or one of the newest photos.
+        MenuOverlay {
+            open: root.pickerOpen
+            onDismissed: root.pickerOpen = false
+            ColumnLayout {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 8
+                spacing: 8
+                TouchButton { Layout.fillWidth: true; label: "\u{F0100}  Take a photo"; onClicked: root.takePhoto() }
+                GridView {
+                    id: photoGrid
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(Math.ceil(count / 3) * cellHeight, window.height * 0.5)
+                    visible: count > 0
+                    clip: true
+                    cellWidth: width / 3
+                    cellHeight: cellWidth
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: root.recentPhotos
+                    delegate: Item {
+                        required property string modelData
+                        width: photoGrid.cellWidth
+                        height: photoGrid.cellHeight
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: 3
+                            source: "file://" + parent.modelData
+                            sourceSize.width: 240
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                        }
+                        TapHandler { onTapped: root.attach(parent.modelData) }
+                    }
+                }
+                TouchButton { Layout.fillWidth: true; label: "Cancel"; onClicked: root.pickerOpen = false }
+            }
+        }
         // Long-press on a message.
         MenuOverlay {
             open: root.menuFor !== null
@@ -751,7 +983,22 @@ ShellRoot {
                 anchors.bottom: parent.bottom
                 anchors.margins: 8
                 spacing: 8
-                TouchButton { Layout.fillWidth: true; label: "\u{F018F}  Copy"; onClicked: { root.copy(root.menuFor.body); root.menuFor = null; } }
+                TouchButton {
+                    Layout.fillWidth: true
+                    visible: root.menuFor !== null && root.menuFor.body !== ""
+                    label: "\u{F018F}  Copy"
+                    onClicked: { root.copy(root.menuFor.body); root.menuFor = null; }
+                }
+                TouchButton {
+                    Layout.fillWidth: true
+                    visible: root.menuFor !== null && (root.menuFor.attachments || []).length > 0
+                    label: "\u{F0497}  Share"
+                    onClicked: {
+                        const files = root.menuFor.attachments.map(a => a.path);
+                        Quickshell.execDetached([root.bin("omarchy-mobile-share")].concat(files.reduce((out, f) => out.concat(["--file", f]), [])));
+                        root.menuFor = null;
+                    }
+                }
                 TouchButton {
                     Layout.fillWidth: true
                     visible: root.menuFor !== null && root.menuFor.state === "failed"
@@ -765,6 +1012,42 @@ ShellRoot {
                     onClicked: { root.run("delete", root.helper(["delete", String(root.menuFor.id)])); root.menuFor = null; }
                 }
                 TouchButton { Layout.fillWidth: true; label: "Cancel"; onClicked: root.menuFor = null }
+            }
+        }
+        // A picture, full screen: tap to close.
+        Rectangle {
+            id: viewer
+            anchors.fill: parent
+            visible: root.viewing !== null
+            z: 50
+            color: "black"
+            Image {
+                anchors.fill: parent
+                source: root.viewing ? "file://" + root.viewing.path : ""
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+            }
+            // Child handlers do not stop this one: a tap on Share is not a close.
+            TapHandler {
+                onTapped: point => {
+                    const at = viewerShare.mapFromItem(viewer, point.position.x, point.position.y);
+                    if (!viewerShare.contains(at)) root.viewing = null;
+                }
+            }
+            Rectangle {
+                id: viewerShare
+                anchors { right: parent.right; bottom: parent.bottom; margins: 24 }
+                width: 56; height: 56; radius: 28
+                color: MobileTheme.surface
+                opacity: 0.9
+                Glyph { anchors.centerIn: parent; text: "\u{F0497}"; font.pixelSize: 24 }
+                TapHandler {
+                    onTapped: {
+                        if (!root.viewing) return;
+                        Quickshell.execDetached([root.bin("omarchy-mobile-share"), "--file", root.viewing.path]);
+                        root.viewing = null;
+                    }
+                }
             }
         }
         // Long-press on a conversation.

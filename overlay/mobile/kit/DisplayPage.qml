@@ -11,6 +11,8 @@ Flickable {
     // The always-on display (prefs alwaysOn): the power button shows a dim
     // clock instead of switching the panel off.
     property bool alwaysOn: false
+    // The weather under that clock (prefs ambientWeather), from Weather's location.
+    property bool ambientWeather: false
     // Seconds without input before the screen goes off (prefs screenTimeout; 0 never).
     property int screenTimeout: 60
     readonly property var timeouts: [15, 30, 60, 120, 300, 600, 0]
@@ -24,6 +26,7 @@ Flickable {
             const prefs = JSON.parse(text);
             if (prefs.error) return;
             page.alwaysOn = prefs.alwaysOn === true;
+            page.ambientWeather = prefs.ambientWeather === true;
             if (typeof prefs.screenTimeout === "number") page.screenTimeout = prefs.screenTimeout;
         } catch (e) {}
     }
@@ -39,6 +42,11 @@ Flickable {
     function setAlwaysOn(on) {
         alwaysOn = on;
         prefsSave.payload = JSON.stringify({alwaysOn: on}) + "\n";
+        prefsSave.running = true;
+    }
+    function setAmbientWeather(on) {
+        ambientWeather = on;
+        prefsSave.payload = JSON.stringify({ambientWeather: on}) + "\n";
         prefsSave.running = true;
     }
     Component.onCompleted: refresh()
@@ -132,6 +140,15 @@ Flickable {
         }
         SettingsRow {
             width: parent.width
+            visible: page.alwaysOn
+            label: "Weather on always-on"
+            value: page.ambientWeather ? "On" : "Off"
+            selected: page.ambientWeather
+            enabled: !prefsSave.running
+            onClicked: page.setAmbientWeather(!page.ambientWeather)
+        }
+        SettingsRow {
+            width: parent.width
             label: "Corners"
             value: MobileTheme.square ? "Square" : "Round"
             onClicked: page.appearanceRequested()
@@ -141,7 +158,7 @@ Flickable {
             wrapMode: Text.WordWrap
             topPadding: 8
             text: page.screen.brightness
-                  ? "Brightness is changed from the shade. With the always-on display, the power button shows a dim clock instead of switching the screen off; press it again or double-tap to wake."
+                  ? "Brightness is changed from the shade. With the always-on display, the power button shows a dim clock instead of switching the screen off; press it again or double-tap to wake. Its weather uses the location set in Weather and updates at most hourly while the phone sleeps, at the background check."
                   : "This panel has no backlight control yet, so brightness cannot be changed. Corners are changed in Appearance."
             color: MobileTheme.secondary
             font.family: MobileTheme.fontFamily

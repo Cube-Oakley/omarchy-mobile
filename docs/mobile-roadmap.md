@@ -133,7 +133,8 @@ phone key, for example) need more than classic Bluetooth:
 On the Pixel today the chip is unloaded for deep sleep because SYS_SLEEP cuts
 its power. Keeping it alive needs BT_REG_ON held in sleep, the device-wake and
 host-wake GPIOs, and the chip's low-power mode. Apps that build on this live
-outside this repository.
+outside this repository. The steps are in the [apps plan](apps-plan-20261002.md),
+with core apps, the browser and Waydroid.
 
 ## Status bar and appearance
 
@@ -168,6 +169,13 @@ per-feature controls; keep clipboard sharing opt-in. Separate the transport
 and service from device adapters and Quickshell presentation. Evaluate existing
 protocols/services before inventing a new one; preserve standard Omarchy theme
 formats on both ends. Background delivery must fit the sleep/wake design.
+
+Started October 4, 2026: [Omarchy Link](../overlay/link/README.md) uses
+KDE Connect's protocol on its own ports. It brings the phone's texts,
+notifications and battery to the computer's bar, rings the phone, and keeps
+one theme on both, sending a missing theme over the link. Still to come:
+clipboard, files, a phone Settings page, and wake-on-Wi-Fi so that the
+computer reaches a sleeping phone.
 
 See [next session](../devices/oneplus7pro/docs/next-session.md) for checkpoints and recovery instructions,
 and [background wake design](../devices/oneplus7pro/docs/background-wake-plan.md) for notification delivery

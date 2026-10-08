@@ -32,6 +32,8 @@ constexpr int kStillMaxFrames = 15;
 // the rest.
 constexpr unsigned int kPreviewBuffers = 6;
 constexpr unsigned int kStillBuffers = 3;
+// Video is 16:9 1080p from the processed stream.
+constexpr QSize kVideoSize{1920, 1080};
 
 QString focusName(int state)
 {
@@ -168,19 +170,33 @@ CameraSession::CameraSession(QObject *parent)
     connect(worker_, &CameraWorker::stillCaptured, this,
             [this](const QImage &image, int rotation, qint64 exposureUs, double gain,
                    const QString &model) {
-                writeStill(image, StillInfo{ rotation, exposureUs, gain, model });
+                writeStill(image, StillInfo{ rotation, exposureUs, gain, model, captureZoom_ });
             });
     connect(worker_, &CameraWorker::stillFailed, this, [this](const QString &message) {
         pending_ = std::max(0, pending_ - 1);
         Q_EMIT pendingChanged();
         Q_EMIT photoFailed(message);
     });
+    connect(worker_, &CameraWorker::recordingStopped, this,
+            [this](const QString &path, const QString &error) {
+                recording_ = false;
+                Q_EMIT recordingChanged();
+                if (path.isEmpty()) {
+                    Q_EMIT videoFailed(error);
+                    return;
+                }
+                lastVideo_ = path;
+                Q_EMIT lastVideoChanged();
+                Q_EMIT videoSaved(path);
+            });
     worker_->burstDone = [this](std::shared_ptr<std::vector<RawFrame>> frames, RawLayout layout,
                                 int rotation, QString model) {
         QMetaObject::invokeMethod(this, [this, frames, layout, rotation, model] {
             mergeBurst(frames, layout, rotation, model);
         }, Qt::QueuedConnection);
     };
+
+    canRecord_ = VideoRecorder::available();
 
     thread_.setObjectName(QStringLiteral("camera"));
     thread_.start();
@@ -218,9 +234,9 @@ void CameraSession::setActive(bool active)
 
 void CameraSession::setCameraIndex(int index)
 {
-    // Not while a photo is being taken on the camera in use.
+    // Not while a photo is being taken or a video recorded on the camera in use.
     if (index == cameraIndex_ || index < 0 || index >= cameras_.size() ||
-        state_ == QLatin1String("capturing"))
+        state_ == QLatin1String("capturing") || recording_)
         return;
     cameraIndex_ = index;
     Q_EMIT cameraChanged();
@@ -294,15 +310,54 @@ void CameraSession::resetFocus()
     QMetaObject::invokeMethod(worker, [worker] { worker->setFocusWindow({}, false); });
 }
 
+void CameraSession::setDigitalZoom(qreal zoom)
+{
+    zoom = std::clamp(zoom, 1.0, 8.0);
+    if (qFuzzyCompare(zoom, digitalZoom_))
+        return;
+    digitalZoom_ = zoom;
+    Q_EMIT digitalZoomChanged();
+}
+
 void CameraSession::capture()
 {
+    captureZoom_ = digitalZoom_;
     // At most two photos in flight: each merge holds several raw frames.
-    if (state_ != QLatin1String("preview") || pending_ >= 2)
+    if (state_ != QLatin1String("preview") || pending_ >= 2 || video_)
         return;
     ++pending_;
     Q_EMIT pendingChanged();
     CameraWorker *worker = worker_;
     QMetaObject::invokeMethod(worker, [worker] { worker->capture(); });
+}
+
+void CameraSession::setVideo(bool video)
+{
+    if (video == video_ || recording_ || (video && !canRecord_))
+        return;
+    video_ = video;
+    Q_EMIT videoChanged();
+    CameraWorker *worker = worker_;
+    QMetaObject::invokeMethod(worker, [worker, video] { worker->setVideo(video); });
+}
+
+void CameraSession::startRecording()
+{
+    if (!video_ || recording_ || state_ != QLatin1String("preview"))
+        return;
+    recording_ = true;
+    Q_EMIT recordingChanged();
+    CameraWorker *worker = worker_;
+    const QString folder = photoFolder_;
+    QMetaObject::invokeMethod(worker, [worker, folder] { worker->startRecording(folder); });
+}
+
+void CameraSession::stopRecording()
+{
+    if (!recording_)
+        return;
+    CameraWorker *worker = worker_;
+    QMetaObject::invokeMethod(worker, [worker] { worker->stopRecording(); });
 }
 
 void CameraSession::setState(const QString &state, const QString &error)
@@ -328,7 +383,8 @@ void CameraSession::mergeBurst(std::shared_ptr<std::vector<RawFrame>> frames, Ra
                                int rotation, QString model)
 {
     const QString folder = photoFolder_;
-    QtConcurrent::run([frames, layout, rotation, model, folder]() {
+    const double zoom = captureZoom_;
+    QtConcurrent::run([frames, layout, rotation, model, folder, zoom]() {
         MergeReport report;
         const QImage image = RawMerge::process(*frames, layout, &report);
         QStringList shifts;
@@ -347,7 +403,7 @@ void CameraSession::mergeBurst(std::shared_ptr<std::vector<RawFrame>> frames, Ra
             return QStringLiteral("!The photo could not be processed");
         const RawFrame &first = frames->front();
         const StillInfo info{ rotation, first.exposureUs,
-                              first.analogueGain * first.digitalGain, model };
+                              first.analogueGain * first.digitalGain, model, zoom };
         QString error;
         const QString path = StillWriter::write(image, info, folder, &error);
         return path.isEmpty() ? QStringLiteral("!") + error : path;
@@ -541,10 +597,17 @@ void CameraWorker::stopStream()
 {
     if (!camera_ || !stream_)
         return;
+    // Leaving the stream, for any reason, ends a video.
+    if (recordingFrames_.exchange(false)) {
+        QString error;
+        const QString path = recorder_.stop(&error);
+        Q_EMIT recordingStopped(path, error);
+    }
     // A photo cut short, by the app going to the background or a switch of
     // camera, still has to leave the count of photos in flight.
     const bool interrupted = burst_ || (mode_ == Still && !stillTaken_);
     camera_->stop();
+    unmapFrames();
     ++generation_;
     burstWanted_ = 0;
     burst_.reset();
@@ -563,10 +626,14 @@ void CameraWorker::startPreview(QSize size)
     if (!camera_ || mode_ == Preview)
         return;
     previewSize_ = size;
-    // With the raw stream where the pipeline offers it; otherwise stills
-    // reconfigure to full resolution.
-    if (!configure(StreamRole::Viewfinder, size, kPreviewBuffers, true) &&
-        !configure(StreamRole::Viewfinder, size, kPreviewBuffers, false)) {
+    // Video: the viewfinder shows the recording's own 16:9 frames, so it
+    // frames what is recorded. Photos: with the raw stream where the
+    // pipeline offers it; otherwise stills reconfigure to full resolution.
+    const bool ready = video_
+        ? configure(StreamRole::VideoRecording, kVideoSize, kPreviewBuffers, false)
+        : configure(StreamRole::Viewfinder, size, kPreviewBuffers, true) ||
+              configure(StreamRole::Viewfinder, size, kPreviewBuffers, false);
+    if (!ready) {
         Q_EMIT failed(QStringLiteral("The camera could not be set up"));
         return;
     }
@@ -589,6 +656,68 @@ void CameraWorker::stopPreview()
     stopStream();
     mode_ = Off;
     Q_EMIT streamingChanged(QStringLiteral("off"));
+}
+
+void CameraWorker::setVideo(bool video)
+{
+    if (video == video_)
+        return;
+    video_ = video;
+    if (mode_ != Preview)
+        return;
+    stopStream();
+    mode_ = Off;
+    startPreview(previewSize_);
+}
+
+void CameraWorker::startRecording(const QString &folder)
+{
+    QString error;
+    if (!video_ || mode_ != Preview || recordingFrames_)
+        error = QStringLiteral("The camera is busy");
+    else if (recorder_.start(folder, streamSize_, fourcc_, rotation_, &error))
+        recordingFrames_ = true;
+    if (!recordingFrames_)
+        Q_EMIT recordingStopped({}, error);
+}
+
+void CameraWorker::stopRecording()
+{
+    if (!recordingFrames_.exchange(false))
+        return;
+    QString error;
+    const QString path = recorder_.stop(&error);
+    Q_EMIT recordingStopped(path, error);
+}
+
+void CameraWorker::recordFrame(Request *request, const FrameBuffer *buffer)
+{
+    // libcamera's thread. Buffers are mapped once each and kept until the
+    // stream stops.
+    const FrameBuffer::Plane &plane = buffer->planes()[0];
+    const int fd = plane.fd.get();
+    auto it = maps_.find(fd);
+    if (it == maps_.end()) {
+        const size_t length = plane.offset + plane.length;
+        void *map = mmap(nullptr, length, PROT_READ, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED)
+            return;
+        it = maps_.emplace(fd, std::make_pair(map, length)).first;
+    }
+    dma_buf_sync sync = { DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
+    ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+    const qint64 captured = request->metadata().get(controls::SensorTimestamp)
+                                .value_or(qint64(buffer->metadata().timestamp));
+    recorder_.push(static_cast<const uchar *>(it->second.first) + plane.offset, stride_, captured);
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+}
+
+void CameraWorker::unmapFrames()
+{
+    for (const auto &[fd, map] : maps_)
+        munmap(map.first, map.second);
+    maps_.clear();
 }
 
 ControlList CameraWorker::focusControls() const
@@ -648,7 +777,7 @@ void CameraWorker::requeue(const CameraFrame &frame)
 
 void CameraWorker::capture()
 {
-    if (mode_ != Preview) {
+    if (mode_ != Preview || video_) {
         Q_EMIT stillFailed(QStringLiteral("The camera is not ready"));
         return;
     }
@@ -814,6 +943,8 @@ void CameraWorker::onRequestCompleted(Request *request)
     }
     if (mode_ != Preview || buffer->planes().empty())
         return;
+    if (recordingFrames_)
+        recordFrame(request, buffer);
 
     const FrameBuffer::Plane &plane = buffer->planes()[0];
     CameraFrame frame;

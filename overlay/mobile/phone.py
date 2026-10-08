@@ -24,6 +24,7 @@ speaker on|off. Without it calls still connect, without sound.
 When the Phone app runs this (OMARCHY_MOBILE_APP=phone), its phone grant is
 required. The shell's own incoming-call screen needs no grant.
 """
+import ctypes
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -34,11 +35,22 @@ from pathlib import Path
 import re
 import selectors
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import time
 import wave
+
+LIBC = ctypes.CDLL(None)
+PR_SET_PDEATHSIG = 1
+
+
+def die_with_parent():
+    """For a gdbus monitor (preexec_fn): it ends with this process. It writes
+    only when a signal comes, so one left behind by a restarted watcher would
+    never get the SIGPIPE and stay for good (900 piled up on October 2)."""
+    LIBC.prctl(PR_SET_PDEATHSIG, signal.SIGTERM)
 
 
 def load_module(names, label):
@@ -504,7 +516,8 @@ class Monitor:
             self.process = None
         try:
             self.process = subprocess.Popen(['gdbus', 'monitor', '--system', '--dest', BUS],
-                                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                            preexec_fn=die_with_parent)
         except OSError:
             return False
         self.selector.register(self.process.stdout, selectors.EVENT_READ)

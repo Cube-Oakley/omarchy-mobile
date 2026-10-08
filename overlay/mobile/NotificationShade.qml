@@ -15,6 +15,8 @@ PanelWindow {
     property bool keyboardOwned: false
     property string editingField: ""
     property var selectedNetwork: null
+    // The notification being answered in the reply popup (inline reply).
+    property var replyTarget: null
     property var networks: []
     property string networkMessage: ""
     property var weather: ({configured: false})
@@ -23,10 +25,30 @@ PanelWindow {
     property string weatherInput: ""
     property date month: new Date()
     property var expanded: ({})
+    // When each notification came (by id), for "5m" on its card; the clock
+    // only ticks while the shade is open.
+    property var arrivedAt: ({})
+    property double now: Date.now()
+    Timer { interval: 30000; repeat: true; running: shade.opened; triggeredOnStart: true; onTriggered: shade.now = Date.now() }
+    function ago(notification) {
+        const at = notification ? shade.arrivedAt[notification.id] : undefined;
+        if (!at) return "";
+        const minutes = Math.floor((shade.now - at) / 60000);
+        if (minutes < 1) return "now";
+        if (minutes < 60) return minutes + "m";
+        if (minutes < 1440) return Math.floor(minutes / 60) + "h";
+        return Qt.formatDate(new Date(at), "ddd");
+    }
+    function picture(notification) {
+        const image = notification ? (notification.image || "") : "";
+        return image.startsWith("/") ? "file://" + image : image;
+    }
     property var clips: []
     property string clipMessage: ""
     property string clipInput: ""
     readonly property bool opened: motion.progress > 0
+    // How far it is pulled down, 0-1 (the home screen fades out under it).
+    readonly property real progress: motion.progress
     readonly property var battery: MobileStatus.battery
     readonly property var wifi: MobileStatus.wifi
     readonly property var bluetooth: MobileStatus.bluetooth
@@ -41,6 +63,25 @@ PanelWindow {
     signal keyboardRequested(string action)
     signal volumeRequested(string action)
     signal settingsRequested(string panel)
+    // The media card's player, by its desktop entry (MPRIS DesktopEntry).
+    signal appRequested(string desktopEntry)
+    // A notification was tapped: the shell opens its app.
+    signal notificationOpened(var notification)
+    // A reply typed for an Android app's notification (see androidReply).
+    signal androidReplyRequested(var notification, string text)
+    // An Android app's notification (Waydroid's bridge) carries its reply
+    // action as a plain button, which would send no text; Reply here takes the
+    // text in the shade's field and the shell has Android fill it in
+    // (keyboard-bridge's ReplyService). The "default" action is the tap on
+    // the notification itself, not a button.
+    function androidReply(n) {
+        return !!n && String(n.desktopEntry || "").startsWith("waydroid.")
+            && (n.actions || []).some(a => /^reply$/i.test(a.text));
+    }
+    function pills(n) {
+        return n ? (n.actions || []).filter(a => a.identifier !== "default"
+                                                 && !(androidReply(n) && /^reply$/i.test(a.text))) : [];
+    }
     NotificationGroups { id: groups }
     anchors { top: true; left: true; right: true; bottom: true }
     // Keyboard exclusive-zone changes must not resize the shade behind menus.
@@ -54,13 +95,48 @@ PanelWindow {
     WlrLayershell.layer: WlrLayer.Top
     // On demand, not exclusive: Hyprland sends every touch to an exclusive layer,
     // so the on-screen keyboard above the shade would never get a tap.
-    WlrLayershell.keyboardFocus: detail === "wifi" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+    WlrLayershell.keyboardFocus: detail === "wifi" || detail === "reply" ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
     function amount(value, unit, decimals) { return value === null || value === undefined ? "—" : Number(value).toFixed(decimals || 0) + " " + unit; }
-    function begin() { opening(); motion.begin(); MobileStatus.refresh(); }
+    function begin() { opening(); motion.begin(); MobileStatus.refresh(); hotspotAction("status"); vpnAction(["status"]); }
     function move(distance, velocity) { motion.update(distance, velocity); }
     function release() { motion.finish(); }
     function cancel() { motion.cancel(); }
-    function open() { opening(); motion.animateTo(1); MobileStatus.refresh(); fetchWeather("status", {}); }
+    function open() { opening(); motion.animateTo(1); MobileStatus.refresh(); fetchWeather("status", {}); hotspotAction("status"); vpnAction(["status"]); }
+    // VPNs (omarchy-mobile-vpn): the toggle drives the one that is up, else
+    // the first; one still without its password opens Settings for it.
+    property var vpns: []
+    readonly property var vpn: vpns.find(v => v.state !== "off") || vpns[0] || null
+    // Every open checks the VPN and hotspot states in the background; only
+    // an on or off the user asked for shows "…" on its tile. Shown for the
+    // checks as well, both tiles blinked at each pull of the shade. A tap
+    // during a check runs after it.
+    property bool vpnBusy: false
+    property var vpnQueued: null
+    function vpnAction(args) {
+        if (vpnProcess.running) { if (args[0] !== "status") vpnQueued = args; return; }
+        vpnBusy = args[0] !== "status";
+        vpnProcess.command = [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-vpn"].concat(args);
+        vpnProcess.running = true;
+    }
+    function vpnToggle() {
+        if (!vpn) return;
+        if (vpn.state !== "off") vpnAction(["off", vpn.name]);
+        else if (!vpn.saved) shade.settingsRequested("network");
+        else vpnAction(["on", vpn.name]);
+    }
+    // The Wi-Fi hotspot (omarchy-mobile-hotspot): its state, and on or off.
+    property var hotspot: ({})
+    property bool hotspotBusy: false
+    property string hotspotQueued: ""
+    function hotspotAction(action) {
+        if (hotspotProcess.running) { if (action !== "status") hotspotQueued = action; return; }
+        hotspotBusy = action !== "status";
+        hotspotProcess.command = [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-hotspot", action];
+        hotspotProcess.running = true;
+    }
+    // Known before the first pull: the Hotspot and VPN tiles appear only once
+    // their state is, and appearing mid-pull moved every tile after them.
+    Component.onCompleted: { hotspotAction("status"); vpnAction(["status"]); }
     function close() { closeDetail(); motion.animateTo(0); }
     function toggle() { if (opened) close(); else open(); }
     function releaseKeyboard() {
@@ -75,7 +151,25 @@ PanelWindow {
         keyboardOwned = true;
         keyboardRequested("show");
     }
-    function closeDetail() { releaseKeyboard(); detail = ""; selectedNetwork = null; password.text = ""; }
+    function closeDetail() { releaseKeyboard(); detail = ""; selectedNetwork = null; password.text = ""; replyTarget = null; replyField.text = ""; }
+    // Answer a notification that takes an inline reply (a text): the popup
+    // shows the message and a field, with the keyboard up.
+    function startReply(notification) {
+        if (!notification || !(notification.hasInlineReply || androidReply(notification))) return;
+        if (!opened) open();
+        closeDetail();
+        replyTarget = notification;
+        detail = "reply";
+        Qt.callLater(() => { if (shade.detail === "reply") shade.editField("reply", replyField); });
+    }
+    function sendReply() {
+        const target = replyTarget, text = replyField.text;
+        if (!target || !text.trim()) return;
+        if (target.hasInlineReply) target.sendInlineReply(text);
+        else androidReplyRequested(target, text);
+        closeDetail();
+        target.dismiss();
+    }
     function showDetail(name) {
         if (screenshotPrivacy && (name === "wifi" || name === "weather" || name === "clipboard")) return;
         if (!opened) open();
@@ -87,6 +181,7 @@ PanelWindow {
         if (name === "clipboard") clipboardAction("history", {});
     }
     function detailTitle() {
+        if (detail === "reply") return replyTarget ? "Reply to " + replyTarget.summary : "Reply";
         return {wifi: "Wi-Fi", battery: "Battery", calendar: "Calendar", weather: "Weather", stats: "Performance", clipboard: "Clipboard", speedtest: "Speed test"}[detail] || "";
     }
     function toggleGroup(key) {
@@ -114,6 +209,10 @@ PanelWindow {
         clipInput = values && Object.keys(values).length ? JSON.stringify(values) + "\n" : "";
         clipProcess.command = [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-clipboard", action];
         clipProcess.running = true;
+    }
+    function openCalendar(day) {
+        Quickshell.execDetached([Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-app", "launch", "calendar", "day:" + day]);
+        close();
     }
     function fetchWeather(action, values) {
         if (weatherProcess.running) return;
@@ -159,6 +258,32 @@ PanelWindow {
         onExited: MobileStatus.refresh()
     }
     Process {
+        id: vpnProcess
+        stdout: StdioCollector {}
+        onExited: {
+            try {
+                const result = JSON.parse(stdout.text);
+                if (result.ok) shade.vpns = result.vpns || [];
+                else { shade.networkMessage = result.error || "The VPN did not start"; shade.vpnQueued = shade.vpnQueued || ["status"]; }
+            } catch (e) {}
+            shade.vpnBusy = false;
+            if (shade.vpnQueued) { const args = shade.vpnQueued; shade.vpnQueued = null; shade.vpnAction(args); }
+        }
+    }
+    Process {
+        id: hotspotProcess
+        stdout: StdioCollector {}
+        onExited: {
+            try {
+                const result = JSON.parse(stdout.text);
+                if (result.ok) shade.hotspot = result;
+                else shade.networkMessage = result.error || "The hotspot did not start";
+            } catch (e) {}
+            shade.hotspotBusy = false;
+            if (shade.hotspotQueued) { const action = shade.hotspotQueued; shade.hotspotQueued = ""; shade.hotspotAction(action); }
+        }
+    }
+    Process {
         id: clipProcess; stdinEnabled: true
         stdout: StdioCollector {}
         onStarted: {
@@ -193,9 +318,12 @@ PanelWindow {
         keepOnReload: true
         actionsSupported: true
         bodySupported: true
+        imageSupported: true
         persistenceSupported: true
+        inlineReplySupported: true
         onNotification: notification => {
             notification.tracked = true;
+            shade.arrivedAt[notification.id] = Date.now();
             // Bound session history; old cards are explicitly dismissed.
             const all = trackedNotifications.values;
             if (all.length > 100) all[0].dismiss();
@@ -226,8 +354,8 @@ PanelWindow {
                 TouchButton { anchors.right: parent.right; anchors.rightMargin: 54; y: 19; implicitWidth: 46; implicitHeight: 46; label: "⧉"; onClicked: shade.showDetail("clipboard") }
                 TouchButton { anchors.right: parent.right; y: 19; implicitWidth: 46; implicitHeight: 46; label: "⌃"; onClicked: shade.close() }
             }
-            RowLayout {
-                Layout.fillWidth: true; spacing: 10
+            GridLayout {
+                Layout.fillWidth: true; columns: 4; columnSpacing: 10; rowSpacing: 10
                 QuickToggle {
                     Layout.fillWidth: true; Layout.preferredWidth: 1
                     symbol: "󰖩"; label: "Wi-Fi"
@@ -253,6 +381,23 @@ PanelWindow {
                 }
                 QuickToggle {
                     Layout.fillWidth: true; Layout.preferredWidth: 1
+                    visible: shade.hotspot.available === true
+                    symbol: "󰀃"; label: shade.hotspotBusy ? "…" : "Hotspot"
+                    active: shade.hotspot.active === true
+                    enabled: !shade.hotspotBusy
+                    onClicked: shade.hotspotAction(shade.hotspot.active === true ? "off" : "on")
+                }
+                QuickToggle {
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                    visible: shade.vpn !== null
+                    symbol: "\u{F0582}"
+                    label: shade.vpnBusy ? "…" : shade.vpn && shade.vpn.state === "connecting" ? "Connecting" : "VPN"
+                    active: shade.vpn !== null && shade.vpn.state === "on"
+                    enabled: !shade.vpnBusy
+                    onClicked: shade.vpnToggle()
+                }
+                QuickToggle {
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
                     symbol: "󰂛"; label: "DND"
                     active: MobileStatus.dnd
                     onClicked: MobileStatus.setDnd(!MobileStatus.dnd)
@@ -264,6 +409,14 @@ PanelWindow {
                     symbol: torch.on ? "󰉄" : "󰉅"; label: "Torch"
                     active: torch.on === true
                     onClicked: MobileStatus.control(["torch", "toggle"])
+                }
+                // The keyboard for an app that does not ask for one (a
+                // terminal). A tap on the bottom edge did this until taps
+                // there went to the app, as on Android (October 7).
+                QuickToggle {
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                    symbol: "󰌌"; label: "Keyboard"
+                    onClicked: { shade.close(); shade.keyboardRequested("show"); }
                 }
             }
             RowLayout {
@@ -384,6 +537,13 @@ PanelWindow {
                     onClicked: shade.showDetail("weather")
                 }
             }
+            // What is playing (MPRIS), above the notifications as on Android.
+            MediaCard {
+                Layout.fillWidth: true
+                active: shade.opened && !shade.screenshotPrivacy
+                visible: player !== null && !shade.screenshotPrivacy
+                onOpenRequested: entry => { shade.close(); shade.appRequested(entry); }
+            }
             RowLayout {
                 Layout.fillWidth: true
                 Text { font.family: MobileTheme.fontFamily; text: "Notifications"; color: MobileTheme.foreground; font.pixelSize: 19; font.bold: true; Layout.fillWidth: true }
@@ -400,17 +560,48 @@ PanelWindow {
                 boundsBehavior: Flickable.StopAtBounds
                 Text { font.family: MobileTheme.fontFamily; anchors.centerIn: parent; visible: shade.screenshotPrivacy || shade.notificationCount === 0; text: shade.screenshotPrivacy ? "Notification contents hidden\nfor this screenshot." : "All caught up\nYour notifications will appear here."; horizontalAlignment: Text.AlignHCenter; color: MobileTheme.secondary; font.pixelSize: 15; lineHeight: 1.5 }
                 delegate: Rectangle {
+                    id: card
                     required property var modelData
                     readonly property bool many: modelData.items.length > 1
                     readonly property bool open: !many || shade.expanded[modelData.key] === true
                     readonly property var latest: modelData.items[0]
-                    width: notices.width; height: noticeContent.implicitHeight + 30; radius: MobileTheme.radius(18); color: MobileTheme.surface
+                    width: notices.width; height: noticeContent.implicitHeight + 30; radius: MobileTheme.radius(20); color: MobileTheme.surface
+                    border.width: 1; border.color: Qt.rgba(MobileTheme.muted.r, MobileTheme.muted.g, MobileTheme.muted.b, 0.7)
+                    // Swiped left or right, as on Android: the card follows the
+                    // finger, and past a third of its width (or flung) it leaves
+                    // and its notifications are dismissed; short of that it
+                    // springs back.
+                    property real offset: 0
+                    transform: Translate { x: card.offset }
+                    opacity: 1 - Math.min(0.75, Math.abs(offset) / width)
+                    DragHandler {
+                        id: cardSwipe
+                        target: null
+                        yAxis.enabled: false
+                        onActiveTranslationChanged: if (active) card.offset = activeTranslation.x
+                        onActiveChanged: {
+                            if (active) { settle.stop(); return; }
+                            const speed = centroid.velocity.x;
+                            const flung = Math.abs(speed) > 900 && Math.abs(card.offset) > 32 && Math.sign(speed) === Math.sign(card.offset);
+                            if (Math.abs(card.offset) > card.width / 3 || flung) {
+                                leave.to = (card.offset < 0 ? -1 : 1) * (card.width + 24);
+                                leave.start();
+                            } else {
+                                settle.start();
+                            }
+                        }
+                    }
+                    NumberAnimation { id: leave; target: card; property: "offset"; duration: 160; easing.type: Easing.OutCubic; onFinished: groups.dismissAll(card.modelData.items) }
+                    NumberAnimation { id: settle; target: card; property: "offset"; to: 0; duration: 220; easing.type: Easing.OutBack }
                     ColumnLayout {
                         id: noticeContent; anchors { left: parent.left; right: parent.right; top: parent.top; margins: 15 } spacing: 8
                         RowLayout {
-                            Text { font.family: MobileTheme.fontFamily; text: modelData.appName + (many ? "  ·  " + modelData.items.length : ""); textFormat: Text.PlainText; color: MobileTheme.accent; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideRight }
-                            TouchButton { visible: many; implicitWidth: 40; implicitHeight: 40; label: open ? "▾" : "▸"; textSize: 16; onClicked: shade.toggleGroup(modelData.key) }
-                            TouchButton { implicitWidth: 40; implicitHeight: 40; label: "×"; onClicked: groups.dismissAll(modelData.items) }
+                            spacing: 10
+                            NotificationIcon { notification: card.latest; appName: card.modelData.appName; implicitWidth: 30; implicitHeight: 30 }
+                            Text { font.family: MobileTheme.fontFamily; text: modelData.appName.toUpperCase(); textFormat: Text.PlainText; color: MobileTheme.accent; font.pixelSize: 11; font.letterSpacing: 1.2; font.bold: true; elide: Text.ElideRight; Layout.maximumWidth: noticeContent.width * 0.5 }
+                            Text { font.family: MobileTheme.fontFamily; text: (many ? modelData.items.length + " · " : "") + shade.ago(card.latest); color: MobileTheme.muted; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideRight }
+                            GhostButton { visible: many; glyph: open ? "▾" : "▸"; onClicked: shade.toggleGroup(modelData.key) }
+                            GhostButton { glyph: "×"; onClicked: groups.dismissAll(modelData.items) }
                         }
                         Text {
                             visible: !open
@@ -418,6 +609,7 @@ PanelWindow {
                             text: latest ? latest.summary : ""
                             textFormat: Text.PlainText; wrapMode: Text.WordWrap
                             color: MobileTheme.foreground; font.bold: true; font.pixelSize: 16
+                            TapHandler { onTapped: shade.notificationOpened(card.latest) }
                         }
                         Repeater {
                             model: open ? modelData.items : []
@@ -427,16 +619,55 @@ PanelWindow {
                                 RowLayout {
                                     visible: many
                                     Layout.fillWidth: true
-                                    Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: modelData.summary; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: MobileTheme.foreground; font.bold: true; font.pixelSize: 15 }
-                                    TouchButton { implicitWidth: 36; implicitHeight: 36; label: "×"; textSize: 14; onClicked: modelData.dismiss() }
+                                    Text {
+                                        font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: modelData.summary; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: MobileTheme.foreground; font.bold: true; font.pixelSize: 15
+                                        TapHandler { onTapped: shade.notificationOpened(modelData) }
+                                    }
+                                    Text { font.family: MobileTheme.fontFamily; text: shade.ago(modelData); color: MobileTheme.muted; font.pixelSize: 11 }
+                                    GhostButton { glyph: "×"; size: 32; onClicked: modelData.dismiss() }
                                 }
-                                Text { visible: !many; font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: modelData.summary; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: MobileTheme.foreground; font.bold: true; font.pixelSize: 16 }
-                                Text { font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: modelData.body; textFormat: Text.PlainText; wrapMode: Text.Wrap; maximumLineCount: 5; elide: Text.ElideRight; color: MobileTheme.secondary; font.pixelSize: 14; visible: text.length > 0 }
+                                Text {
+                                    visible: !many; font.family: MobileTheme.fontFamily; Layout.fillWidth: true; text: modelData.summary; textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: MobileTheme.foreground; font.bold: true; font.pixelSize: 16
+                                    TapHandler { onTapped: shade.notificationOpened(modelData) }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 12
+                                    visible: modelData.body.length > 0 || shade.picture(modelData) !== ""
+                                    Text {
+                                        font.family: MobileTheme.fontFamily; Layout.fillWidth: true; Layout.alignment: Qt.AlignTop; text: modelData.body; textFormat: Text.PlainText; wrapMode: Text.Wrap; maximumLineCount: 5; elide: Text.ElideRight; color: MobileTheme.secondary; font.pixelSize: 14; lineHeight: 1.1; visible: text.length > 0
+                                        TapHandler { onTapped: shade.notificationOpened(modelData) }
+                                    }
+                                    // The notification's own picture (a photo, a contact).
+                                    Rectangle {
+                                        visible: shade.picture(modelData) !== "" && thumb.status === Image.Ready
+                                        Layout.alignment: Qt.AlignTop
+                                        implicitWidth: 56; implicitHeight: 56; radius: MobileTheme.radius(12); color: MobileTheme.selection; clip: true
+                                        Image { id: thumb; anchors.fill: parent; source: shade.picture(modelData); sourceSize: Qt.size(168, 168); fillMode: Image.PreserveAspectCrop; asynchronous: false }
+                                    }
+                                }
                                 Flow {
+                                    id: actionRow
                                     Layout.fillWidth: true; spacing: 8
+                                    readonly property var notification: modelData
+                                    Rectangle {
+                                        visible: actionRow.notification.hasInlineReply || shade.androidReply(actionRow.notification)
+                                        implicitWidth: replyText.implicitWidth + 30; implicitHeight: 38
+                                        radius: MobileTheme.radius(19)
+                                        color: replyTap.pressed ? Qt.darker(MobileTheme.accent, 1.2) : MobileTheme.accent
+                                        Text { id: replyText; anchors.centerIn: parent; text: "Reply"; color: MobileTheme.background; font.family: MobileTheme.fontFamily; font.pixelSize: 13; font.bold: true }
+                                        TapHandler { id: replyTap; onTapped: shade.startReply(actionRow.notification) }
+                                    }
                                     Repeater {
-                                        model: modelData.actions
-                                        TouchButton { required property var modelData; implicitWidth: 130; implicitHeight: 44; label: modelData.text; textSize: 13; onClicked: modelData.invoke() }
+                                        model: shade.pills(modelData)
+                                        Rectangle {
+                                            required property var modelData
+                                            implicitWidth: pillText.implicitWidth + 30; implicitHeight: 38
+                                            radius: MobileTheme.radius(19)
+                                            color: pillTap.pressed ? MobileTheme.selection : "transparent"
+                                            border.width: 1; border.color: MobileTheme.accent
+                                            Text { id: pillText; anchors.centerIn: parent; text: modelData.text; color: MobileTheme.accent; font.family: MobileTheme.fontFamily; font.pixelSize: 13; font.bold: true }
+                                            TapHandler { id: pillTap; onTapped: modelData.invoke() }
+                                        }
                                     }
                                 }
                             }
@@ -472,7 +703,7 @@ PanelWindow {
         width: parent.width - 32
         height: Math.min(popupContent.implicitHeight + 44, parent.height - (shade.keyboardOwned ? ((MobileTheme.state.device || {}).keyboardHeight || 280) + 48 : 48))
         anchors.horizontalCenter: parent.horizontalCenter
-        y: shade.selectedNetwork ? 24 : Math.max(24, (parent.height - height) / 2 - 30)
+        y: shade.selectedNetwork || shade.detail === "reply" ? 24 : Math.max(24, (parent.height - height) / 2 - 30)
         color: MobileTheme.background; radius: MobileTheme.radius(26); border.width: 1; border.color: MobileTheme.accent
         MouseArea { anchors.fill: parent; onClicked: {} }
         Flickable {
@@ -484,6 +715,29 @@ PanelWindow {
                     Layout.fillWidth: true
                     Text { font.family: MobileTheme.fontFamily; text: shade.detailTitle(); color: MobileTheme.foreground; font.pixelSize: 26; font.bold: true; Layout.fillWidth: true }
                     TouchButton { implicitWidth: 44; implicitHeight: 44; label: "×"; onClicked: shade.detail === "speedtest" ? shade.showDetail("wifi") : shade.closeDetail() }
+                }
+                ColumnLayout {
+                    visible: shade.detail === "reply"; Layout.fillWidth: true; spacing: 12
+                    Text {
+                        Layout.fillWidth: true
+                        text: shade.replyTarget ? shade.replyTarget.body : ""
+                        textFormat: Text.PlainText; wrapMode: Text.Wrap; maximumLineCount: 6; elide: Text.ElideRight
+                        color: MobileTheme.secondary; font.family: MobileTheme.fontFamily; font.pixelSize: 15
+                    }
+                    TouchTextField { font.family: MobileTheme.fontFamily;
+                        id: replyField; Layout.fillWidth: true; implicitHeight: 50
+                        placeholderText: shade.replyTarget && shade.replyTarget.inlineReplyPlaceholder ? shade.replyTarget.inlineReplyPlaceholder : "Message"
+                        color: MobileTheme.foreground; placeholderTextColor: MobileTheme.secondary
+                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
+                        editing: shade.editingField === "reply" && shade.detail === "reply"
+                        onEditingRequested: shade.editField("reply", replyField)
+                        onAccepted: shade.sendReply()
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        TouchButton { Layout.fillWidth: true; label: "Cancel"; onClicked: shade.closeDetail() }
+                        TouchButton { Layout.fillWidth: true; label: "Send"; selected: true; enabled: replyField.text.trim().length > 0; onClicked: shade.sendReply() }
+                    }
                 }
                 ColumnLayout {
                     visible: shade.detail === "battery"; Layout.fillWidth: true; spacing: 15
@@ -583,10 +837,17 @@ PanelWindow {
                                 Layout.fillWidth: true; Layout.preferredWidth: 1; implicitHeight: 39; radius: MobileTheme.radius(12)
                                 color: today ? MobileTheme.accent : "transparent"
                                 Text { font.family: MobileTheme.fontFamily; anchors.centerIn: parent; text: parent.day.getDate(); color: parent.today ? MobileTheme.background : MobileTheme.foreground; opacity: parent.day.getMonth() === shade.month.getMonth() ? 1 : 0.3; font.pixelSize: 15 }
+                                // A day opens the Calendar app on it.
+                                TapHandler { onTapped: shade.openCalendar(Qt.formatDateTime(parent.day, "yyyy-MM-dd")) }
                             }
                         }
                     }
-                    TouchButton { Layout.fillWidth: true; label: "Today"; onClicked: shade.month = new Date(clock.date.getFullYear(), clock.date.getMonth(), 1) }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        TouchButton { Layout.fillWidth: true; label: "Today"; onClicked: shade.month = new Date(clock.date.getFullYear(), clock.date.getMonth(), 1) }
+                        TouchButton { Layout.fillWidth: true; label: "Open Calendar"; onClicked: shade.openCalendar(Qt.formatDateTime(clock.date, "yyyy-MM-dd")) }
+                    }
                 }
                 ColumnLayout {
                     visible: shade.detail === "stats"; Layout.fillWidth: true; spacing: 14
@@ -736,5 +997,18 @@ PanelWindow {
                 }
             }
         }
+    }
+
+    component GhostButton: Rectangle {
+        id: ghost
+        property string glyph: ""
+        property int size: 36
+        signal clicked()
+        implicitWidth: size
+        implicitHeight: size
+        radius: MobileTheme.radius(size / 2)
+        color: ghostTap.pressed ? MobileTheme.selection : "transparent"
+        Text { anchors.centerIn: parent; text: ghost.glyph; color: MobileTheme.secondary; font.family: MobileTheme.fontFamily; font.pixelSize: ghost.size * 0.5 }
+        TapHandler { id: ghostTap; onTapped: ghost.clicked() }
     }
 }

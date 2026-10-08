@@ -26,17 +26,29 @@
  *   instead of calls from the Wi-Fi driver. brcmfmac registers it once the
  *   firmware runs, and unregisters it before any chip reset (reload or crash
  *   recovery), which is when the vendor driver turns them on and off.
+ *
+ * Runtime link power (bcmdhd's runtime PM, exynos_pcie_pm_suspend/resume):
+ * brcmfmac calls pixel_pcie_wifi_suspend() once an idle chip has acknowledged
+ * D3, and pixel_pcie_wifi_resume() before it talks to it again. Suspend puts
+ * the chip in D3hot, takes the link to L2 with PME_Turn_Off, asserts PERST#
+ * and powers the PHY down; WL_REG_ON stays high, so the firmware keeps
+ * running, and the chip wakes the host on WL_HOST_WAKE (gpa6-1, level high,
+ * its own GIC line) when it has something for it. While the link is off,
+ * every config access fails with all-ones instead of reaching an isolated
+ * controller, which would hang the SoC.
  */
 #include <linux/arm-smccc.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -61,6 +73,12 @@ module_param(sleep_errors, uint, 0444);
 static bool trace;
 module_param(trace, bool, 0400);
 MODULE_PARM_DESC(trace, "Log each bring-up stage and pause so the log leaves the phone");
+static unsigned int rt_suspends, rt_resumes, rt_errors, rt_wakes;
+module_param(rt_suspends, uint, 0444);
+module_param(rt_resumes, uint, 0444);
+module_param(rt_errors, uint, 0444);
+module_param(rt_wakes, uint, 0444);
+MODULE_PARM_DESC(rt_wakes, "Runtime link power: WL_HOST_WAKE interrupts");
 
 #define PIXEL_PCIE_ELBI		0x14520000
 #define GS201_SMC_PRIV_REG	0x82000504
@@ -154,6 +172,19 @@ MODULE_PARM_DESC(trace, "Log each bring-up stage and pause so the log leaves the
 #define PUD_UP			3
 #define CONPDN_PREV		3
 
+/* WL_HOST_WAKE: gpa6-1, a wake-up EINT of the ALIVE pin controller (stock
+ * "wlan_host_wake": function 0xf, pull-down). Pin 3 of the bank is
+ * pixel-gpio's and pin 4 pixel-gnss's; only pin 1's fields are touched.
+ */
+#define PIXEL_ALIVE		0x180e0000
+#define GPA6_EINT		0x00
+#define EINT_CON		0x700	/* 4 bits a pin: 1 is level high */
+#define EINT_MASK		0x900
+#define EINT_PEND		0xa00	/* write 1 to clear */
+#define EINT_LEVEL_HIGH		1
+#define CON_EINT		0xf
+#define PIN_HOST_WAKE		1
+
 struct pixel_pcie {
 	struct dw_pcie pci;
 	void __iomem *phy;
@@ -166,10 +197,26 @@ struct pixel_pcie {
 	bool sleep_link_off, restore_l1ss, sleep_irq_disabled;
 	unsigned long storm_start;
 	unsigned int storm_count;
+	/* runtime link power */
+	bool rt_off, rt_restore_l1ss, quiet;
+	raw_spinlock_t cfg_lock;
+	struct pci_ops *root_ops, *child_ops, root_wrap, child_wrap;
+	void __iomem *alive;
+	int wake_irq;
+	bool wake_set, wake_armed;
+	u32 wake_con, wake_pud, wake_econ, wake_emask;
+	void (*wake_fn)(void *data);
+	void *wake_data;
 };
 
 static DEFINE_MUTEX(pixel_host_lock);
 static struct pixel_pcie *pixel_host;
+
+/* Runtime link power, for brcmfmac (looked up by name) */
+int pixel_pcie_wifi_set_wake(void (*fn)(void *data), void *data);
+int pixel_pcie_wifi_suspend(struct pci_dev *ep);
+int pixel_pcie_wifi_resume(struct pci_dev *ep);
+static void pixel_pcie_wake_teardown(struct pixel_pcie *p);
 static bool l1ss;		/* wanted */
 static bool l1ss_on;
 static unsigned int ep_netdevs;	/* network devices of the Wi-Fi chip */
@@ -604,13 +651,18 @@ static u32 pixel_pcie_ltssm(struct pixel_pcie *p)
  */
 static bool pixel_pcie_link_up(struct dw_pcie *pci)
 {
-	u32 state = pixel_pcie_ltssm(to_pixel(pci));
+	u32 state;
 
+	if (READ_ONCE(to_pixel(pci)->rt_off))
+		return false;	/* isolated: ELBI must not be read */
+	state = pixel_pcie_ltssm(to_pixel(pci));
 	return state >= LTSSM_RCVRY_LOCK && state <= LTSSM_L1_IDLE;
 }
 
 static enum dw_pcie_ltssm pixel_pcie_get_ltssm(struct dw_pcie *pci)
 {
+	if (READ_ONCE(to_pixel(pci)->rt_off))
+		return DW_PCIE_LTSSM_DETECT_QUIET;
 	return pixel_pcie_ltssm(to_pixel(pci));
 }
 
@@ -680,10 +732,11 @@ static int pixel_pcie_start_link(struct dw_pcie *pci)
 	usleep_range(2800, 3000);
 	status = dw_pcie_readw_dbi(pci, dw_pcie_find_capability(pci, PCI_CAP_ID_EXP) +
 				   PCI_EXP_LNKSTA);
-	dev_info(pci->dev, "link up on attempt %u: Gen%u x%u, LTSSM %#x\n", attempt,
-		 (u32)FIELD_GET(PCI_EXP_LNKSTA_CLS, status),
-		 (u32)FIELD_GET(PCI_EXP_LNKSTA_NLW, status),
-		 pixel_pcie_ltssm(p));
+	if (!p->quiet || attempt > 1)
+		dev_info(pci->dev, "link up on attempt %u: Gen%u x%u, LTSSM %#x\n", attempt,
+			 (u32)FIELD_GET(PCI_EXP_LNKSTA_CLS, status),
+			 (u32)FIELD_GET(PCI_EXP_LNKSTA_NLW, status),
+			 pixel_pcie_ltssm(p));
 
 	stage(p, "link up");
 	for (reg = ELBI_IRQ0; reg <= ELBI_IRQ2; reg += 4)
@@ -709,6 +762,68 @@ static const struct dw_pcie_ops pixel_pcie_ops = {
 	.start_link = pixel_pcie_start_link,
 	.stop_link = pixel_pcie_stop_link,
 };
+
+/* Config accesses go through the DWC core's ops unless the link is off at
+ * runtime; then they fail with all-ones. cfg_lock orders them against the
+ * suspend and resume that turn rt_off on and off.
+ */
+static struct pixel_pcie *bus_to_pixel(struct pci_bus *bus)
+{
+	return to_pixel(to_dw_pcie_from_pp(bus->sysdata));
+}
+
+static int pixel_cfg_read(struct pci_bus *bus, unsigned int devfn, int where, int size,
+			  u32 *val)
+{
+	struct pixel_pcie *p = bus_to_pixel(bus);
+	struct pci_ops *ops = pci_is_root_bus(bus) ? p->root_ops : p->child_ops;
+	unsigned long flags;
+	int ret;
+
+	raw_spin_lock_irqsave(&p->cfg_lock, flags);
+	if (p->rt_off) {
+		PCI_SET_ERROR_RESPONSE(val);
+		ret = PCIBIOS_DEVICE_NOT_FOUND;
+	} else {
+		ret = ops->read(bus, devfn, where, size, val);
+	}
+	raw_spin_unlock_irqrestore(&p->cfg_lock, flags);
+	return ret;
+}
+
+static int pixel_cfg_write(struct pci_bus *bus, unsigned int devfn, int where, int size,
+			   u32 val)
+{
+	struct pixel_pcie *p = bus_to_pixel(bus);
+	struct pci_ops *ops = pci_is_root_bus(bus) ? p->root_ops : p->child_ops;
+	unsigned long flags;
+	int ret;
+
+	raw_spin_lock_irqsave(&p->cfg_lock, flags);
+	ret = p->rt_off ? PCIBIOS_DEVICE_NOT_FOUND : ops->write(bus, devfn, where, size, val);
+	raw_spin_unlock_irqrestore(&p->cfg_lock, flags);
+	return ret;
+}
+
+/* The wrappers keep the core's map_bus, which its read and write use. */
+static void pixel_pcie_wrap_cfg(struct pixel_pcie *p)
+{
+	struct pci_host_bridge *bridge = p->pci.pp.bridge;
+	struct pci_bus *child;
+
+	p->root_ops = bridge->bus->ops;
+	p->root_wrap = *p->root_ops;
+	p->root_wrap.read = pixel_cfg_read;
+	p->root_wrap.write = pixel_cfg_write;
+	p->child_ops = bridge->child_ops;
+	p->child_wrap = *p->child_ops;
+	p->child_wrap.read = pixel_cfg_read;
+	p->child_wrap.write = pixel_cfg_write;
+	bridge->child_ops = &p->child_wrap;
+	pci_bus_set_ops(bridge->bus, &p->root_wrap);
+	list_for_each_entry(child, &bridge->bus->children, node)
+		pci_bus_set_ops(child, &p->child_wrap);
+}
 
 /* The controller line also carries the endpoint's INTx (the DT maps every
  * INTx pin to it), so it is shared; the endpoint driver's handler does the
@@ -770,6 +885,7 @@ static int pixel_pcie_probe(struct platform_device *pdev)
 	p->pci.dev = dev;
 	p->pci.ops = &pixel_pcie_ops;
 	p->pci.pp.ops = &pixel_pcie_host_ops;
+	raw_spin_lock_init(&p->cfg_lock);
 
 	p->pci.elbi_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(p->pci.elbi_base))
@@ -818,6 +934,7 @@ static int pixel_pcie_probe(struct platform_device *pdev)
 	ret = dw_pcie_host_init(&p->pci.pp);
 	if (ret)
 		return ret;
+	pixel_pcie_wrap_cfg(p);
 	mutex_lock(&pixel_host_lock);
 	pixel_host = p;
 	mutex_unlock(&pixel_host_lock);
@@ -888,7 +1005,8 @@ static int pixel_pcie_set_l1ss(struct pixel_pcie *p, bool enable)
 		dw_pcie_writel_dbi(pci, rc_l1ss + PCI_L1SS_CTL1, val & ~PCI_L1SS_CTL1_L1SS_MASK);
 	}
 	pci_dev_put(ep);
-	dev_info(dev, "L1 substates %s\n", enable ? "on" : "off");
+	if (!p->quiet)
+		dev_info(dev, "L1 substates %s\n", enable ? "on" : "off");
 	return 0;
 }
 
@@ -900,7 +1018,7 @@ static int pixel_pcie_update_l1ss(void)
 	bool want = l1ss && pixel_host && ep_netdevs;
 	int ret;
 
-	if (pixel_host && pixel_host->sleep_link_off)
+	if (pixel_host && (pixel_host->sleep_link_off || pixel_host->rt_off))
 		return -EHOSTDOWN;
 	if (want == l1ss_on)
 		return 0;
@@ -966,6 +1084,8 @@ static int link_state_get(char *buf, const struct kernel_param *kp)
 	mutex_lock(&pixel_host_lock);
 	if (pixel_host && pixel_host->sleep_link_off)
 		len = sysfs_emit(buf, "suspended\n");
+	else if (pixel_host && pixel_host->rt_off)
+		len = sysfs_emit(buf, "runtime off\n");
 	else if (pixel_host)
 		len = sysfs_emit(buf, "ltssm %#x pm %u l1ss %s\n",
 				 (u32)FIELD_GET(LTSSM_STATE,
@@ -988,8 +1108,22 @@ MODULE_PARM_DESC(link_state, "LTSSM state, PHY power state (0 L0, 2 L1, 5 L1.1, 
 static void pixel_pcie_remove(struct platform_device *pdev)
 {
 	struct pixel_pcie *p = platform_get_drvdata(pdev);
+	unsigned long flags;
 
 	mutex_lock(&pixel_host_lock);
+	if (p->rt_off) {
+		/* The Wi-Fi driver resumes the link before it goes; if it
+		 * could not, deinit still needs ELBI, and finds the link down.
+		 */
+		if (xchg(&p->wake_armed, false))
+			disable_irq(p->wake_irq);
+		pixel_pcie_isolation(p, true);
+		raw_spin_lock_irqsave(&p->cfg_lock, flags);
+		WRITE_ONCE(p->rt_off, false);
+		raw_spin_unlock_irqrestore(&p->cfg_lock, flags);
+		enable_irq(p->irq);
+	}
+	pixel_pcie_wake_teardown(p);
 	if (l1ss_on && !pixel_pcie_set_l1ss(p, false))
 		l1ss_on = false;
 	pixel_host = NULL;
@@ -1001,6 +1135,290 @@ static void pixel_pcie_remove(struct platform_device *pdev)
 	if (pixel_pcie_isolation(p, false))
 		dev_warn(&pdev->dev, "PHY isolation failed after host removal\n");
 }
+
+/* WL_HOST_WAKE. The GIC line is level high and stays enabled only while the
+ * link is off; the first interrupt disables it again and tells the Wi-Fi
+ * driver, which resumes the link.
+ */
+static irqreturn_t pixel_pcie_wake_irq(int irq, void *data)
+{
+	struct pixel_pcie *p = data;
+	void (*fn)(void *data) = READ_ONCE(p->wake_fn);
+
+	/* Exactly one disable per arming: here, or in resume. */
+	if (xchg(&p->wake_armed, false))
+		disable_irq_nosync(irq);
+	writel(BIT(PIN_HOST_WAKE), p->alive + EINT_PEND + GPA6_EINT);
+	rt_wakes++;
+	if (fn)
+		fn(p->wake_data);
+	return IRQ_HANDLED;
+}
+
+static void pixel_pcie_alive_rmw(struct pixel_pcie *p, u32 reg, u32 clear, u32 set)
+{
+	rmw(p->alive + reg, clear, set);
+}
+
+static int pixel_pcie_wake_setup(struct pixel_pcie *p)
+{
+	struct device *dev = p->pci.dev;
+	struct device_node *np;
+	u32 bit = BIT(PIN_HOST_WAKE), nib = 0xf << (4 * PIN_HOST_WAKE);
+	int irq, ret;
+
+	np = of_find_node_by_path("/pinctrl@180E0000/gpa6");
+	if (!np)
+		return -ENODEV;
+	/* The bank's interrupts list has one GIC line per pin. */
+	irq = irq_of_parse_and_map(np, PIN_HOST_WAKE);
+	of_node_put(np);
+	if (!irq)
+		return -ENXIO;
+	if (irq_get_trigger_type(irq) != IRQ_TYPE_LEVEL_HIGH) {
+		dev_err(dev, "gpa6-1's GIC line is not level-high (type %#x)\n",
+			irq_get_trigger_type(irq));
+		irq_dispose_mapping(irq);
+		return -EINVAL;
+	}
+	p->alive = ioremap(PIXEL_ALIVE, 0x1000);
+	if (!p->alive) {
+		irq_dispose_mapping(irq);
+		return -ENOMEM;
+	}
+	p->wake_con = readl(p->alive + GPIO_CON) & nib;
+	p->wake_pud = readl(p->alive + GPIO_PUD) & nib;
+	p->wake_econ = readl(p->alive + EINT_CON + GPA6_EINT) & nib;
+	p->wake_emask = readl(p->alive + EINT_MASK + GPA6_EINT) & bit;
+	pixel_pcie_alive_rmw(p, EINT_MASK + GPA6_EINT, bit, bit);
+	pixel_pcie_alive_rmw(p, EINT_CON + GPA6_EINT, nib, EINT_LEVEL_HIGH << (4 * PIN_HOST_WAKE));
+	pixel_pcie_alive_rmw(p, GPIO_PUD, nib, PUD_DOWN << (4 * PIN_HOST_WAKE));
+	pixel_pcie_alive_rmw(p, GPIO_CON, nib, CON_EINT << (4 * PIN_HOST_WAKE));
+	writel(bit, p->alive + EINT_PEND + GPA6_EINT);
+	pixel_pcie_alive_rmw(p, EINT_MASK + GPA6_EINT, bit, 0);
+	p->wake_set = true;
+	ret = request_irq(irq, pixel_pcie_wake_irq, IRQF_NO_AUTOEN, "wlan-host-wake", p);
+	if (ret) {
+		dev_err(dev, "WL_HOST_WAKE interrupt: %d\n", ret);
+		irq_dispose_mapping(irq);
+		return ret;
+	}
+	p->wake_irq = irq;
+	return 0;
+}
+
+static void pixel_pcie_wake_teardown(struct pixel_pcie *p)
+{
+	u32 bit = BIT(PIN_HOST_WAKE), nib = 0xf << (4 * PIN_HOST_WAKE);
+
+	if (p->wake_irq) {
+		free_irq(p->wake_irq, p);
+		irq_dispose_mapping(p->wake_irq);
+		p->wake_irq = 0;
+	}
+	if (p->wake_set) {
+		pixel_pcie_alive_rmw(p, EINT_MASK + GPA6_EINT, bit, bit);
+		pixel_pcie_alive_rmw(p, GPIO_CON, nib, p->wake_con);
+		pixel_pcie_alive_rmw(p, GPIO_PUD, nib, p->wake_pud);
+		pixel_pcie_alive_rmw(p, EINT_CON + GPA6_EINT, nib, p->wake_econ);
+		writel(bit, p->alive + EINT_PEND + GPA6_EINT);
+		pixel_pcie_alive_rmw(p, EINT_MASK + GPA6_EINT, bit, p->wake_emask);
+		p->wake_set = false;
+	}
+	if (p->alive) {
+		iounmap(p->alive);
+		p->alive = NULL;
+	}
+}
+
+/**
+ * pixel_pcie_wifi_set_wake() - the Wi-Fi driver's WL_HOST_WAKE callback
+ * @fn: called in hard interrupt context while the link is off, or NULL to stop
+ * @data: its argument
+ *
+ * Sets up the wake pin on first use. Returns 0, or -ENODEV without a host.
+ */
+int pixel_pcie_wifi_set_wake(void (*fn)(void *data), void *data)
+{
+	struct pixel_pcie *p;
+	int ret = 0;
+
+	mutex_lock(&pixel_host_lock);
+	p = pixel_host;
+	if (!p) {
+		ret = -ENODEV;
+	} else if (fn) {
+		if (!p->wake_irq)
+			ret = pixel_pcie_wake_setup(p);
+		if (!ret) {
+			p->wake_data = data;
+			WRITE_ONCE(p->wake_fn, fn);
+		}
+	} else if (p->wake_irq) {
+		WRITE_ONCE(p->wake_fn, NULL);
+		synchronize_irq(p->wake_irq);
+	}
+	mutex_unlock(&pixel_host_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pixel_pcie_wifi_set_wake);
+
+/* Takes the link down and the PHY off once the chip is in D3hot; ep and rp
+ * have their config saved. pixel_host_lock held.
+ */
+static int pixel_pcie_rt_link_off(struct pixel_pcie *p)
+{
+	unsigned long flags;
+	u32 val, old_exit, old_request;
+	int ret;
+
+	old_exit = elbi_read(p, ELBI_L1_EXIT_MODE);
+	old_request = elbi_read(p, ELBI_APP_REQ_EXIT_L1);
+	pixel_pcie_turn_off(p);
+	if (pixel_pcie_ltssm(p) != LTSSM_L2_IDLE) {
+		elbi_write(p, ELBI_L1_EXIT_MODE, old_exit);
+		elbi_write(p, ELBI_APP_REQ_EXIT_L1, old_request);
+		return -EBUSY;
+	}
+	/* No handler may read ELBI or the chip's BARs from here on. */
+	elbi_write(p, ELBI_IRQ0_EN, 0);
+	elbi_write(p, ELBI_IRQ1_EN, 0);
+	elbi_write(p, ELBI_IRQ2_EN, 0);
+	disable_irq(p->irq);
+	raw_spin_lock_irqsave(&p->cfg_lock, flags);
+	WRITE_ONCE(p->rt_off, true);
+	raw_spin_unlock_irqrestore(&p->cfg_lock, flags);
+	pixel_pcie_reset_link(p);
+	val = elbi_read(p, ELBI_SOFT_RESET);
+	elbi_write(p, ELBI_SOFT_RESET, val & ~SOFT_PWR_RESET);
+	udelay(20);
+	elbi_write(p, ELBI_SOFT_RESET, val | SOFT_PWR_RESET);
+	pixel_phy_power_down(p);
+	p->rt_restore_l1ss = l1ss_on;
+	l1ss_on = false;
+	ret = pixel_pcie_isolation(p, false);
+	if (ret)
+		dev_err(p->pci.dev, "runtime link off: isolation failed (%d)\n", ret);
+	return 0;	/* the link is down either way; resume brings it back */
+}
+
+/* Releases isolation and retrains; pixel_host_lock held. */
+static int pixel_pcie_rt_link_on(struct pixel_pcie *p)
+{
+	unsigned long flags;
+	int ret;
+
+	ret = pixel_pcie_isolation(p, true);
+	if (ret)
+		return ret;
+	pixel_phy_power_up(p);
+	pixel_pcie_bring_up(p);
+	ret = dw_pcie_setup_rc(&p->pci.pp);
+	if (!ret) {
+		p->quiet = true;
+		ret = pixel_pcie_start_link(&p->pci);
+		p->quiet = false;
+	}
+	if (ret)
+		return ret;
+	raw_spin_lock_irqsave(&p->cfg_lock, flags);
+	WRITE_ONCE(p->rt_off, false);
+	raw_spin_unlock_irqrestore(&p->cfg_lock, flags);
+	enable_irq(p->irq);
+	return 0;
+}
+
+/**
+ * pixel_pcie_wifi_suspend() - put the idle Wi-Fi chip in D3hot, link off
+ * @ep: the chip, which has acknowledged D3 (H2D_HOST_D3_INFORM, D3_ACK) and
+ *	has its interrupts masked
+ *
+ * Its config and the root port's are saved here and restored by resume.
+ * Arms WL_HOST_WAKE. On failure the link is still up and the chip in D0.
+ */
+int pixel_pcie_wifi_suspend(struct pci_dev *ep)
+{
+	struct pixel_pcie *p;
+	struct pci_dev *rp = ep->bus->self;
+	int ret;
+
+	mutex_lock(&pixel_host_lock);
+	p = pixel_host;
+	ret = -ENODEV;
+	if (!p || !p->wake_irq || !rp || ep->bus->parent != p->pci.pp.bridge->bus)
+		goto out;
+	ret = -EBUSY;
+	if (p->rt_off || p->sleep_link_off)
+		goto out;
+	pci_save_state(ep);
+	ret = pci_set_power_state(ep, PCI_D3hot);
+	if (ret)
+		goto out;
+	pci_save_state(rp);
+	ret = pixel_pcie_rt_link_off(p);
+	if (ret) {
+		pci_set_power_state(ep, PCI_D0);
+		pci_restore_state(ep);
+		rt_errors++;
+		goto out;
+	}
+	writel(BIT(PIN_HOST_WAKE), p->alive + EINT_PEND + GPA6_EINT);
+	WRITE_ONCE(p->wake_armed, true);
+	enable_irq(p->wake_irq);
+	rt_suspends++;
+out:
+	mutex_unlock(&pixel_host_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pixel_pcie_wifi_suspend);
+
+/**
+ * pixel_pcie_wifi_resume() - link back up, the chip in D0 with its config
+ * @ep: the chip suspended by pixel_pcie_wifi_suspend()
+ *
+ * Disarms WL_HOST_WAKE, retrains the link, restores the root port's and the
+ * chip's config, and the L1 substates. Returns 0 if the link was up already.
+ * On failure the link stays off and config accesses keep failing.
+ */
+int pixel_pcie_wifi_resume(struct pci_dev *ep)
+{
+	struct pixel_pcie *p;
+	int ret = 0;
+
+	mutex_lock(&pixel_host_lock);
+	p = pixel_host;
+	if (!p) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (!p->rt_off)
+		goto out;
+	if (xchg(&p->wake_armed, false))
+		disable_irq(p->wake_irq);
+	else
+		synchronize_irq(p->wake_irq);	/* it fired and disabled itself */
+	ret = pixel_pcie_rt_link_on(p);
+	if (ret) {
+		rt_errors++;
+		dev_err(p->pci.dev, "runtime link restore failed: %d\n", ret);
+		goto out;
+	}
+	pci_restore_state(ep->bus->self);
+	pci_set_power_state(ep, PCI_D0);
+	pci_restore_state(ep);
+	if (p->rt_restore_l1ss) {
+		p->rt_restore_l1ss = false;
+		p->quiet = true;
+		if (pixel_pcie_update_l1ss())
+			rt_errors++;
+		p->quiet = false;
+	}
+	rt_resumes++;
+out:
+	mutex_unlock(&pixel_host_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pixel_pcie_wifi_resume);
 
 /* PCI children have completed suspend_noirq before their host. Keep the
  * endpoint's WL_REG_ON high so its firmware can survive PERST/link loss;
@@ -1018,7 +1436,7 @@ static int pixel_pcie_suspend_noirq(struct device *dev)
 	u32 val, old_exit, old_request;
 	int ret;
 
-	if (!READ_ONCE(system_link_off))
+	if (!READ_ONCE(system_link_off) || p->rt_off)
 		return 0;
 	if (pm_suspend_target_state != PM_SUSPEND_TO_IDLE || trace)
 		return -EBUSY;

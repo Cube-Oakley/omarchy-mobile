@@ -1,0 +1,45 @@
+--- a/src/gallium/drivers/panfrost/pan_bo.c
++++ b/src/gallium/drivers/panfrost/pan_bo.c
+@@ -102,11 +102,16 @@
+    return NULL;
+ }
+ 
++static void panfrost_bo_munmap(struct panfrost_bo *bo);
++
+ static void
+ panfrost_bo_free(struct panfrost_bo *bo)
+ {
+    PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
+ 
++   /* BOs in the cache keep their CPU mapping (see panfrost_bo_unreference). */
++   panfrost_bo_munmap(bo);
++
+    struct pan_kmod_bo *kmod_bo = bo->kmod_bo;
+    struct pan_kmod_vm *vm = bo->dev->kmod.vm;
+    uint64_t gpu_va = bo->ptr.gpu;
+@@ -456,9 +461,11 @@
+     * the slot has been returned already.
+     */
+    if (bo->dev && p_atomic_read(&bo->refcnt) == 0) {
+-      /* When the reference count goes to zero, we need to cleanup */
+-      panfrost_bo_munmap(bo);
+-
++      /* A BO going to the cache keeps its CPU mapping: every batch takes
++       * its pool BOs from the cache, and unmapping them only to map them
++       * again on the next batch cost the GL thread an mmap and a munmap
++       * per BO, about 14% of Chromium's GPU thread at 120 Hz on the Pixel 7
++       * Pro (Omarchy Mobile). panfrost_bo_free() unmaps. */
+       if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
+          pandecode_inject_free(dev->decode_ctx, bo->ptr.gpu,
+                                panfrost_bo_size(bo));
+@@ -578,7 +585,9 @@
+ 
+    bo->label = label;
+ 
+-   if (set_kernel_label)
++   /* The kernel's label is for debugging (debugfs); setting it took an
++    * ioctl at every BO cache put and fetch (Omarchy Mobile). */
++   if (set_kernel_label && bo->dev->debug)
+       pan_kmod_set_bo_label(bo->dev->kmod.dev, bo->kmod_bo, label);
+ 
+    return old_label;

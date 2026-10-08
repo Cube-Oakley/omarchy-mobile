@@ -21,6 +21,8 @@ id_rsa
 *.nmconnection
 hotdog.env
 pmbootstrap.cfg
+# Personal Claude Code settings (permission rules for this machine)
+.claude/settings.local.json
 
 *.zip
 *.tar

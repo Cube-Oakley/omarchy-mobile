@@ -1,15 +1,23 @@
 import QtQuick
 
-// Swipe from the left edge toward the center. The shell decides what back means.
+// Swipe from the left edge (or with fromRight, the right edge) toward the center.
+// The shell decides what back means.
 Item {
     id: edge
     signal committed()
+    property bool fromRight: false
     property color pill: "#24283b"
     property color ink: "#c0caf5"
     property real distance: 0
     property real velocity: 0
     property bool pressed: false
     property bool tracking: false
+    // A finger is down on the strip, before any drag is recognized: the shell
+    // widens the touch region at once (the grab dies at the region's edge),
+    // so the resting strip can stay narrow and taps beside it reach the app.
+    readonly property bool down: point.active
+
+    PointHandler { id: point }
 
     DragHandler {
         id: drag
@@ -35,13 +43,13 @@ Item {
         }
         onActiveTranslationChanged: {
             if (!active) return;
-            const across = activeTranslation.x;
+            const across = edge.fromRight ? -activeTranslation.x : activeTranslation.x;
             if (!edge.tracking) {
                 if (across < 14 || across < Math.abs(activeTranslation.y) * 1.2) return;
                 edge.tracking = true;
             }
             edge.distance = Math.max(0, across);
-            edge.velocity = centroid.velocity.x;
+            edge.velocity = edge.fromRight ? -centroid.velocity.x : centroid.velocity.x;
         }
     }
 
@@ -49,7 +57,8 @@ Item {
         width: 36
         height: 56
         radius: 18
-        x: Math.min(edge.distance, 88) - 28
+        readonly property real inset: Math.min(edge.distance, 88) - 28
+        x: edge.fromRight ? edge.width - width - inset : inset
         anchors.verticalCenter: parent.verticalCenter
         color: edge.pill
         border.width: 1

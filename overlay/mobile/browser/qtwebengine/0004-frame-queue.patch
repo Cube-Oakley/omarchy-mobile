@@ -1,0 +1,187 @@
+Show every Chromium frame, one per Qt frame (Omarchy Mobile).
+
+Qt takes a frame only when its GUI thread, which is also Chromium's browser
+thread, has passed on the frame's update request; when that came late, the
+next frame replaced the one waiting, and the replaced frame was never shown:
+on the X web app about a third of Chromium's frames during a fling
+(QTWEBENGINE_FRAME_STATS: 189 of 600 presents found Qt still holding the
+previous one), so the screen went between 120 and 60 frames a second.
+
+Finished frames now wait in a queue of two, as in Android's buffer queue:
+Qt takes the oldest at each of its frames, and the item asks Qt for another
+frame while one is still waiting. A late Qt frame shows the frame it missed
+one refresh later instead of dropping it. Chromium waits only when two
+frames wait already (a window that is not drawn still stops it), so it is
+throttled to Qt's rate rather than a frame behind every time. The cost is up
+to a frame of latency while Qt is behind.
+
+--- a/src/core/compositor/compositor.h
++++ b/src/core/compositor/compositor.h
+@@ -135,6 +135,9 @@
+ 
+     // Are there resources to be released?
+     virtual bool hasResources() { return false; }
++    // A further frame waits after the one swapFrame() took (Omarchy Mobile
++    // patch): the item asks Qt for another frame at once.
++    virtual bool hasPendingFrame() { return false; }
+ 
+     // Release resources created in texture()
+     virtual void releaseResources();
+--- a/src/core/compositor/native_skia_output_device.h
++++ b/src/core/compositor/native_skia_output_device.h
+@@ -15,6 +15,7 @@
+ #include <QMutex>
+ 
+ #include <atomic>
++#include <deque>
+ #include <vector>
+ 
+ #if defined(Q_OS_WIN)
+@@ -74,6 +75,7 @@
+ 
+     // Overridden from Compositor.
+     void swapFrame() override;
++    bool hasPendingFrame() override;
+     void waitForTexture() override;
+     void releaseTexture() override;
+     bool hasResources() override;
+@@ -179,10 +181,12 @@
+     viz::SkiaOutputSurfaceDependency *const m_deps;
+     mutable QMutex m_mutex;
+     Shape m_shape;
+-    std::unique_ptr<Buffer> m_middleBuffer;
++    // Frames Chromium finished, oldest first, for Qt to show one per frame
++    // (Omarchy Mobile patch: a queue, as Android's buffer queue, instead of
++    // one frame that a newer one replaced).
++    std::deque<std::unique_ptr<Buffer>> m_ready;
+     std::unique_ptr<Buffer> m_backBuffer;
+     viz::OutputSurfaceFrame m_frame;
+-    bool m_readyToUpdate = false;
+     scoped_refptr<base::SingleThreadTaskRunner> m_gpuTaskRunner;
+     // Buffers Qt has let go of, for Chromium to draw into again.
+     std::vector<std::unique_ptr<Buffer>> m_spareBuffers;
+@@ -195,6 +199,8 @@
+     // QTWEBENGINE_FRAME_STATS: when presents land relative to Qt's frames.
+     int m_statsPresents = 0;
+     int m_statsDeferred = 0;
++    int m_statsDropped = 0;
++    int m_statsQueued[3] = {};
+     int m_statsBins[10] = {};
+ };
+ 
+--- a/src/core/compositor/native_skia_output_device.cpp
++++ b/src/core/compositor/native_skia_output_device.cpp
+@@ -88,6 +88,10 @@
+     return on;
+ }
+ 
++// Frames that may wait for Qt (Omarchy Mobile patch). Two absorb a late Qt
++// frame without dropping one; Chromium then waits for Qt.
++constexpr size_t kQueueDepth = 2;
++
+ int64_t nowUs()
+ {
+     return (base::TimeTicks::Now() - base::TimeTicks()).InMicroseconds();
+@@ -186,22 +190,28 @@
+         QMutexLocker locker(&m_mutex);
+         m_backBuffer->createFence();
+         m_gpuTaskRunner = base::SingleThreadTaskRunner::GetCurrentDefault();
+-        // A frame Qt has not taken yet gives way to this newer one, and its
+-        // buffer is drawn into next.
+-        std::unique_ptr<Buffer> unpicked;
+-        if (m_readyToUpdate)
+-            unpicked = std::move(m_middleBuffer);
+-        else if (m_middleBuffer)
+-            m_spareBuffers.push_back(std::move(m_middleBuffer));
+-        m_middleBuffer = std::move(m_backBuffer);
+-        m_backBuffer = unpicked ? std::move(unpicked) : takeSpare();
+-        // Qt keeping up: Chromium may go on with the next frame now. Qt behind
+-        // (or not drawing at all): the swap ends when Qt takes this frame.
+-        deferred = m_readyToUpdate;
++        // The frame joins the queue Qt takes from, one per Qt frame and in
++        // order, so a Qt frame that comes late shows the frames it missed
++        // afterwards instead of losing them. Only a full queue gives up its
++        // oldest frame (Chromium waits before that happens).
++        const size_t waiting = m_ready.size();
++        m_ready.push_back(std::move(m_backBuffer));
++        std::unique_ptr<Buffer> dropped;
++        if (m_ready.size() > kQueueDepth) {
++            dropped = std::move(m_ready.front());
++            m_ready.pop_front();
++        }
++        m_backBuffer = dropped ? std::move(dropped) : takeSpare();
++        // Room for another frame: Chromium goes on now. A full queue (or a
++        // window Qt does not draw): the swap ends when Qt takes a frame.
++        deferred = m_ready.size() >= kQueueDepth;
+         m_swapDeferred = deferred;
+         if (deferred)
+             m_frame = std::move(frame);
+-        m_readyToUpdate = true;
++        if (frameStats()) {
++            m_statsDropped += dropped != nullptr;
++            m_statsQueued[std::min<size_t>(2, waiting)]++;
++        }
+ 
+         if (frameStats() && !interval.is_zero()) {
+             const int64_t phase = m_qtPhaseUs.load(std::memory_order_relaxed);
+@@ -212,14 +222,17 @@
+             }
+             m_statsDeferred += deferred;
+             if (++m_statsPresents == 600) {
+-                fprintf(stderr, "webengine frames: 600 presents, %d while Qt had the previous one;"
++                fprintf(stderr, "webengine frames: 600 presents, frames already waiting 0/1/2: %d %d %d,"
++                                " %d deferred, %d dropped;"
+                                 " present time after Qt's frame (ninths of %lld us):"
+                                 " %d %d %d %d %d %d %d %d %d\n",
+-                        m_statsDeferred, (long long)step, m_statsBins[0], m_statsBins[1],
++                        m_statsQueued[0], m_statsQueued[1], m_statsQueued[2], m_statsDeferred,
++                        m_statsDropped, (long long)step, m_statsBins[0], m_statsBins[1],
+                         m_statsBins[2], m_statsBins[3], m_statsBins[4], m_statsBins[5],
+                         m_statsBins[6], m_statsBins[7], m_statsBins[8]);
+-                m_statsPresents = m_statsDeferred = 0;
++                m_statsPresents = m_statsDeferred = m_statsDropped = 0;
+                 std::fill(std::begin(m_statsBins), std::end(m_statsBins), 0);
++                std::fill(std::begin(m_statsQueued), std::end(m_statsQueued), 0);
+             }
+         }
+     }
+@@ -320,11 +333,11 @@
+ void NativeSkiaOutputDevice::swapFrame()
+ {
+     QMutexLocker locker(&m_mutex);
+-    if (m_readyToUpdate) {
++    if (!m_ready.empty()) {
+         noteQtFrame();
+         std::unique_ptr<Buffer> previous = std::move(m_frontBuffer);
+-        m_frontBuffer = std::move(m_middleBuffer);
+-        m_readyToUpdate = false;
++        m_frontBuffer = std::move(m_ready.front());
++        m_ready.pop_front();
+         if (m_frontBuffer) {
+             m_readyWithTexture = true;
+             m_frontBuffer->beginPresent();
+@@ -343,6 +356,12 @@
+     }
+ }
+ 
++bool NativeSkiaOutputDevice::hasPendingFrame()
++{
++    QMutexLocker locker(&m_mutex);
++    return !m_ready.empty();
++}
++
+ void NativeSkiaOutputDevice::waitForTexture()
+ {
+     if (m_readyWithTexture)
+--- a/src/core/render_widget_host_view_qt_delegate_item.cpp
++++ b/src/core/render_widget_host_view_qt_delegate_item.cpp
+@@ -473,6 +473,9 @@
+     }
+ 
+     comp->swapFrame();
++    // Frames still queued are shown one per Qt frame (Omarchy Mobile patch).
++    if (comp->hasPendingFrame())
++        QMetaObject::invokeMethod(this, &QQuickItem::update, Qt::QueuedConnection);
+ 
+     // The size of the node inside the shader graph
+     node->setRect(QRectF(QPointF(0, 0), size()));

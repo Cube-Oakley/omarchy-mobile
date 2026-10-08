@@ -19,6 +19,17 @@ TestCase {
         touch.release(0, back, 110, 406).commit(); wait(30);
         compare(backs.count, 1);
     }
+    function test_a_finger_is_down_before_it_moves() {
+        // The shell widens the strip's touch region on this, before any drag.
+        const touch = touchEvent(back);
+        compare(back.down, false);
+        touch.press(0, back, 6, 300).commit(); wait(20);
+        compare(back.down, true);
+        compare(back.pressed, false);
+        touch.release(0, back, 6, 300).commit(); wait(20);
+        compare(back.down, false);
+        compare(backs.count, 0);
+    }
     function test_vertical_drag_does_not_go_back() {
         const touch = touchEvent(back);
         touch.press(0, back, 4, 200).commit(); wait(20);

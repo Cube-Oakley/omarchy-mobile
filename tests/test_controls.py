@@ -128,6 +128,30 @@ class ControlsTests(unittest.TestCase):
         auto.light(113.0, 1.0, 100, now=0.0)
         self.assertEqual(auto.target(), round(auto.base(math.log10(114.0))))
 
+    def test_a_dark_room_dims_to_the_floor_despite_a_brighter_indoor_choice(self):
+        auto = self.controls.AutoBrightness()
+        panel = [46]
+
+        def run(lux, start):
+            for i in range(60):
+                level = auto.light(lux, (panel[0] / 100) ** 2, panel[0], now=start + i)
+                if level is not None:
+                    panel[0] = level
+        run(50.0, 0.0)  # the user's 46 % in a 50 lux room
+        self.assertEqual(panel[0], 46)
+        run(0.0, 100.0)  # the sensor covered: no light
+        self.assertEqual(auto.target(), 10)
+        # Within one step of the floor (changes are at least STEP points).
+        self.assertLess(panel[0] - 10, auto.STEP)
+        # A level set in the dark is the dark preference only ...
+        auto.user_set(20)
+        panel[0] = 20
+        self.assertEqual(auto.target(), 20)
+        run(50.0, 200.0)
+        # ... the room's own is unchanged.
+        self.assertEqual(auto.target(), 46)
+        self.assertLess(abs(panel[0] - 46), auto.STEP)
+
     def test_auto_brightness_learns_the_slider(self):
         auto = self.controls.AutoBrightness()
         auto.light(100.0, 0.09, 30, now=0.0)

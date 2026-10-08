@@ -33,6 +33,17 @@ class CodecTests(unittest.TestCase):
         self.assertTrue(sms['timestamp'].startswith('2026-09-29'))
         with self.assertRaises(ValueError): deliver(pdu[:-1])
 
+    def test_wap_push_keeps_its_bytes_and_port(self):
+        # 8-bit SMS-DELIVER with ports 2948/9200 and part 1 of 2 in its header.
+        body=bytes.fromhex('01060403be81ea')
+        header=bytes.fromhex('0b05040b8423f0000307' '0201')
+        pdu=bytes.fromhex('440b912120550521f3000462909221436500')+bytes([len(header)+len(body)])+header+body
+        sms=deliver(pdu)
+        self.assertEqual((sms['port'],sms['data'],sms['concat'],sms['text']),(2948,body,(7,2,1),''))
+        other=deliver(pdu.replace(bytes.fromhex('0b84'),bytes.fromhex('1584')))
+        self.assertEqual((other['data'],other['port']),(b'',0x1584))
+        self.assertIn('cannot display',other['text'])
+
     def test_number_and_special_service_rejection(self):
         self.assertEqual(number('(202) 555-0123',voice=True),'+12025550123')
         for value in ('911','112','*123#'):

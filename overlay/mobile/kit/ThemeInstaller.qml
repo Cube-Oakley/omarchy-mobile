@@ -118,7 +118,7 @@ Item {
         font.family: MobileTheme.fontFamily
         font.pixelSize: 16
         editing: installer.searching
-        onEditingRequested: { installer.searching = true; installer.urlEditing = false; installer.keyboardRequested(true); }
+        onEditingRequested: { installer.searching = true; installer.urlEditing = false; forceActiveFocus(); installer.keyboardRequested(true); }
         onTextChanged: installer.query = text
         background: Rectangle { radius: MobileTheme.radius(14); color: MobileTheme.surface; border.color: MobileTheme.muted }
     }
@@ -134,7 +134,7 @@ Item {
             font.family: MobileTheme.fontFamily
             font.pixelSize: 15
             editing: installer.urlEditing
-            onEditingRequested: { installer.urlEditing = true; installer.searching = false; installer.keyboardRequested(true); }
+            onEditingRequested: { installer.urlEditing = true; installer.searching = false; forceActiveFocus(); installer.keyboardRequested(true); }
             background: Rectangle { radius: MobileTheme.radius(14); color: MobileTheme.surface; border.color: MobileTheme.muted }
         }
         TouchButton {

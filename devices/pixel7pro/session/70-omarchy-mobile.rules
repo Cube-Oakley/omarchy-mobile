@@ -1,0 +1,15 @@
+# Omarchy Mobile on the Pixel: what the desktop's account writes itself
+# (docs/user-session-plan-20261002.md): the panel's brightness and the torch
+# (video), the battery's charge limit (wheel), and the system dma-buf heap
+# libcamera allocates from (video).
+ACTION=="add", SUBSYSTEM=="backlight", \
+    RUN+="/usr/bin/chgrp video /sys%p/brightness", RUN+="/usr/bin/chmod g+w /sys%p/brightness"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="*:torch|*:flash*", \
+    RUN+="/usr/bin/chgrp video /sys%p/brightness", RUN+="/usr/bin/chmod g+w /sys%p/brightness"
+ACTION=="add", SUBSYSTEM=="power_supply", TEST=="charge_control_end_threshold", \
+    RUN+="/usr/bin/chgrp wheel /sys%p/charge_control_end_threshold", \
+    RUN+="/usr/bin/chmod g+w /sys%p/charge_control_end_threshold"
+SUBSYSTEM=="dma_heap", KERNEL=="system", GROUP="video", MODE="0660"
+# The video codec's decoder (kernel/mfc) under the name the browser's V4L2
+# decoder looks for (overlay/mobile/browser/qtwebengine/0006).
+SUBSYSTEM=="video4linux", ATTR{name}=="s5p-mfc-dec", SYMLINK+="video-dec0"

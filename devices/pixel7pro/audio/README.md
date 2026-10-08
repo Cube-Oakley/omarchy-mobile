@@ -7,6 +7,7 @@ Installed into the Arch root by `scripts/build-pixel-root-image.py`:
 | `ucm2/conf.d/aoc-snd-card/aoc-snd-card.conf` | `/usr/share/alsa/ucm2/conf.d/aoc-snd-card/` | UCM entry for the AoC card (driver name `aoc-snd-card`) |
 | `ucm2/Google/aoc/HiFi.conf` | `/usr/share/alsa/ucm2/Google/aoc/` | HiFi verb: Speaker (PCM 5, AoC EP6 to TDM_0) and Mic (PCM 8, AoC EP1 from the built-in microphones) |
 | `wireplumber/51-pixel-aoc.conf` | `/etc/wireplumber/wireplumber.conf.d/` | no mmap, 20 ms periods for the AoC PCMs |
+| `pipewire/filter-chain.conf.d/60-pixel-speaker-loudness.conf` | `/etc/pipewire/filter-chain.conf.d/` | the speakers' loudness: 150 Hz high-pass and a limiter with 6 dB more gain (needs `swh-plugins`); the session starts `pipewire -c filter-chain.conf` |
 
 The verb sets the AoC routes itself. An AoC front end with no route to a back
 end cannot be opened (ASoC DPCM returns EINVAL), and PipeWire probes the PCMs

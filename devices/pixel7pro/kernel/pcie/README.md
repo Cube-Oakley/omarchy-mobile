@@ -91,6 +91,52 @@ and syncs `/var/lib/omarchy-mobile/pixel-wifi-starting`, and removes it
 afterwards. If a boot hangs while bringing up the link, the next boot finds
 the marker and skips Wi-Fi. Delete the file to try again.
 
+## Runtime link power (October 2)
+
+Stock's bcmdhd never leaves the BCM4389 idle with its link up. After about
+500 ms with nothing to do it tells the chip D3, puts it in D3hot and powers the
+link off; the chip wakes the host on its out-of-band pin. Associated and idle,
+the chip held its save/restore power domains on in D0 whatever the firmware
+settings, about 90 mW. brcmfmac now does the same as stock (`rt_idle_ms`,
+default 500), and this module does the link half:
+- `pixel_pcie_wifi_suspend(ep)`, once the chip has acknowledged D3: D3hot,
+  config saved (the chip's and the root port's), PME_Turn_Off to L2, PERST#,
+  the PHY powered down and isolated. WL_REG_ON stays high, so the firmware
+  keeps running and the association holds. WL_HOST_WAKE is armed.
+- `pixel_pcie_wifi_resume(ep)`: isolation released, PHY configured, retrained,
+  both configs restored, then the L1 substates.
+- `pixel_pcie_wifi_set_wake(fn, data)`: the WL_HOST_WAKE callback. The pin is
+  gpa6-1 (stock `wlan_host_wake`: EINT, pull-down, level high), on its own
+  GIC line, SPI 45. pixel-gpio owns pin 3 of that bank and pixel-gnss pin 4;
+  only pin 1's fields are touched, once, when the callback is first set. The
+  firmware already has out-of-band wake on (`bus:hostwake_oob` reads 1).
+
+While the link is off every config access fails with all-ones (`lspci`, sysfs
+and the PCI core included); reaching an isolated controller would hang the
+SoC. The DWC core's link-up check reports down without reading ELBI.
+`link_state` reads `runtime off`. Counters: `rt_suspends`, `rt_resumes`,
+`rt_errors` and `rt_wakes`.
+
+Each cycle takes about 30 ms to suspend and 30–40 ms to resume (PHY lock,
+the 20 ms PERST# wait, training). brcmfmac's `runtime_pm` attribute counts its
+side.
+
+Measured idle on 5 GHz, VSYS_WLAN_BT over 60 s windows, two rounds:
+
+| `rt_idle_ms` | mW | Suspends a minute |
+| --- | --- | --- |
+| 0 (off) | 96.7, 96.2 | 0 |
+| 500 | 19.8, 18.9 | 21–26 |
+| 2000 | 41.7, 40.2 | 11–14 |
+
+Over 91 cycles there were no failures:
+- outgoing pings resumed the link (3 of 3 answered);
+- pings from the LAN woke it over WL_HOST_WAKE (4 of 4 answered, the first
+  in about 150 ms);
+- unloading the driver while the chip was suspended resumed it first, then
+  removed it cleanly;
+- 11.1 MB/s down and 9.8 MB/s up, the home network's limit as before.
+
 ## Opt-in system sleep link shutdown
 
 `system_link_off=1` is an experimental s2idle-only path, disabled by default.

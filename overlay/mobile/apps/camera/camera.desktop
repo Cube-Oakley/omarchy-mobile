@@ -2,7 +2,7 @@
 Name=Camera
 Comment=Take photos with the phone's cameras
 Exec=omarchy-mobile-app launch camera
-Icon=camera-photo
+Icon=camera-app
 Terminal=false
 Type=Application
 Categories=Graphics;Photography;

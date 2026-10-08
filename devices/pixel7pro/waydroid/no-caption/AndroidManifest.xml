@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A static overlay on Android's framework resources: freeform windows
+     without their caption bar (see ../README.md). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+        package="org.omarchy.mobile.nocaption">
+    <overlay android:targetPackage="android" android:isStatic="true" android:priority="10" />
+    <application android:hasCode="false" />
+</manifest>

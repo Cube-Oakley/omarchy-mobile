@@ -125,7 +125,7 @@
 #define PUD_UP			3
 #define BUS_PINS		(BIT(0) | BIT(1))	/* SCL, SDA */
 
-enum { L12S, LDO1, LDO2, LDO3, LDO4, LDO6, LDO7, LDO8, SGPIO3, SGPIO4, NRAILS };
+enum { L12S, LDO1, LDO2, LDO3, LDO4, LDO5, LDO6, LDO7, LDO8, SGPIO1, SGPIO3, SGPIO4, NRAILS };
 
 struct rail {
 	const char *name;
@@ -143,9 +143,11 @@ static const struct rail rails[NRAILS] = {
 	[LDO2] = { "SLG LDO2", 0x2200, 0x22c1, 1, 0, 1200000, 10000, 2850000 },
 	[LDO3] = { "SLG LDO3", 0x2300, 0x23c1, 2, 0, 1200000, 10000, 2250000 },
 	[LDO4] = { "SLG LDO4", 0x2500, 0x25c1, 3, 0, 1200000, 10000, 2900000 },
+	[LDO5] = { "SLG LDO5", 0x2700, 0x27c1, 4, 0, 1200000, 10000, 2850000 },
 	[LDO6] = { "SLG LDO6", 0x2900, 0x29c1, 5, 0, 400000, 5000, 1100000 },
 	[LDO7] = { "SLG LDO7", 0x3100, 0x31c1, 6, 0, 400000, 5000, 1000000 },
 	[LDO8] = { "SLG LDO8", 0x3200, 0x32c1, 7, 0, 400000, 5000, 1100000 },
+	[SGPIO1] = { .name = "SLG GPIO1", .ctrl = SLG_GPIO_CTRL(1) },
 	[SGPIO3] = { .name = "SLG GPIO3", .ctrl = SLG_GPIO_CTRL(3) },
 	[SGPIO4] = { .name = "SLG GPIO4", .ctrl = SLG_GPIO_CTRL(4) },
 };
@@ -180,8 +182,18 @@ static const struct step main_up[] = {
 static const struct step main_down[] = {
 	CLK(1000), RST(1000), R(LDO1, 0), R(LDO8, 0), R(SGPIO3, 6000), R(LDO4, 0), R(L12S, 0)
 };
-static const struct step tele_up[] = { R(L12S, 300), R(LDO7, 0), R(LDO3, 0), CLK(1000), RST(10000) };
-static const struct step tele_down[] = { RST(0), CLK(0), R(LDO7, 1000), R(L12S, 0), R(LDO3, 0) };
+/*
+ * The tele's AF and OIS (act-/ois-jotnar, SEMCO SEM1215SA at hsi2c_4 0x34)
+ * ride on the sensor: the stock DT powers them with L12S, 1 ms, SLG LDO5
+ * (2.85 V), then SLG GPIO1, and down in reverse. GPIO1 also feeds the main
+ * camera's OIS (ois-gargoyle), which nothing drives.
+ */
+static const struct step tele_up[] = {
+	R(L12S, 1000), R(LDO7, 0), R(LDO3, 0), R(LDO5, 0), R(SGPIO1, 0), CLK(1000), RST(10000)
+};
+static const struct step tele_down[] = {
+	RST(0), CLK(0), R(SGPIO1, 0), R(LDO5, 0), R(LDO7, 1000), R(L12S, 0), R(LDO3, 0)
+};
 
 enum { UW, FRONT, MAIN, TELE, NSENSORS };
 

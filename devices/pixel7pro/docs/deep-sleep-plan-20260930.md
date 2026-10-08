@@ -279,7 +279,13 @@ WAKEUP_INT_EN[4] (EINT, alive banks) or [5] (EINT_FAR).
 | APM | MAILBOX_APM2AP, WAKEUP2[4] | Enabled | — |
 
 Never set wake on touch (gpa7-0, 53), the amplifiers (gpa6-3, 48; gpa8-6, 63),
-SMPL_WARN (gpa5-0) or the PMIC pin gpa0-6. Every mask must be written and then
+SMPL_WARN (gpa5-0) or the PMIC pin gpa0-6. One exception since October 2:
+touch may wake the phone while its controller is in the wakeup gesture mode
+under the always-on display with the fingerprint sensor (`pixel_sleep.
+touch_wake`, set by pixel-display-hook only then). In that mode it interrupts
+for a recognized gesture alone, where a scanning controller would wake the
+phone at every touch. Stock does this through the AoC, which takes the touch
+bus in sleep. Every mask must be written and then
 **read back and compared** before the PSCI call; a mismatch aborts.
 
 ## 5. Where the power goes, and the 25 mA budget
@@ -515,6 +521,228 @@ In order:
 - Modem wake reduction.
 - An 8-hour unplugged gauge run, compared with 25 mA.
 - Only then change `mem_sleep_default`.
+
+#### The background check's cost (measured 2026-10-01)
+
+With Wi-Fi as the check network, each 15-minute check keeps the phone awake
+29–44 s. That is about 9–10 mA averaged over the quarter hour, as much as a
+third of the way from today's 42.6 mA floor to 25. One manual Wi-Fi restart,
+timed with `nmcli monitor`:
+
+| Step | Time |
+| --- | --- |
+| Driver modules (pixel-wifi-restart) | 1.7 s |
+| BCM4389 firmware up, interface back | 3.3 s |
+| NetworkManager and supplicant set up the device | 1.7 s |
+| Scan before choosing the network | 2.5 s |
+| Association, DHCP, connectivity check | 1.0 s |
+| `ONLINE_HOLD` after connecting (sleep.py) | 15 s |
+
+The hold was the largest share, about 4 mA averaged. With the user's
+agreement it is now 3 s (installed October 1, 20:30). Once the network is
+up, sleep.py writes the time to `$XDG_RUNTIME_DIR/omarchy-mobile-check`. An
+app with something to fetch watches that file and holds the phone through
+`$XDG_RUNTIME_DIR/omarchy-mobile-sleep-inhibit/` until it is done. Expected
+saving: about 3–4 mA averaged, still to be measured unplugged. Locking the
+connection to the router's channel would shorten the scan, but it breaks
+roaming and channel changes.
+
+#### Screen-on power and the refresh rate (measured 2026-10-01, 23:45)
+
+`scripts/pixel-screen-power.sh` (on the phone as `/root/tools/`):
+- runs the phone from the battery (`pixel_battery.input_off`) and averages
+  the gauge's coulomb counter over two-minute windows;
+- counts the frames the scanout sends;
+- alternates 120 and 60 Hz with Hyprland's `hl.monitor` mode.
+
+Static app drawer, brightness 184 of 2047, nobody touching the phone:
+
+| Refresh | Round 1 | Round 2 |
+| --- | --- | --- |
+| 120 Hz | 524.0 mA | 521.4 mA |
+| 60 Hz | 448.1 mA | 453.3 mA |
+
+- **Frames:** 0.1 frames/s in all four windows. The command-mode panel
+  refreshes from its own memory, so the 72 mA is the panel's own refresh rate.
+- **Next:** adaptive refresh in the scanout driver: 60 Hz once frames
+  stop, 120 Hz with the next one, and later the panel's lower idle rates.
+- **Still unexplained:** the remaining ~450 mA with the screen on.
+
+#### Screen-on rails (2026-10-02, v33, static screen, brightness 184)
+
+`pixel-odpm` interval power over 60 s, with `pixel-port-temp` unloaded
+meanwhile (both drive the S2MPG13 meter):
+
+| Rail | mW | Rail | mW |
+| --- | --- | --- | --- |
+| VSYS_DISPLAY | 128.0 | S1M_VDD_MIF | 81.7 |
+| VSYS_WLAN_BT | 115.3 | S6M_LLDO1 | 82.9 |
+| VSYS_MODEM | 103.7 | S7S_MLDO | 78.6 |
+| S5M_VDD_INT | 101.9 | SD | 71.0 |
+| S3M_VDD_CPUCL1 | 70.4 | S2M_VDD_CPUCL2 | 58.7 |
+| S7M_VDD_INT_M | 54.5 | S3S_LLDO1 | 52.1 |
+| S5S_VDDQ_MEM | 52.0 | S4S_VDD2H_MEM | 51.0 |
+| S2S_VDD_G3D | 48.4 | S6S_LLDO2 | 45.6 |
+| S1S_VDD_CAM | 45.5 | SA | 30.5 |
+
+Total metered: 1298.6 mW, against about 1.84 W from the battery (428 mA).
+
+Leads:
+- **Wi-Fi.** Bluetooth is not the cost: unloading it (`hci_uart`,
+  `pixel_bt`, as for deep sleep) left VSYS_WLAN_BT at 119.8 mW, against 112.6
+  with it. Wi-Fi itself draws about 115 mW idle with `power_save on`, at
+  -62 dBm on 5 GHz with little traffic. Stock idles far lower: check the
+  firmware's PM mode, `mpc`, the PCIe link's L1 substates and background
+  scans.
+- **The modem** varies from 54 to 104 mW between minutes.
+- **The CPU clusters** draw about 130 mW with nothing on the screen moving:
+  find what wakes them.
+- **The camera rail** is at 46 mW and the GPU at 48 mW, with neither in use.
+
+#### Screen-on power, night of October 1–2 (summary)
+
+Static app drawer, brightness 184, coulomb windows on battery:
+
+| Kernel / setting | mA |
+| --- | --- |
+| v32, 120 Hz manual, MIF 2028 MHz | 523 |
+| v33, the panel's 10 Hz idle | 428 |
+| v34, plus MIF 1352 MHz at 120 Hz | 420 |
+| v34, same, later run | 393 |
+
+About 25 % less. Tried and not kept:
+- **MIF to 421 MHz while idle:** no measurable saving.
+- **Forcing 60 Hz:** worse than the 10 Hz idle.
+- **CPU caps:** with every cluster capped at its lowest frequency, a static
+  screen drew 374 mA against 393, so CPU frequency is worth at most about
+  19 mA at idle.
+
+The little cluster made about 35,000 frequency changes in 20 minutes and spent
+about 100 of ~700 s at 1.8 GHz; schedutil's tunables are global
+(`cpufreq/schedutil`).
+
+Remaining leads, in metered mW at the static screen:
+- **Wi-Fi:** about 110 with power save on (195–233 with it off). Bluetooth
+  is not part of it. PM_MAX and DTIM skipping tried: see "Wi-Fi idle" below.
+- **Modem:** 54–104.
+- **Rails with nothing on them:** the camera buck (46) and the GPU buck (48)
+  with both G3D domains off. Withdrawn: a meter offset, see "CPU and bus at
+  idle" below.
+- **INT (102), MIF (82) and the DRAM rails (103).**
+
+#### Wi-Fi idle (2026-10-02, night)
+
+Settings through brcmfmac's nl80211 vendor command (`scripts/pixel-wl.py`,
+installed as `pixel-wl`). VSYS_WLAN_BT from ODPM in 60 s windows
+(`scripts/pixel-wifi-ab.sh`), two rounds each, associated at -63 dBm on 5 GHz (80 MHz, DTIM 1), mostly idle:
+
+| Firmware setting | mW |
+| --- | --- |
+| Stock: PM_FAST, `pm2_sleep_ret` 2000 ms | 113, 120 |
+| `pm2_sleep_ret` 200 ms | 104, 105, 105, 102 |
+| `pm2_sleep_ret` 50 ms | 104, 103 |
+| PM_MAX | 103, 102 |
+| 50 ms plus `pm_bcnrx` 1 | 103, 103 |
+| 200 ms plus `bcn_li_dtim` 3 | 99, 101 |
+| 200 ms plus one chain (`txchain`/`rxchain` 1) | 101, 101 |
+| 200 ms plus `mimo_ps` | 105, 104 |
+
+Kept: `pm2_sleep_ret` 200, set at every link up by the NetworkManager hook
+`51-pixel-wifi-power` (the firmware forgets it whenever brcmfmac reloads).
+About 12 mW. DTIM 3 would delay incoming packets by up to 300 ms for 4 mW,
+and one chain would give up range for 3 mW.
+
+The rest is a floor the firmware settings do not reach:
+- **Split** (radios unloaded as `pixel-suspend` does): everything on 116 mW,
+  Bluetooth off 112, both off 5.3. Wi-Fi is about 107 mW of it.
+- **Disconnected 139 mW, interface down 94, down with the firmware's
+  `deepsleep` set 93.** With the radio off and no traffic the chip still draws
+  about 90 mW.
+- **Not the cause:**
+  - the radio: `pwrstats` shows receive 1.7 % of the time, and the MAC
+    asleep in power save 81 %;
+  - the PCIe link: L1.2 86 % of the time, L1.1 14 %;
+  - bus deep sleep: about one entry a second, every request acknowledged,
+    no timeouts;
+  - background scans: none in 90 s;
+  - the nvram: byte for byte stock's `bcmdhd.cal`;
+  - WL_DEV_WAKE (gph2-5): an input with pull-down, so deasserted;
+  - the PMIC's 32 kHz outputs: S2MPG12 RTCBUF (PM 0x10) reads 0x47, all
+    three on.
+- **Held inside the chip:** ChipCommon PowerControl, read through the PCIe
+  core (BAR0 + 0x21e8) and through DAR (BAR0 + 0x2a0c), is 0x003f0000. The
+  host requests no domain (bits 15:8 are 0), yet all six save/restore domains
+  are on (bits 21:16).
+- **What stock does** (bcmdhd 101.10.625.1, `android-gs-pantah-android14-release`):
+  the host also leaves no request standing. But stock never leaves the chip
+  idle in D0 with the link up:
+  - runtime PM suspends after 5 idle ticks of 100 ms (`DHD_PCIE_RUNTIMEPM`);
+  - with Wi-Fi off, `dhd_stop` takes the same bus-suspend path;
+  - suspend means `H2D_HOST_D3_INFORM`, wait for `D2H_DEV_D3_ACK`, RC-side
+    L1SS off, D3hot, then `exynos_pcie_pm_suspend`: PME_Turn_Off, PERST#
+    low and the PHY powered down;
+  - while the link is off the chip wakes the host on the OOB GPIO
+    (`wl_host_wake`, gpa6-1). Init stops if `bus:hostwake_oob` reads 0;
+  - resume sends `D0_INFORM` and hostready;
+  - the firmware counts save/restore separately in L0 and in L2/L3
+    (`pcie_cnt_t`: `l0_sr_cnt`, `l2l3_sr_cnt`, `d3_sr_cnt`).
+- **Done in v35 (October 2, [kernel/wifi-v35](../kernel/wifi-v35/README.md)):**
+  brcmfmac and pixel-pcie do the same as stock: D3_INFORM/D3_ACK, link off
+  with PERST#, and the gpa6-1 wake interrupt, after 500 ms idle. The idle
+  rail fell from about 97 to 19 mW.
+
+#### CPU and bus at idle (2026-10-02, night)
+
+Screen off with the always-on display (MIF released to 421 MHz), ODPM over
+60 s windows:
+- **schedutil `rate_limit_us`** (global; 1500 by default): at 1500, 5000 and
+  20000 µs the CPU rails drew 170, 175 and 181 mW (two rounds each).
+  Frequency changes fell from about 110/s to 67/s, but a cluster that steps
+  down later costs more than the changes do. 1500 kept.
+- **Mid and big clusters offline** (CPUs 4–7, pixel_cpupm powers the
+  emptied cluster down): the total fell by about 55 mW (988 → 932). The mid
+  and big rails still read 63 and 51 mW with their clusters off.
+- **The ~50 mW on idle bucks is a meter offset, not power.** The GPU buck is
+  switched by the GPU driver. Its S2MPG13 B2S_CTRL (PM 0x11, Google's
+  `s2mpg13-register.h`) reads 0xf8 while the GPU is active and 0x38 (off)
+  when it runtime-suspends. Over 20 s with the GPU active 0 ms, S2S_VDD_G3D
+  still read 49.3 mW, and S1S_VDD_CAM 40.2 mW. Both use the CMT resolution
+  in `pixel-odpm`. Stock's own meter averaged about 9 mW on the camera buck
+  in its first minute (552.9 mWs), and its TPU channel almost 0. So
+  `pixel-odpm` reads an idle buck about 40–50 mW high:
+  - A/B differences stand;
+  - absolute buck values, including the screen-on rails table above, read
+    high;
+  - the "rails with nothing on them" lead is withdrawn.
+
+  The camera buck runs at 500 mV (B1S_OUT1 0x30), following PWREN (B1S_CTRL
+  0x78) as in stock. Next for the meter: compare a channel against the gauge
+  with a known load, and look for an offset stock's driver subtracts.
+- **INT DVFS:** 200 MHz since boot. Stock follows MIF with `mif_int_map`:
+  INT 200 MHz at MIF 1352 MHz, 100 MHz at 546 MHz and below. Setting 100 MHz
+  through the ACPM clock left S5M_VDD_INT at 85.4 mW (85.3 at 200). At idle
+  the rail is static power.
+- **Wakeups:**
+  - Function-call IPIs run at about 280/s and timer-broadcast IPIs at about
+    160/s.
+  - The schedutil kthreads switch about 61 (little), 26 (mid) and 14 (big)
+    times a second, at about 0.5 ms of CPU each.
+  - Userspace takes about 10 % of a CPU:
+
+    | Process | CPU |
+    | --- | --- |
+    | `omarchy-mobile-phone watch` | 2 % |
+    | wireplumber | 1.75 % |
+    | pixel-sensor-proxy | 1.4 % |
+    | `omarchy-mobile-messages watch` | 1.1 % |
+    | the modem services | 1.5 % together |
+    | pipewire, quickshell, the sleep daemon, dbus | about 0.6 % each |
+
+  - The phone watcher asks the telephony service for its call list every
+    0.5 s, which wakes the service too. The service already rewrites
+    `/run/omarchy-mobile-telephony/active.json` on every call change, so the
+    watcher could wait on inotify instead. That changes how incoming calls
+    are detected, so it waits for a test call.
 
 ## 7. Top risks and open questions
 

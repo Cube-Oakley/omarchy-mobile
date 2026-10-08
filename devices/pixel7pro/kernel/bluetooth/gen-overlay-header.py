@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Generate pixel_bt_overlay.h from pixel-bt-overlay.dts: the whole overlay,
-and a variant without the bluetooth node (a plain tty, for testing)."""
+a variant without the Bluetooth node's wake lines (no low-power mode), and one
+without the Bluetooth node (a plain tty, for testing)."""
 import re, subprocess, sys
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
 src = (here / 'pixel-bt-overlay.dts').read_text()
 tty = re.sub(r'\n\t\tbluetooth \{.*?\n\t\t\};\n', '\n', src, flags=re.S)
-assert tty != src
+awake = re.sub(r'\n\t\t\t(device-wakeup-gpios|interrupts-extended|interrupt-names) = [^;]*;', '', src)
+assert tty != src and awake.count('wakeup') == 0
 
 def dtb(text):
     return subprocess.run(['dtc', '-@', '-q', '-I', 'dts', '-O', 'dtb'], input=text.encode(),
@@ -20,5 +22,6 @@ def array(name, data):
 
 out = ('/* SPDX-License-Identifier: GPL-2.0-only */\n'
        '/* Generated from kernel/bluetooth/pixel-bt-overlay.dts by gen-overlay-header.py */\n' +
-       array('pixel_bt_overlay', dtb(src)) + array('pixel_bt_overlay_tty', dtb(tty)))
+       array('pixel_bt_overlay', dtb(src)) + array('pixel_bt_overlay_awake', dtb(awake)) +
+       array('pixel_bt_overlay_tty', dtb(tty)))
 Path(sys.argv[1] if len(sys.argv) > 1 else here / 'pixel_bt_overlay.h').write_text(out)

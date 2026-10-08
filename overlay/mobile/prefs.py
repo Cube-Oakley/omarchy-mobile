@@ -8,11 +8,22 @@ import subprocess
 import sys
 
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'omarchy-mobile/prefs.json'
-ALLOWED = {'dnd', 'fontFamily', 'corners', 'alwaysOn', 'sleep', 'sleepCheck', 'screenTimeout'}
+ALLOWED = {'dnd', 'fontFamily', 'corners', 'alwaysOn', 'sleep', 'sleepCheck', 'sleepCheckNetwork',
+           'screenTimeout', 'fingerprintUnlock', 'fingerprintHaptics', 'fingerprintAmbient',
+           'ambientWeather'}
+# The lock screen (Settings → Security): unlocking with a fingerprint and a
+# vibration with its result, both on by default, and the sensor in the
+# always-on display, off by default (it keeps the touch controller on there).
+# The weather under the always-on clock (Settings → Display), off by default.
+SWITCHES = {'fingerprintUnlock': True, 'fingerprintHaptics': True, 'fingerprintAmbient': False,
+            'ambientWeather': False}
 # Minutes between background wakes while asleep (0: only calls, texts and the
 # power key wake it), and seconds of inactivity before the screen goes off
 # (0: never).
 SLEEP_CHECKS = (0, 5, 15, 30, 60)
+# The network the background check brings up: Wi-Fi, or mobile data alone
+# (no Wi-Fi reload, a shorter wake; costs data).
+SLEEP_CHECK_NETWORKS = ('wifi', 'data')
 SCREEN_TIMEOUTS = (0, 15, 30, 60, 120, 300, 600)
 DEFAULT_FONT = 'JetBrainsMono Nerd Font'
 FONT_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 +._-]{0,78}$')
@@ -28,12 +39,16 @@ def read(path=CONFIG):
         font = DEFAULT_FONT
     corners = data.get('corners') if data.get('corners') in ('round', 'square') else ''
     check = data.get('sleepCheck')
+    network = data.get('sleepCheckNetwork')
     timeout = data.get('screenTimeout')
     return {'dnd': bool(data.get('dnd')), 'fontFamily': font, 'corners': corners,
             'alwaysOn': data.get('alwaysOn') is True,
             'sleep': data.get('sleep') is not False,
             'sleepCheck': check if check in SLEEP_CHECKS and type(check) is int else 15,
-            'screenTimeout': timeout if timeout in SCREEN_TIMEOUTS and type(timeout) is int else 60}
+            'sleepCheckNetwork': network if network in SLEEP_CHECK_NETWORKS else 'wifi',
+            'screenTimeout': timeout if timeout in SCREEN_TIMEOUTS and type(timeout) is int else 60,
+            **{key: data[key] if isinstance(data.get(key), bool) else default
+               for key, default in SWITCHES.items()}}
 
 
 def save(data, path=CONFIG):
@@ -41,7 +56,11 @@ def save(data, path=CONFIG):
     temp = path.with_suffix('.tmp')
     stored = {'dnd': bool(data.get('dnd')), 'fontFamily': data.get('fontFamily') or DEFAULT_FONT,
               'alwaysOn': data.get('alwaysOn') is True, 'sleep': data.get('sleep') is not False,
-              'sleepCheck': data.get('sleepCheck', 15), 'screenTimeout': data.get('screenTimeout', 60)}
+              'sleepCheck': data.get('sleepCheck', 15),
+              'sleepCheckNetwork': data.get('sleepCheckNetwork', 'wifi'),
+              'screenTimeout': data.get('screenTimeout', 60),
+              **{key: data.get(key) if isinstance(data.get(key), bool) else default
+                 for key, default in SWITCHES.items()}}
     if data.get('corners') in ('round', 'square'):
         stored['corners'] = data['corners']
     temp.write_text(json.dumps(stored))
@@ -85,15 +104,20 @@ def main(argv=None, stdin=None, path=CONFIG):
             if not isinstance(incoming['alwaysOn'], bool):
                 raise ValueError('alwaysOn must be true or false')
             prefs['alwaysOn'] = incoming['alwaysOn']
-        if 'sleep' in incoming:
-            if not isinstance(incoming['sleep'], bool):
-                raise ValueError('sleep must be true or false')
-            prefs['sleep'] = incoming['sleep']
+        for key in ('sleep', *SWITCHES):
+            if key in incoming:
+                if not isinstance(incoming[key], bool):
+                    raise ValueError(f'{key} must be true or false')
+                prefs[key] = incoming[key]
         for key, choices in (('sleepCheck', SLEEP_CHECKS), ('screenTimeout', SCREEN_TIMEOUTS)):
             if key in incoming:
                 if type(incoming[key]) is not int or incoming[key] not in choices:
                     raise ValueError(f'{key} must be one of {choices}')
                 prefs[key] = incoming[key]
+        if 'sleepCheckNetwork' in incoming:
+            if incoming['sleepCheckNetwork'] not in SLEEP_CHECK_NETWORKS:
+                raise ValueError(f'sleepCheckNetwork must be one of {SLEEP_CHECK_NETWORKS}')
+            prefs['sleepCheckNetwork'] = incoming['sleepCheckNetwork']
         if 'corners' in incoming:
             choice = incoming['corners']
             if choice not in ('round', 'square'):

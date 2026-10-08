@@ -27,6 +27,20 @@ class ServiceTests(unittest.TestCase):
             repeated=self.service.send_sms(req)
             self.assertEqual(repeated['state'],result['state'])
             self.assertEqual(self.client.request.call_count,before)
+    def test_wap_push_parts_join_into_data(self):
+        inbox=self.root/'inbox'; inbox.mkdir()
+        pieces=[bytes(range(0,100)),bytes(range(100,160))]
+        for seq,piece in enumerate(pieces,1):
+            ud=bytes.fromhex('0b05040b8423f000030902')+bytes([seq])+piece
+            tpdu=bytes.fromhex('440b912120550521f3000462909221436500')+bytes([len(ud)])+ud
+            data=bytes.fromhex('07912120550521f3')+tpdu
+            path=inbox/f'{seq}.sit'
+            path.write_bytes(bytes(2)+struct.pack('<H',0x0d1e)+bytes(5)+bytes([len(data)])+data)
+            self.service.ingest(path)
+        listed=self.service.dispatch(dict(action='sms-list'))
+        self.assertEqual(len(listed),1)
+        self.assertEqual((listed[0]['number'],listed[0]['text'],listed[0]['data']),('+12025550123','',b''.join(pieces).hex()))
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM parts').fetchone()[0],0)
     def test_restart_does_not_retry_pending_sms(self):
         self.db.execute('INSERT INTO outgoing VALUES (?,?,?,?,?)',('a'*32,'digest','sending','',0)); self.db.commit()
         other=app_service.database(self.root/'db')

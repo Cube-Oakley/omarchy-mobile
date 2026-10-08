@@ -17,14 +17,19 @@
  *   one at a time, each read back. While the SoC runs PWREN is high, so they
  *   stay on; stock runs with exactly these settings.
  * Test-only rails (`test`) are never part of "all" and must be named: the
- * touch (L25M, L26M) and panel (L27M VCI, L28M VDDD) supplies, always on
- * in stock, where the drivers switch them. Following PWREN they drop only
- * inside SYS_SLEEP; neither the touch IC nor the panel is re-initialized
- * after it, so they are for measurements that end in a reboot.
+ * touch (L25M, L26M), panel (L27M VCI, L28M VDDD) and microphone (L20M,
+ * L19S, L20S) supplies, always on
+ * in stock, where the drivers switch them, and the USB block's (L7M
+ * VDD_HSI, L8M-L10M), which stock's USB driver switches off while
+ * unplugged. Following PWREN they drop only inside SYS_SLEEP; nothing
+ * re-initializes the touch IC, the panel or the USB PHY after it, so they
+ * are for measurements that end in a reboot.
  * Nothing else is written: not the NFC/eSIM rail (L14S), not the rails this
  * port keeps off on purpose (GNSS, UWB, fingerprint), not voltages. The
  * fields stay as set when the module is unloaded; `restore=1` at unload puts
- * back what it found.
+ * the bootloader's fields back on the stock rails it selected (3, or 2 for
+ * the retention rails), whatever an earlier load left, and the test rails
+ * back to what it found.
  * Register offsets and enable masks: Google's s2mpg12-regulator.c:233-294,
  * s2mpg13-regulator.c:217-300; opmodes from the stock DT (regulator-initial-
  * mode), checked by kernel/suspend/sleep-audit-diff.py.
@@ -82,6 +87,17 @@ static const struct rail rails[] = {
 	{ "LDO26M", 0, 0x45, 0xc0, 1, false, true },	/* touch */
 	{ "LDO27M", 0, 0x46, 0xc0, 1, false, true },	/* panel VCI */
 	{ "LDO28M", 0, 0x47, 0xc0, 1, false, true },	/* panel VDDD */
+	/* The USB block: stock's USB driver switches these off unplugged; here
+	 * USB never suspends, so the bootloader's always-on stays. */
+	{ "LDO7M", 0, 0x48, 0x03, 1, false, true },	/* L7M_VDD_HSI */
+	{ "LDO8M", 0, 0x33, 0xc0, 1, false, true },	/* L8M_USB */
+	{ "LDO9M", 0, 0x34, 0xc0, 1, false, true },	/* L9M_USB */
+	{ "LDO10M", 0, 0x35, 0xc0, 1, false, true },	/* L10M_USB */
+	/* The digital microphones: always on in stock (mode 3); the AoC powers
+	 * their clocks only while recording. Test rails for the sleep sweep. */
+	{ "LDO20M", 0, 0x3f, 0xc0, 1, false, true },	/* L20M_DMIC1 */
+	{ "LDO19S", 1, 0x3e, 0xc0, 1, false, true },	/* L19S_DMIC3 */
+	{ "LDO20S", 1, 0x3f, 0xc0, 1, false, true },	/* L20S_DMIC2 */
 };
 
 static bool retention;
@@ -144,6 +160,61 @@ static bool selected(unsigned int i)
 	return !rails[i].test && named("all");
 }
 
+/* The always-on display: the panel keeps showing its memory through system
+ * sleep only with VCI (L27M) and VDDD (L28M) up. The bootloader's field (2,
+ * follow PWREN_MIF) drops them inside SYS_SLEEP; `panel_on=1` holds them
+ * always on (3) while AOD shows, `panel_on=0` puts back what was found. */
+static DEFINE_MUTEX(panel_lock);
+static bool panel_on;
+
+static int panel_rail_index(const char *name)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(rails); i++)
+		if (!strcmp(rails[i].name, name))
+			return i;
+	return -1;
+}
+
+static int panel_on_set(const char *val, const struct kernel_param *kp)
+{
+	static const char *const names[] = { "LDO27M", "LDO28M" };
+	unsigned int k;
+	bool on;
+	int ret = 0;
+
+	if (kstrtobool(val, &on))
+		return -EINVAL;
+	if (!acpm)
+		return -ENODEV;
+	mutex_lock(&panel_lock);
+	for (k = 0; k < ARRAY_SIZE(names) && !ret; k++) {
+		int i = panel_rail_index(names[k]);
+		u8 shift;
+
+		if (i < 0) {
+			ret = -ENOENT;
+			break;
+		}
+		shift = __ffs(rails[i].mask);
+		ret = field_set(i, on ? 3 : (found[i] & rails[i].mask) >> shift);
+	}
+	if (!ret)
+		panel_on = on;
+	mutex_unlock(&panel_lock);
+	return ret;
+}
+
+static int panel_on_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "%c\n", panel_on ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops panel_on_ops = { .set = panel_on_set, .get = panel_on_get };
+module_param_cb(panel_on, &panel_on_ops, NULL, 0644);
+MODULE_PARM_DESC(panel_on, "Hold the panel's VCI and VDDD on through sleep (the always-on display)");
+
 static int __init opmode_init(void)
 {
 	struct device_node *np;
@@ -198,9 +269,30 @@ static void __exit opmode_exit(void)
 {
 	unsigned int i = ARRAY_SIZE(rails);
 
-	while (restore && i--)
-		if (changed[i])
-			field_set(i, (found[i] & rails[i].mask) >> __ffs(rails[i].mask));
+	if (panel_on)
+		panel_on_set("0", NULL);
+	/* The stock rails go back to the bootloader's fields by rule, not to what
+	 * this load found: after a reload that was the sleep setting already,
+	 * and a warm reboot that keeps them set for sleep can draw an APM
+	 * watchdog reset in the next boot (pixel-reboot restores through this,
+	 * October 3). Test rails go back to what this load found.
+	 */
+	while (restore && i--) {
+		const struct rail *r = &rails[i];
+		u8 now, shift = __ffs(r->mask);
+
+		if (r->test) {
+			if (changed[i])
+				field_set(i, (found[i] & r->mask) >> shift);
+			continue;
+		}
+		if (!selected(i) ||
+		    acpm->ops->pmic.read_reg(acpm, ACPM_PMIC_CHANNEL, PM_BANK, r->reg, r->pmic, &now))
+			continue;
+		now = (now & r->mask) >> shift;
+		if (now == r->want)
+			field_set(i, r->retention ? 2 : 3);
+	}
 	root_device_unregister(dev);
 }
 module_exit(opmode_exit);

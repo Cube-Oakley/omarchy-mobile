@@ -1,0 +1,10 @@
+#%PAM-1.0
+# Omarchy Mobile on the Pixel (/etc/pam.d/sudo): the session's person
+# answers with the lock screen's PIN or password, which the fingerprint
+# service checks with Trusty's Gatekeeper (lock-secret-auth.py). Anyone
+# else, or a wrong answer, goes on to the system's check with the same
+# answer; the session's account has no password there.
+auth		[success=done default=ignore]	pam_exec.so quiet stdout seteuid expose_authtok /usr/local/lib/omarchy-mobile/lock-secret-auth
+auth		include		system-auth
+account		include		system-auth
+session		include		system-auth

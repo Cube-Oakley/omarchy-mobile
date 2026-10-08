@@ -30,12 +30,14 @@ CAMERAS = {
                    "sandworm_imx386_mode_0x919860_2016x1508_73.txt"],
         "extra": [],
         "value_bits": 8,
+        "modes": {"4032x3016": "sandworm_imx386_mode_0x918ca0_4032x3016_73.txt"},
     },
     "front": {
         "start": [],
         "tables": ["dokkaebi_3j1_init_368.txt", "dokkaebi_3j1_mode3_1920x1368_100.txt"],
         "extra": [],
         "value_bits": 16,
+        "modes": {"3840x2736": "dokkaebi_3j1_mode0_3840x2736_100.txt"},
     },
     "main": {
         "start": SAMSUNG_START,
@@ -50,6 +52,7 @@ CAMERAS = {
                    "kraken_gm5_mode_0x90b060_2016x1512_279.txt"],
         "extra": [],
         "value_bits": 16,
+        "modes": {"4032x3024": "kraken_gm5_mode_0x908a64_4032x3024_1530.txt"},
     },
 }
 

@@ -243,3 +243,23 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   widget), and the Wisp chat was a demo. Each image was checked at full size:
   no phone number, name, account, network name, location or address. The
   images were resized and stripped of metadata.
+
+- October 8, night: with the user's go-ahead ("you can push updates to this
+  project to github"), `public` synced to development `main` after a week
+  of private-only work: the Pixel's kernels v27-v43 (display, Wi-Fi idle
+  power, fingerprint, brownout protection, the memory-corruption and fence
+  fixes), the desktop as its own user, Hyprland's patches, Qt WebEngine's,
+  Waydroid's Android apps as windows, Omarchy Link, video recording and
+  decoding, MMS, the fingerprint lock, the keyboard's voice typing, the home
+  screen and widgets, charging and time sync, the flight recorder and soak
+  tools, louder speakers, and Wisp, the on-device assistant. Before the
+  sync, the plan pages and browser notes stopped naming the user's own
+  server, a sleep test's paired Bluetooth address became 00:11:22:33:44:55,
+  and the soak test's lock PIN moved to a file on the phone. Checks: the
+  only addresses are the documented USB link and gadget ones, NetworkManager's
+  hotspot range, loopback and public resolvers; the long digit runs are
+  hashes and fictional test values (a 555 number in an SMS test); the
+  handset's serials, network and Bluetooth addresses, paired devices,
+  network and VPN names, VPN server and account, and SIM numbers, checked
+  on the phone without printing them, appear nowhere. No firmware, logs,
+  photos, VPN profile or modem backups are included.

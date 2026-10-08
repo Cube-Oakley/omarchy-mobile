@@ -2,7 +2,7 @@
 Name=Contacts
 Comment=People, their numbers and photos
 Exec=omarchy-mobile-app launch contacts
-Icon=x-office-address-book
+Icon=address-book-app
 Terminal=false
 Type=Application
 Categories=Office;ContactManagement;

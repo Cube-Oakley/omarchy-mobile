@@ -185,7 +185,26 @@ def main():
         return {'configured': True, 'available': False, 'location': config, 'error': 'Weather unavailable; try again later'}
 
 
+def hold_awake():
+    """'background' is 'status' from the sleep adapter's background check: the
+    phone stays up until the fetch is done (omarchy-mobile-sleep's inhibit files)."""
+    folder = Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp')) / 'omarchy-mobile-sleep-inhibit'
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        hold = folder / 'weather'
+        hold.touch()
+        return hold
+    except OSError:
+        return None
+
+
 if __name__ == '__main__':
+    hold = None
+    if sys.argv[1:2] == ['background']:
+        sys.argv[1] = 'status'
+        hold = hold_awake()
     try: result = main()
     except Exception: result = {'error': 'Weather request failed. Check the location and connection.'}
+    finally:
+        if hold: hold.unlink(missing_ok=True)
     print(json.dumps(result))

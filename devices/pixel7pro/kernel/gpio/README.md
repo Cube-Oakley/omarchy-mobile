@@ -9,9 +9,10 @@ banks stays invalid and untouched.
 
 | Bank | Controller | Lines | Use |
 | --- | --- | --- | --- |
+| gpp16 | PERIC0, 0x10840000 | 3 (GPIO) | Bluetooth device wake |
 | gpp17 | PERIC0, 0x10840000 | 1 (GPIO) | left CS35L41 reset |
 | gpp25 | PERIC1, 0x10C40000 | 2 (GPIO) | right CS35L41 reset |
-| gpa6 | FAR_ALIVE, 0x180E0000 | 3 (interrupt) | left CS35L41 interrupt |
+| gpa6 | FAR_ALIVE, 0x180E0000 | 3, 6 (interrupts) | left CS35L41 interrupt, Bluetooth host wake |
 | gpa8 | FAR_ALIVE, 0x180E0000 | 6 (interrupt) | right CS35L41 interrupt |
 
 GPIO lines are plain inputs or outputs: CON function 0 or 1, and DAT.
@@ -19,7 +20,8 @@ GPIO lines are plain inputs or outputs: CON function 0 or 1, and DAT.
 Wake-up EINT pins become interrupts, each chained from its own GIC line, taken
 from the bank node's per-pin `interrupts` list. When a pin is requested, it is
 switched to its EINT function (0xf). Amplifier pulls are disabled as in the
-stock pinctrl states; modem input pulls are preserved. Freeing the interrupt
+stock pinctrl states; modem input pulls are preserved; Bluetooth's host wake
+is pulled down, as the stock `bt_host_wake` state does. Freeing the interrupt
 restores both. IRQ users pin the module and lock GPIO inputs against output
 use. GPIO-to-IRQ lookup shares the existing per-bank domain. Probe failures
 and module removal dispose mappings and parent handlers before unmapping
@@ -81,3 +83,17 @@ For manual replacement, unbind both amplifier devices from `cs35l41`, unload
 Do not replace it while cpif owns pins. Arm the watchdog and stream diagnostics
 as described in the modem README. Reboot afterward to restore normal startup;
 no boot script enables the modem option.
+
+## NFC enable (October 3, 2026)
+
+With `modem=1` the gph1 bank also exposes line 5, the ST54J's VEN (stock
+`nfc-rst`): high runs the NFC controller and its secure element, low holds
+the chip in hard power-down. The `nfc_ven` parameter (0664) drives it through
+the bank lock the modem's lines use, and only while the PMU reports HSI1 on.
+The boot script sets it from the session's choice
+(`~/.local/state/omarchy-mobile/nfc.json`, off when absent) and hands the
+parameter to the session's group; Settings switches it through
+`omarchy-mobile-nfc`. In SYS_SLEEP the pin's power-down state (input with
+pull-down) holds VEN low whatever the setting. Measured awake with the
+screen off, on and off draw the same within noise (an idle, uninitialized
+controller): the switch is for control, not for a saving.

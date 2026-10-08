@@ -13,6 +13,56 @@ ShellRoot {
     property bool dnsEditing: false
     // Wi-Fi IPv4: Automatic (DHCP) or Static. ipEditing names the field typed in.
     property bool ipAuto: true
+    // The Wi-Fi hotspot (omarchy-mobile-hotspot) and the setting being changed.
+    property var hotspot: ({})
+    property string hotspotEditing: ""
+    property string hotspotMessage: ""
+    function hotspotRun(args) {
+        if (hotspotTool.running) return;
+        hotspotMessage = args[0] === "status" ? hotspotMessage : "Working…";
+        hotspotTool.command = [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-hotspot"].concat(args);
+        hotspotTool.running = true;
+    }
+    Process {
+        id: hotspotTool
+        stdout: StdioCollector {}
+        onExited: {
+            try {
+                const result = JSON.parse(stdout.text);
+                if (result.ok) { root.hotspot = result; root.hotspotMessage = ""; }
+                else root.hotspotMessage = result.error || "The hotspot did not answer";
+            } catch (e) { root.hotspotMessage = "The hotspot did not answer"; }
+        }
+    }
+    // VPNs (omarchy-mobile-vpn) and the one being given its password.
+    property var vpns: []
+    property string vpnEditing: ""
+    property string vpnMessage: ""
+    function vpnRun(args, input) {
+        if (vpnTool.running) return;
+        vpnMessage = args[0] === "status" ? vpnMessage : args[0] === "on" ? "Connecting…" : "Working…";
+        vpnTool.payload = input || "";
+        vpnTool.stdinEnabled = !!input;
+        vpnTool.command = [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-vpn"].concat(args);
+        vpnTool.running = true;
+    }
+    Process {
+        id: vpnTool
+        property string payload: ""
+        stdout: StdioCollector {}
+        onStarted: {
+            if (payload) write(payload);
+            payload = "";
+        }
+        onExited: {
+            stdinEnabled = false;
+            try {
+                const result = JSON.parse(stdout.text);
+                if (result.ok) { root.vpns = result.vpns || []; root.vpnMessage = ""; }
+                else { root.vpnMessage = result.error || "The VPN did not answer"; root.vpnRun(["status"]); }
+            } catch (e) { root.vpnMessage = "The VPN did not answer"; }
+        }
+    }
     property string ipEditing: ""
     function fillCurrentIp() {
         const current = (root.wifi.ipv4 || [])[0] || "";
@@ -30,42 +80,47 @@ ShellRoot {
             return;
         }
         if (panel === "home") return;
+        if (panel === "battery" && batteryPage.detailsOpen) { batteryPage.detailsOpen = false; return; }
+        if (panel === "security" && security.step !== "main") {
+            security.back();
+            return;
+        }
         dnsEditing = false;
         ipEditing = "";
         panel = panel === "wifi" ? "network" : "home";
     }
-    property string backStamp: ""
-    Process {
-        id: backRead
-        command: ["cat", Quickshell.env("XDG_RUNTIME_DIR") + "/omarchy-mobile/back"]
-        stdout: StdioCollector {}
-        stderr: StdioCollector {}
-        onExited: {
-            const stamp = stdout.text.trim();
-            if (!stamp || stamp === root.backStamp) return;
-            const first = root.backStamp === "";
-            root.backStamp = stamp;
-            if (!first) root.goBack();
-        }
-    }
-    Timer {
-        interval: 180
-        repeat: true
-        running: root.panel !== "home" || root.speedOpen
-        onTriggered: if (!backRead.running) backRead.running = true
-    }
     function openPanel(name) {
-        if (["home", "appearance", "clipboard", "network", "wifi", "sound", "battery", "about", "bluetooth", "display", "storage", "apps"].indexOf(name) >= 0) {
+        if (["home", "appearance", "clipboard", "network", "wifi", "sound", "battery", "about", "bluetooth", "display", "storage", "apps", "security", "activity", "keyboard"].indexOf(name) >= 0) {
             speedOpen = false;
             dnsEditing = false;
             panel = name;
         }
         if (name === "wifi" || name === "network") net.run("status");
+        if (name === "network") { hotspotRun(["status"]); vpnRun(["status"]); }
     }
     function setDnd(enabled) {
         dnd = enabled;
         prefsSave.payload = JSON.stringify({dnd: enabled}) + "\n";
         prefsSave.running = true;
+    }
+    // NFC (omarchy-mobile-nfc): off powers the controller and its secure
+    // element down; the row shows only where the device can switch it.
+    property var nfc: ({supported: false, on: false})
+    function setNfc(enabled) {
+        if (nfcRequest.running) return;
+        nfc = {supported: true, on: enabled};
+        nfcRequest.command = [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-nfc", enabled ? "on" : "off"];
+        nfcRequest.running = true;
+    }
+    Process {
+        id: nfcRequest
+        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-nfc", "status"]
+        running: true
+        stdout: StdioCollector {}
+        onExited: {
+            try { root.nfc = JSON.parse(stdout.text); }
+            catch (e) {}
+        }
     }
     Process {
         id: prefsLoad
@@ -125,13 +180,18 @@ ShellRoot {
             } catch (e) { clipRequest.message = "Clipboard unavailable"; }
         }
     }
+    // What a page shows is fetched as it opens, and for the page Settings
+    // was opened on (no change of panel happens for that one).
+    function panelOpened() {
+        if (panel === "clipboard") clipRequest.run("history");
+        if (panel === "wifi" || panel === "network") net.run("status");
+        if (panel === "network") { hotspotRun(["status"]); vpnRun(["status"]); }
+    }
     Connections {
         target: root
-        function onPanelChanged() {
-            if (root.panel === "clipboard") clipRequest.run("history");
-            if (root.panel === "wifi" || root.panel === "network") net.run("status");
-        }
+        function onPanelChanged() { root.panelOpened(); }
     }
+    Component.onCompleted: Qt.callLater(panelOpened)
     Process {
         id: net
         stdinEnabled: true
@@ -196,7 +256,9 @@ ShellRoot {
             return (root.dnsEditing && root.panel === "wifi" && !root.dnsAuto)
                 || (root.ipEditing !== "" && root.panel === "wifi" && !root.ipAuto)
                 || (root.panel === "appearance" && appearance.installerKeyboard)
-                || (root.panel === "weather" && weatherPage.editing);
+                || (root.panel === "weather" && weatherPage.editing)
+                || (root.panel === "security" && security.wantsKeyboard)
+                || (root.panel === "network" && (root.hotspotEditing !== "" || root.vpnEditing !== ""));
         }
         function suppressKeyboard() {
             if (fieldWantsKeyboard())
@@ -260,7 +322,7 @@ ShellRoot {
             PageHeader {
                 Layout.fillWidth: true
                 kicker: root.panel === "home" ? "OMARCHY" : "SETTINGS"
-                title: root.speedOpen ? "Speed test" : ({home: "Settings", appearance: "Appearance", clipboard: "Clipboard", network: "Network", wifi: "Wi-Fi", sound: "Sound", battery: "Battery", about: "About", bluetooth: "Bluetooth", display: "Display", storage: "Storage", apps: "Apps", weather: "Weather"})[root.panel] || "Settings"
+                title: root.speedOpen ? "Speed test" : root.panel === "battery" && batteryPage.detailsOpen ? "Battery details" : ({home: "Settings", appearance: "Appearance", clipboard: "Clipboard", network: "Network", wifi: "Wi-Fi", sound: "Sound", battery: "Battery", about: "About", bluetooth: "Bluetooth", display: "Display", storage: "Storage", apps: "Apps", weather: "Weather", security: "Security", activity: "Activity", keyboard: "Keyboard"})[root.panel] || "Settings"
                 backVisible: root.panel !== "home" || root.speedOpen
                 onBackClicked: root.goBack()
             }
@@ -277,11 +339,23 @@ ShellRoot {
                     spacing: 12
                     SettingsRow { width: parent.width; label: "Appearance"; value: (MobileTheme.state.name || "").replace(/-/g, " "); onClicked: root.panel = "appearance" }
                     SettingsRow { width: parent.width; label: "Display"; value: MobileTheme.square ? "Square" : "Round"; onClicked: root.panel = "display" }
+                    SettingsRow { width: parent.width; label: "Security"; value: "Screen lock"; onClicked: root.panel = "security" }
                     SettingsRow { width: parent.width; label: "Sound"; value: "Volume"; onClicked: root.panel = "sound" }
+                    SettingsRow { width: parent.width; label: "Keyboard"; value: "Voice typing"; onClicked: root.panel = "keyboard" }
                     SettingsRow { width: parent.width; label: "Network"; value: "Wi-Fi"; onClicked: root.openPanel("network") }
                     SettingsRow { width: parent.width; label: "Bluetooth"; onClicked: root.panel = "bluetooth" }
+                    SettingsRow {
+                        width: parent.width
+                        visible: root.nfc.supported === true
+                        label: "NFC"
+                        value: root.nfc.on ? "On" : "Off"
+                        selected: root.nfc.on === true
+                        enabled: !nfcRequest.running
+                        onClicked: root.setNfc(!root.nfc.on)
+                    }
                     SettingsRow { width: parent.width; label: "Battery"; onClicked: root.panel = "battery" }
                     SettingsRow { width: parent.width; label: "Storage"; onClicked: root.panel = "storage" }
+                    SettingsRow { width: parent.width; label: "Activity"; value: "Steps"; onClicked: root.panel = "activity" }
                     SettingsRow { width: parent.width; label: "Apps"; onClicked: root.panel = "apps" }
                     SettingsRow { width: parent.width; label: "Weather"; value: "Location"; onClicked: root.panel = "weather" }
                     SettingsRow { width: parent.width; label: "Clipboard"; value: "History"; onClicked: root.panel = "clipboard" }
@@ -316,12 +390,19 @@ ShellRoot {
                 Layout.fillHeight: true
             }
             BatteryPage {
+                id: batteryPage
                 visible: root.panel === "battery"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
             }
             BluetoothPage {
                 visible: root.panel === "bluetooth"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
+            SecurityPage {
+                id: security
+                visible: root.panel === "security"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
             }
@@ -333,6 +414,16 @@ ShellRoot {
             }
             StoragePage {
                 visible: root.panel === "storage"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
+            ActivityPage {
+                visible: root.panel === "activity"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+            }
+            KeyboardPage {
+                visible: root.panel === "keyboard"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
             }
@@ -417,10 +508,127 @@ ShellRoot {
                         value: root.wifi.radio === false ? "Off" : root.wifi.connected ? (root.wifi.ssid || root.wifi.connection || "Connected") : "Not connected"
                         onClicked: root.openPanel("wifi")
                     }
+                    // Mobile data shared over Wi-Fi.
+                    Text { width: parent.width; topPadding: 12; text: "Hotspot"; color: MobileTheme.foreground; font.family: MobileTheme.fontFamily; font.pixelSize: 19; font.bold: true }
+                    SettingsRow {
+                        width: parent.width
+                        visible: root.hotspot.available !== false
+                        label: "Wi-Fi hotspot"
+                        value: hotspotTool.running ? "…" : root.hotspot.active ? (root.hotspot.clients === 1 ? "On · 1 device" : "On · " + (root.hotspot.clients || 0) + " devices") : "Off"
+                        selected: root.hotspot.active === true
+                        onClicked: root.hotspotRun([root.hotspot.active ? "off" : "on"])
+                    }
+                    DetailRow { width: parent.width; visible: !!root.hotspot.ssid; label: "Network name"; value: root.hotspot.ssid || "" }
+                    DetailRow { width: parent.width; visible: !!root.hotspot.password; label: "Password"; value: root.hotspot.password || "" }
+                    RowLayout {
+                        width: parent.width
+                        visible: root.hotspot.available !== false && root.hotspotEditing === ""
+                        spacing: 10
+                        TouchButton { Layout.fillWidth: true; label: "Change name"; onClicked: { hotspotField.text = root.hotspot.ssid || ""; root.hotspotEditing = "ssid"; } }
+                        TouchButton { Layout.fillWidth: true; label: "Change password"; onClicked: { hotspotField.text = ""; root.hotspotEditing = "password"; } }
+                    }
+                    TouchTextField {
+                        id: hotspotField
+                        width: parent.width
+                        implicitHeight: 50
+                        visible: root.hotspotEditing !== ""
+                        placeholderText: root.hotspotEditing === "password" ? "8 to 63 characters" : "Network name"
+                        color: MobileTheme.foreground
+                        placeholderTextColor: MobileTheme.secondary
+                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
+                        editing: root.hotspotEditing !== ""
+                        onEditingRequested: forceActiveFocus()
+                    }
+                    RowLayout {
+                        width: parent.width
+                        visible: root.hotspotEditing !== ""
+                        spacing: 10
+                        TouchButton { Layout.fillWidth: true; label: "Cancel"; onClicked: root.hotspotEditing = "" }
+                        TouchButton {
+                            Layout.fillWidth: true; label: "Save"; selected: true
+                            onClicked: { root.hotspotRun(["set", root.hotspotEditing, hotspotField.text]); root.hotspotEditing = ""; }
+                        }
+                    }
                     Text {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: "Cellular, VPN and hotspot wait on modem and extra NetworkManager profiles."
+                        text: root.hotspotMessage || "Shares mobile data over Wi-Fi. The phone stays on its own Wi-Fi network meanwhile, and then shares that instead."
+                        color: MobileTheme.secondary
+                        font.family: MobileTheme.fontFamily
+                        font.pixelSize: 13
+                    }
+                    Text { width: parent.width; topPadding: 12; visible: root.vpns.length > 0; text: "VPN"; color: MobileTheme.foreground; font.family: MobileTheme.fontFamily; font.pixelSize: 19; font.bold: true }
+                    Repeater {
+                        model: root.vpns
+                        delegate: Column {
+                            required property var modelData
+                            width: parent.width
+                            spacing: 10
+                            SettingsRow {
+                                width: parent.width
+                                label: modelData.name
+                                value: vpnTool.running ? "…"
+                                     : modelData.state === "on" ? "On" + (modelData.address ? " · " + modelData.address : "")
+                                     : modelData.state === "connecting" ? "Connecting"
+                                     : modelData.saved ? "Off" : "Needs its password"
+                                selected: modelData.state === "on"
+                                onClicked: {
+                                    if (modelData.state !== "off") root.vpnRun(["off", modelData.name]);
+                                    else if (!modelData.saved) { vpnField.text = ""; root.vpnEditing = modelData.name; }
+                                    else root.vpnRun(["on", modelData.name]);
+                                }
+                            }
+                            RowLayout {
+                                width: parent.width
+                                visible: root.vpnEditing === "" && modelData.kind !== "wireguard"
+                                spacing: 10
+                                TouchButton {
+                                    Layout.fillWidth: true
+                                    label: modelData.saved ? "Change password" : "Enter password"
+                                    onClicked: { vpnField.text = ""; root.vpnEditing = modelData.name; }
+                                }
+                                TouchButton {
+                                    Layout.fillWidth: true
+                                    visible: modelData.saved
+                                    label: "Forget password"
+                                    onClicked: root.vpnRun(["forget", modelData.name])
+                                }
+                            }
+                        }
+                    }
+                    TouchTextField {
+                        id: vpnField
+                        width: parent.width
+                        implicitHeight: 50
+                        visible: root.vpnEditing !== ""
+                        echoMode: TextInput.Password
+                        placeholderText: "Password for " + root.vpnEditing
+                        color: MobileTheme.foreground
+                        placeholderTextColor: MobileTheme.secondary
+                        background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
+                        editing: root.vpnEditing !== ""
+                        onEditingRequested: forceActiveFocus()
+                    }
+                    RowLayout {
+                        width: parent.width
+                        visible: root.vpnEditing !== ""
+                        spacing: 10
+                        TouchButton { Layout.fillWidth: true; label: "Cancel"; onClicked: { vpnField.text = ""; root.vpnEditing = ""; } }
+                        TouchButton {
+                            Layout.fillWidth: true; label: "Save"; selected: true
+                            onClicked: {
+                                if (!vpnField.text) return;
+                                root.vpnRun(["password", root.vpnEditing], vpnField.text + "\n");
+                                vpnField.text = "";
+                                root.vpnEditing = "";
+                            }
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        visible: root.vpns.length > 0
+                        wrapMode: Text.WordWrap
+                        text: root.vpnMessage || "The password stays on the phone, readable by the system only."
                         color: MobileTheme.secondary
                         font.family: MobileTheme.fontFamily
                         font.pixelSize: 13
@@ -482,7 +690,7 @@ ShellRoot {
                         placeholderTextColor: MobileTheme.secondary
                         background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
                         editing: root.ipEditing === "address"
-                        onEditingRequested: root.ipEditing = "address"
+                        onEditingRequested: { root.ipEditing = "address"; forceActiveFocus(); }
                     }
                     TouchTextField {
                         id: ipGatewayField
@@ -495,7 +703,7 @@ ShellRoot {
                         placeholderTextColor: MobileTheme.secondary
                         background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
                         editing: root.ipEditing === "gateway"
-                        onEditingRequested: root.ipEditing = "gateway"
+                        onEditingRequested: { root.ipEditing = "gateway"; forceActiveFocus(); }
                     }
                     TouchTextField {
                         id: ipDnsField
@@ -508,7 +716,7 @@ ShellRoot {
                         placeholderTextColor: MobileTheme.secondary
                         background: Rectangle { radius: MobileTheme.radius(10); color: MobileTheme.surface; border.color: MobileTheme.muted }
                         editing: root.ipEditing === "dns"
-                        onEditingRequested: root.ipEditing = "dns"
+                        onEditingRequested: { root.ipEditing = "dns"; forceActiveFocus(); }
                     }
                     Text {
                         width: parent.width

@@ -106,4 +106,85 @@ static const struct pd_reg pdp_save[] = {
 	{ 0x1aa20108, "MEMCLK" },	/* line 1076 */
 };
 
+static const struct pd_reg dpu_save[] = {
+	{ 0x1c001800, "CLK_CON_DIV_DIV_CLK_DPU_NOCP" },	/* line 671 */
+	{ 0x1c000600, "PLL_CON0_MUX_CLKCMU_DPU_NOC_USER" },	/* line 672 */
+	{ 0x1c003014, "QCH_CON_DPUF_QCH_DPU_DMA" },	/* line 673 */
+	{ 0x1c003018, "QCH_CON_DPUF_QCH_DPU_DPP" },	/* line 674 */
+	{ 0x1c00301c, "QCH_CON_DPU_CMU_DPU_QCH" },	/* line 675 */
+	{ 0x1c003020, "QCH_CON_D_TZPC_DPU_QCH" },	/* line 676 */
+	{ 0x1c003024, "QCH_CON_GPC_DPU_QCH" },	/* line 677 */
+	{ 0x1c003028, "QCH_CON_LH_AXI_SI_D0_DPU_QCH" },	/* line 678 */
+	{ 0x1c00302c, "QCH_CON_LH_AXI_SI_D1_DPU_QCH" },	/* line 679 */
+	{ 0x1c003030, "QCH_CON_LH_AXI_SI_D2_DPU_QCH" },	/* line 680 */
+	{ 0x1c003038, "QCH_CON_PPMU_DPUD0_QCH" },	/* line 681 */
+	{ 0x1c00303c, "QCH_CON_PPMU_DPUD1_QCH" },	/* line 682 */
+	{ 0x1c003040, "QCH_CON_PPMU_DPUD2_QCH" },	/* line 683 */
+	{ 0x1c003044, "QCH_CON_SLH_AXI_MI_P_DPU_QCH" },	/* line 684 */
+	{ 0x1c003048, "QCH_CON_SSMT_DPU0_QCH" },	/* line 685 */
+	{ 0x1c00304c, "QCH_CON_SSMT_DPU1_QCH" },	/* line 686 */
+	{ 0x1c003050, "QCH_CON_SSMT_DPU2_QCH" },	/* line 687 */
+	{ 0x1c003054, "QCH_CON_SYSMMU_DPUD0_QCH_S1" },	/* line 688 */
+	{ 0x1c003058, "QCH_CON_SYSMMU_DPUD0_QCH_S2" },	/* line 689 */
+	{ 0x1c00305c, "QCH_CON_SYSMMU_DPUD1_QCH_S1" },	/* line 690 */
+	{ 0x1c003060, "QCH_CON_SYSMMU_DPUD1_QCH_S2" },	/* line 691 */
+	{ 0x1c003064, "QCH_CON_SYSMMU_DPUD2_QCH_S1" },	/* line 692 */
+	{ 0x1c003068, "QCH_CON_SYSMMU_DPUD2_QCH_S2" },	/* line 693 */
+	{ 0x1c00306c, "QCH_CON_SYSREG_DPU_QCH" },	/* line 694 */
+	{ 0x1c000800, "DPU_CMU_DPU_CONTROLLER_OPTION" },	/* line 695 */
+	{ 0x1c020104, "BUS_COMPONENT_DRCG_EN" },	/* line 696 */
+	{ 0x1c0b0140, "L0_RDMA_DYNAMIC_GATING_EN" },	/* line 697 */
+	{ 0x1c0b1140, "L1_RDMA_DYNAMIC_GATING_EN" },	/* line 698 */
+	{ 0x1c0b2140, "L2_RDMA_DYNAMIC_GATING_EN" },	/* line 699 */
+	{ 0x1c0b3140, "L3_RDMA_DYNAMIC_GATING_EN" },	/* line 700 */
+	{ 0x1c0b4140, "L4_RDMA_DYNAMIC_GATING_EN" },	/* line 701 */
+	{ 0x1c0b5140, "L5_RDMA_DYNAMIC_GATING_EN" },	/* line 702 */
+	{ 0x1c0bc140, "L12_WDMA_DYNAMIC_GATING_EN" },	/* line 703 */
+	{ 0x1c0b0f14, "L0_GLB_GLB_CGEN" },	/* line 704 */
+	{ 0x1c0b2f14, "L2_GLB_GLB_CGEN" },	/* line 705 */
+	{ 0x1c0b4f14, "L4_GLB_GLB_CGEN" },	/* line 706 */
+	{ 0x1c020108, "MEMCLK" },	/* line 707 */
+};
+
+static const struct pd_reg disp_save[] = {
+	{ 0x1c201804, "CLK_CON_DIV_DIV_CLK_DISP_NOCP", true, 0x10000, 0x0 },	/* line 748: wait */
+	{ 0x1c201804, "CLK_CON_DIV_DIV_CLK_DISP_NOCP" },	/* line 750 */
+	{ 0x1c200600, "PLL_CON0_MUX_CLKCMU_DISP_NOC_USER", true, 0x10000, 0x0 },	/* line 751: wait */
+	{ 0x1c200600, "PLL_CON0_MUX_CLKCMU_DISP_NOC_USER" },	/* line 753 */
+	{ 0x1c203008, "QCH_CON_DISP_CMU_DISP_QCH" },	/* line 754 */
+	{ 0x1c20300c, "QCH_CON_DPUB_QCH" },	/* line 755 */
+	{ 0x1c203010, "QCH_CON_D_TZPC_DISP_QCH" },	/* line 756 */
+	{ 0x1c203014, "QCH_CON_GPC_DISP_QCH" },	/* line 757 */
+	{ 0x1c20301c, "QCH_CON_SLH_AXI_MI_P_DISP_QCH" },	/* line 758 */
+	{ 0x1c203020, "QCH_CON_SYSREG_DISP_QCH" },	/* line 759 */
+	{ 0x1c200800, "DISP_CMU_DISP_CONTROLLER_OPTION" },	/* line 760 */
+	{ 0x1c220104, "BUS_COMPONENT_DRCG_EN" },	/* line 761 */
+	{ 0x1c220108, "MEMCLK" },	/* line 762 */
+};
+
+static const struct pd_reg mfc_save[] = {
+	{ 0x1c801800, "CLK_CON_DIV_DIV_CLK_MFC_NOCP" },	/* line 855 */
+	{ 0x1c800600, "PLL_CON0_MUX_CLKCMU_MFC_MFC_USER" },	/* line 856 */
+	{ 0x1c803010, "QCH_CON_D_TZPC_MFC_QCH" },	/* line 857 */
+	{ 0x1c803014, "QCH_CON_GPC_MFC_QCH" },	/* line 858 */
+	{ 0x1c803018, "QCH_CON_LH_AXI_SI_D0_MFC_QCH" },	/* line 859 */
+	{ 0x1c80301c, "QCH_CON_LH_AXI_SI_D1_MFC_QCH" },	/* line 860 */
+	{ 0x1c803024, "QCH_CON_MFC_CMU_MFC_QCH" },	/* line 861 */
+	{ 0x1c803028, "QCH_CON_MFC_QCH" },	/* line 862 */
+	{ 0x1c80302c, "QCH_CON_PPMU_D0_MFC_QCH" },	/* line 863 */
+	{ 0x1c803030, "QCH_CON_PPMU_D1_MFC_QCH" },	/* line 864 */
+	{ 0x1c803034, "QCH_CON_RSTNSYNC_CLK_MFC_NOCD_SW_RESET_QCH" },	/* line 865 */
+	{ 0x1c803038, "QCH_CON_SLH_AXI_MI_P_MFC_QCH" },	/* line 866 */
+	{ 0x1c80303c, "QCH_CON_SSMT_D0_MFC_QCH" },	/* line 867 */
+	{ 0x1c803040, "QCH_CON_SSMT_D1_MFC_QCH" },	/* line 868 */
+	{ 0x1c803044, "QCH_CON_SYSMMU_D0_MFC_QCH_0" },	/* line 869 */
+	{ 0x1c803048, "QCH_CON_SYSMMU_D0_MFC_QCH_1" },	/* line 870 */
+	{ 0x1c80304c, "QCH_CON_SYSMMU_D1_MFC_QCH_0" },	/* line 871 */
+	{ 0x1c803050, "QCH_CON_SYSMMU_D1_MFC_QCH_1" },	/* line 872 */
+	{ 0x1c803054, "QCH_CON_SYSREG_MFC_QCH" },	/* line 873 */
+	{ 0x1c800800, "MFC_CMU_MFC_CONTROLLER_OPTION" },	/* line 874 */
+	{ 0x1c820104, "BUS_COMPONENT_DRCG_EN" },	/* line 875 */
+	{ 0x1c820108, "MEMCLK" },	/* line 876 */
+};
+
 #endif

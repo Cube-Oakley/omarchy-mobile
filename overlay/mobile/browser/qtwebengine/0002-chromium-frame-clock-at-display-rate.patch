@@ -1,0 +1,58 @@
+Report the screen's refresh interval with each presented frame, so
+Chromium's frame clock runs at 120 Hz instead of its 60 Hz default.
+
+--- a/src/core/compositor/native_skia_output_device.cpp
++++ b/src/core/compositor/native_skia_output_device.cpp
+@@ -18,6 +18,10 @@
+ #include "ui/gfx/native_pixmap.h"
+ #include "ui/gfx/gpu_fence.h"
+ #include "ui/gl/gl_fence.h"
++#include "ui/gfx/presentation_feedback.h"
++
++#include <QGuiApplication>
++#include <QScreen>
+ 
+ #if BUILDFLAG(ENABLE_VULKAN)
+ #include "ui/base/ozone_buildflags.h"
+@@ -50,6 +54,23 @@
+     return fence.is_null() ? nullptr : std::make_unique<gfx::GpuFence>(std::move(fence));
+ }
+ 
++// Chromium's frame clock follows the interval reported with each presented
++// frame, or runs at 60 Hz when it is zero, as it always was here: animations
++// and flings ran at 60 Hz on a 120 Hz screen. Report the screen's refresh
++// interval (QTWEBENGINE_DISPLAY_HZ overrides it). (Omarchy Mobile patch.)
++base::TimeDelta displayInterval()
++{
++    static const base::TimeDelta interval = [] {
++        double hz = qEnvironmentVariableIntValue("QTWEBENGINE_DISPLAY_HZ");
++        if (hz <= 0) {
++            if (QScreen *screen = QGuiApplication::primaryScreen())
++                hz = screen->refreshRate();
++        }
++        return hz >= 24 && hz <= 480 ? base::Seconds(1.0 / hz) : base::TimeDelta();
++    }();
++    return interval;
++}
++
+ } // namespace
+ 
+ NativeSkiaOutputDevice::NativeSkiaOutputDevice(
+@@ -120,6 +141,17 @@
+ {
+     DCHECK(m_backBuffer);
+ 
++    const base::TimeDelta interval = displayInterval();
++    if (feedback && !interval.is_zero()) {
++        feedback = base::BindOnce(
++                [](BufferPresentedCallback callback, base::TimeDelta interval,
++                   const gfx::PresentationFeedback &presented) {
++                    gfx::PresentationFeedback withInterval = presented;
++                    withInterval.interval = interval;
++                    std::move(callback).Run(withInterval);
++                },
++                std::move(feedback), interval);
++    }
+     StartSwapBuffers(std::move(feedback));
+     m_frame = std::move(frame);
+     {

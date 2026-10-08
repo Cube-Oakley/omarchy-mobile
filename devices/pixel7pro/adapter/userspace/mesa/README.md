@@ -18,6 +18,21 @@ Work directory: `out/checkpoints/20260925-gpu-v15/`.
 - Official source: https://archive.mesa3d.org/mesa-26.2.3.tar.xz
 - Source SHA256: `1628058a8d2c0615975de5a15ab7bbb9638c50000b5bed9456ff423ea034a81f`.
 - Patch: `0001-panfrost-add-g710-model.patch` (apply with `patch -p1`).
+- Patch: `0002-panfrost-keep-cached-bo-mappings.patch` (2026-10-06). Every
+  GL batch takes its pool BOs from panfrost's BO cache, and Mesa unmapped
+  each BO as it went back to the cache, then mapped it again for the next
+  batch, and set a kernel debug label at each move (one ioctl each). In
+  Chromium's GPU thread scrolling X at 120 Hz that was about 14 % of the
+  thread (mmap, munmap and their page-table work), and its time per frame
+  fell from about 5.4 to 4.6 ms with the patch. A cached BO now keeps its
+  mapping until it is freed (Panthor never evicts cached BOs; on Panfrost a
+  purged BO is freed, not reused), and kernel labels are set only with
+  `PAN_MESA_DEBUG`. The build directory still names the repository's old
+  path (`~/Projects/omarchy-pixel7pro`, now `devices/pixel7pro`); a
+  temporary symlink there lets `ninja` rebuild in place. Installed on the
+  phone on October 6 (`/opt/pixel-mesa/lib/libgallium-26.2.3.so`, SHA-256
+  `33851d9f…`; the previous one is `/root/libgallium-26.2.3.so.before-bo-cache`):
+  apps started since use it, Hyprland and the shell from the next boot.
 - ARM sysroot: `usr/include`, `usr/lib`, `usr/share/pkgconfig` and
   `usr/share/wayland-protocols` from the unchanged mobile Arch archive, SHA256
   `9b204df8aff3f54625f347d11d4e1370b44a83aef12e6371d588c8581ba54e57`.

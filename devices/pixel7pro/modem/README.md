@@ -87,7 +87,12 @@ starts so the AP watchdog can pause/rearm during explicit suspend tests.
 New installations use the validated CPIF and PCIe modules in
 `/root/tools/suspend/`; older laboratory modules lack the suspend fixes.
 The bundle also pins `brcmfmac.ko`, whose control-ring acknowledgement ordering
-fix is needed for repeated Wi-Fi suspend/resume. The boot helper verifies the
+fix is needed for repeated Wi-Fi suspend/resume. Since October 2 it is the
+runtime-suspend build (`/root/tools/suspend/brcmfmac-rt.ko`; the idle chip
+goes to D3 with its PCIe link off, see [the PCIe notes](../kernel/pcie/README.md)),
+which needs the v35 image's `pixel-pcie.ko` for its link hooks and runs
+without runtime suspend on older images. The previous module and manifest
+are in `/root/backups/`. The boot helper verifies the
 bundle before loading that driver. With the modem bundle disabled it uses the
 original in-image Wi-Fi driver, and the suspend helper refuses automatic sleep
 without the running modem supervisor.

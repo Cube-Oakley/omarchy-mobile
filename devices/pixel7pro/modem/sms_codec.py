@@ -2,6 +2,8 @@
 """Text SMS TPDU encoding/decoding (3GPP TS 23.038 and TS 23.040).
 
 No flash/class-0, SIM data download, or other special outbound messages.
+Received 8-bit messages keep their bytes and destination port: a WAP push
+to port 2948 carries an MMS notification, which the Messages app reads.
 """
 import datetime
 import math
@@ -75,8 +77,12 @@ def submit(destination, text):
     return result
 
 
+WAP_PUSH = 2948
+
+
 def deliver(pdu):
-    """Decode SMS-DELIVER. Unsupported binary/MMS content stays a placeholder."""
+    """Decode SMS-DELIVER. A WAP push (MMS) keeps its bytes as data; other
+    binary content stays a placeholder."""
     if len(pdu)<3 or pdu[0]&3: raise ValueError('Not an SMS delivery')
     first,n,toa=pdu[:3]; pos=3
     size=math.ceil(n/2)
@@ -97,7 +103,7 @@ def deliver(pdu):
         if stamp[6]&8: zone=-zone
         timestamp=datetime.datetime(2000+year if year<90 else 1900+year,month,day,hour,minute,second,tzinfo=datetime.timezone(zone)).isoformat()
     except ValueError: timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-    length=pdu[pos]; data=pdu[pos+1:]; header=0; concat=None
+    length=pdu[pos]; data=pdu[pos+1:]; header=0; concat=None; port=None
     if first&0x40:
         if not data: raise ValueError('Missing SMS header')
         header=data[0]+1
@@ -109,6 +115,8 @@ def deliver(pdu):
             if i>header: raise ValueError('Malformed SMS header')
             if tag==0 and size==3: concat=tuple(value)
             elif tag==8 and size==4: concat=(int.from_bytes(value[:2],'big'),value[2],value[3])
+            elif tag==5 and size==4: port=int.from_bytes(value[:2],'big')
+            elif tag==4 and size==2: port=value[0]
         if concat and not 1<=concat[2]<=concat[1]<=32: raise ValueError('Invalid SMS part index')
     alphabet=(dcs>>2)&3 if dcs&0xc0==0 else (0 if dcs&0xf0 in (0xc0,0xd0) else 2 if dcs&0xf0==0xe0 else (1 if dcs&4 else 0))
     if dcs&0xc0==0 and dcs&0x20: alphabet=1  # compressed content unsupported
@@ -117,8 +125,11 @@ def deliver(pdu):
     elif alphabet==2:
         if length>len(data) or length<header: raise ValueError('Truncated Unicode SMS')
         text=data[header:length].decode('utf-16-be',errors='replace')
+    elif port==WAP_PUSH:
+        if length>len(data) or length<header: raise ValueError('Truncated WAP push')
+        return dict(number=sender,text='',timestamp=timestamp,concat=concat,port=port,data=bytes(data[header:length]))
     else: text='Received a multimedia or binary message that this phone cannot display yet.'
-    return dict(number=sender,text=text,timestamp=timestamp,concat=concat)
+    return dict(number=sender,text=text,timestamp=timestamp,concat=concat,port=port,data=b'')
 
 
 def received_pdu(data):

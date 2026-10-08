@@ -1,4 +1,9 @@
 {
   "backend": "pixel-sit",
-  "socket": "/run/omarchy-mobile-telephony/socket"
+  "socket": "/run/omarchy-mobile-telephony/socket",
+  "mms": {
+    "interface": "rmnet0",
+    "mmsc": "http://wholesale.mmsmvno.com/mms/wapenc",
+    "proxy": ""
+  }
 }

@@ -102,5 +102,120 @@ class BluetoothTests(unittest.TestCase):
         self.assertTrue(ok and status['available'])
 
 
+class FakeInvocation:
+    def __init__(self):
+        self.replies = []
+
+    def return_value(self, value):
+        self.replies.append(('ok', value))
+
+    def return_dbus_error(self, name, message):
+        self.replies.append(('error', name))
+
+
+class FakeParams:
+    def __init__(self, *args):
+        self.args = args
+
+    def unpack(self):
+        return self.args
+
+
+class FakeBus:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, service, path, interface, method, *rest):
+        self.calls.append((path, method))
+
+
+class FakeGio:
+    class BusType:
+        SYSTEM = 1
+
+    class DBusCallFlags:
+        NONE = 0
+
+    bus = None
+
+    @classmethod
+    def bus_get_sync(cls, kind):
+        return cls.bus
+
+
+class FakeGLib:
+    IO_IN = 1
+
+    class MainLoop:
+        pass
+
+    @staticmethod
+    def Variant(signature, value):
+        return (signature, value)
+
+
+class PairingTests(unittest.TestCase):
+    def pairing(self):
+        bluetooth = load()
+        FakeGio.bus = FakeBus()
+        pairing = bluetooth.Pairing('44:22:33:44:55:66', FakeGio, FakeGLib)
+        pairing.device = '/org/bluez/hci0/dev_44_22_33_44_55_66'
+        pairing.name = 'Near watch'
+        events = []
+        pairing.emit = lambda **event: events.append(event)
+        return pairing, events
+
+    def test_answers_follow_the_kind_of_request(self):
+        answer = load().answer
+        self.assertEqual(answer('confirm', 'yes\n'), ('ok', None))
+        self.assertEqual(answer('confirm', 'no'), ('reject', None))
+        self.assertEqual(answer('authorize', ''), ('reject', None))
+        self.assertEqual(answer('passkey', '012345'), ('ok', 12345))
+        self.assertEqual(answer('passkey', '1234567'), ('reject', None))
+        self.assertEqual(answer('pin', '0000'), ('ok', '0000'))
+        self.assertEqual(answer('pin', 'rm -rf'), ('reject', None))
+
+    def test_a_code_to_compare_waits_for_the_users_yes(self):
+        pairing, events = self.pairing()
+        invocation = FakeInvocation()
+        pairing.agent_call(None, None, None, None, 'RequestConfirmation',
+                           FakeParams('/org/bluez/hci0/dev_44_22_33_44_55_66', 12345), invocation)
+        self.assertEqual(events, [dict(event='request', kind='confirm', name='Near watch', code='012345')])
+        self.assertEqual(invocation.replies, [])
+        pairing.reply('yes')
+        self.assertEqual(invocation.replies, [('ok', None)])
+
+    def test_a_typed_passkey_is_sent_as_a_number(self):
+        pairing, _ = self.pairing()
+        invocation = FakeInvocation()
+        pairing.agent_call(None, None, None, None, 'RequestPasskey', FakeParams('/dev'), invocation)
+        pairing.reply('654321')
+        self.assertEqual(invocation.replies, [('ok', ('(u)', (654321,)))])
+
+    def test_digits_to_type_on_a_keyboard_are_shown_at_once(self):
+        pairing, events = self.pairing()
+        invocation = FakeInvocation()
+        pairing.agent_call(None, None, None, None, 'DisplayPasskey', FakeParams('/dev', 42, 3), invocation)
+        self.assertEqual(events, [dict(event='display', code='000042', entered=3)])
+        self.assertEqual(invocation.replies, [('ok', None)])
+
+    def test_cancel_declines_the_question_and_stops_the_pairing(self):
+        pairing, _ = self.pairing()
+        invocation = FakeInvocation()
+        pairing.agent_call(None, None, None, None, 'RequestAuthorization', FakeParams('/dev'), invocation)
+        pairing.reply('cancel')
+        self.assertEqual(invocation.replies, [('error', 'org.bluez.Error.Canceled')])
+        self.assertIn(('/org/bluez/hci0/dev_44_22_33_44_55_66', 'CancelPairing'), FakeGio.bus.calls)
+        self.assertTrue(pairing.cancelled)
+
+    def test_pairing_errors_read_as_sentences(self):
+        error = type('Error', (), dict(message='GDBus.Error:org.bluez.Error.AuthenticationFailed: '
+                                              'Authentication Failed'))()
+        self.assertEqual(load().pair_error(error, 'Near watch'),
+                         "The codes didn't match, or Near watch turned the pairing down.")
+        odd = type('Error', (), dict(message='GDBus.Error:org.bluez.Error.Failed: Resource busy'))()
+        self.assertEqual(load().pair_error(odd, 'Near watch'), 'Resource busy')
+
+
 if __name__ == '__main__':
     unittest.main()

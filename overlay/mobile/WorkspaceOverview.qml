@@ -109,8 +109,15 @@ Item {
     Timer { interval: 700; repeat: true; running: overview.warmWanted && !inputIdle.isIdle; onTriggered: overview.takeWarm() }
     property var cardsModel: []
     property string cardsKey: ""
+    // The cards' delegates come from cardList, which syncCards edits in
+    // place. A new array as the model rebuilt every card and restarted every
+    // capture: a 25-40 ms frame as a closed card finished flying off.
+    CardList { id: cardList }
+    CardThrow { id: cardThrow }
+    property var cardWindows: ({})
     property var recent: []
-    readonly property int limit: MobileTheme.state.device.workspaceCount || 8
+    // Every app workspace gets a card (shell.qml's workspaceLimit).
+    readonly property int limit: 64
     readonly property var groups: {
         const buckets = {};
         const tops = Hyprland.toplevels.values;
@@ -138,10 +145,20 @@ Item {
     signal openGroup(int id)
     signal closeGroup(int id)
     signal tileGroups(int source, int target)
+    // A card dropped on another tiles their apps on one screen. Off for now
+    // (October 7): the shell keeps one app on each workspace
+    // (shell.qml separateWindows) until tiling is made to work well.
+    property bool tiling: false
     signal dismissed()
     function groupKey(windows) {
         return windows.map(window => String(window.address)).filter(address => address && address !== "undefined").sort().join("+");
     }
+    // Pictures keep updating for a moment past their first frame: an Android
+    // app leaving with its keyboard up redraws itself at full height then
+    // (shell.qml hideAndroidKeyboard).
+    property bool holdingLive: false
+    function holdLive() { holdingLive = true; holdLiveTimer.restart(); }
+    Timer { id: holdLiveTimer; interval: 800; onTriggered: overview.holdingLive = false }
     function touchWindows(windows) {
         const key = groupKey(windows || []);
         if (!key) return;
@@ -162,6 +179,17 @@ Item {
         }
         return homeIndex();
     }
+    // A card is its set of windows; its workspace number can change under it.
+    function applyCards(list) {
+        const windows = {};
+        const entries = list.map(group => {
+            const key = groupKey(group.windows) || "workspace " + group.id;
+            windows[key] = group.windows;
+            return {cardKey: key, groupId: group.id};
+        });
+        cardWindows = windows;
+        cardList.apply(entries);
+    }
     function syncCards() {
         orderDirty = false;
         const key = groups.map(group => groupKey(group.windows)).join("|");
@@ -170,6 +198,7 @@ Item {
         const previousKey = cardsModel[index] ? groupKey(cardsModel[index].windows) : "";
         cardsKey = key;
         cardsModel = groups.slice().reverse();
+        applyCards(cardsModel);
         const last = Math.max(0, cardsModel.length - 1);
         // Closing the last app leaves nothing to switch to: go to the desktop,
         // as Android does, rather than an empty switcher.
@@ -322,7 +351,7 @@ Item {
         if (!heldId) return;
         heldPoint = mapFromItem(null, scenePosition.x, scenePosition.y);
         const hit = groupAt(heldPoint);
-        dropId = hit && hit !== heldId ? hit : 0;
+        dropId = tiling && hit && hit !== heldId ? hit : 0;
     }
     function finishHold() {
         const source = heldId;
@@ -383,24 +412,16 @@ Item {
             x: parent.width / 2 - overview.cardW / 2 - overview.index * overview.step + overview.offset
             Repeater {
                 id: cards
-                model: overview.cardsModel
+                model: cardList
                 delegate: Item {
                     id: card
-                    required property var modelData
+                    required property string cardKey
+                    required property int groupId
                     required property int index
-                    readonly property int groupId: modelData.id
-                    readonly property int panes: Math.min(modelData.windows.length, 2)
+                    readonly property var windows: overview.cardWindows[cardKey] || []
+                    readonly property int panes: Math.min(windows.length, 2)
                     readonly property bool targeted: overview.dropId === groupId
                     property bool shown: false
-                    readonly property string title: {
-                        const windows = modelData.windows;
-                        function name(window) {
-                            return window && window.lastIpcObject && window.lastIpcObject.class ? window.lastIpcObject.class : "App";
-                        }
-                        if (!windows || windows.length === 0) return "App";
-                        if (windows.length === 1) return name(windows[0]);
-                        return name(windows[0]) + "  ·  " + name(windows[1]);
-                    }
                     property real swipeOffset: 0
                     property bool closing: false
                     readonly property bool expanding: overview.expandingId === groupId
@@ -413,12 +434,20 @@ Item {
                         closing = false;
                         swipeOffset = -distance;
                     }
-                    function endSwipe(close) {
+                    // velocity: the finger's upward release speed, pixels a second.
+                    function endSwipe(close, velocity) {
                         closing = close;
                         const travel = close ? -(height + 160) : 0;
-                        dismiss.easing.type = close ? Easing.InCubic : Easing.OutCubic;
                         dismiss.to = travel;
-                        dismiss.duration = close ? Math.max(180, Math.min(340, Math.abs(travel - swipeOffset) * 0.42)) : 230;
+                        if (close) {
+                            const motion = cardThrow.curve(Math.abs(travel - swipeOffset), velocity);
+                            dismiss.easing.type = Easing.BezierSpline;
+                            dismiss.easing.bezierCurve = motion.bezier;
+                            dismiss.duration = motion.duration;
+                        } else {
+                            dismiss.easing.type = Easing.OutCubic;
+                            dismiss.duration = 230;
+                        }
                         dismiss.start();
                     }
                     NumberAnimation {
@@ -500,7 +529,7 @@ Item {
                                         model: card.panes
                                         Rectangle {
                                             required property int index
-                                            readonly property var window: card.modelData.windows[index]
+                                            readonly property var window: card.windows[index]
                                             width: parent.width / card.panes
                                             height: parent.height
                                             color: MobileTheme.background
@@ -537,7 +566,7 @@ Item {
                                                 property bool settled: false
                                                 captureSource: copying ? window.wayland : null
                                                 constraintSize: Qt.size(Math.max(1, parent.width), Math.max(1, parent.height))
-                                                live: copying && !settled
+                                                live: copying && (!settled || overview.holdingLive)
                                                 Timer { id: settle; interval: 264; onTriggered: shot.settled = true }
                                                 function publish() {
                                                     if (!hasContent || card.shown) return;
@@ -569,32 +598,13 @@ Item {
                                     }
                                 }
                             }
-                            Item {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                height: 36
-                                opacity: (card.expanding ? (1 - overview.lift) : 1) * Math.min(1, overview.present)
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    x: 18
-                                    width: parent.width - 36
-                                    text: card.title
-                                    textFormat: Text.PlainText
-                                    elide: Text.ElideRight
-                                    color: MobileTheme.foreground
-                                    font.family: MobileTheme.fontFamily
-                                    font.pixelSize: 16
-                                    font.bold: true
-                                }
-                            }
                         }
                         PreviewGestures {
                             anchors.fill: parent
                             enabled: !overview.expandingId && overview.openness > 0.55 && (!overview.heldId || overview.heldId === card.groupId)
                             onOpened: overview.openGroup(card.groupId)
                             onSwipeMoved: distance => card.followSwipe(distance)
-                            onSwipeFinished: close => card.endSwipe(close)
+                            onSwipeFinished: (close, velocity) => card.endSwipe(close, velocity)
                             onHeld: position => overview.beginHold(card.groupId, position)
                             onHoldMoved: position => overview.moveHold(position)
                             onHoldFinished: overview.finishHold()

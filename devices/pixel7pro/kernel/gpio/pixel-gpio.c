@@ -11,7 +11,8 @@
  * - Wake-up EINT banks (gpa*): each listed pin becomes an interrupt, chained
  *   from its own GIC line (the bank node's per-pin interrupt list). Requesting
  *   it switches the pin to its EINT function; amplifier pulls are disabled,
- *   CP pulls preserved. Freeing the interrupt restores both.
+ *   CP pulls preserved, Bluetooth host wake pulled down (the stock
+ *   bt_host_wake state). Freeing the interrupt restores both.
  *
  * The stock DT's interrupt specifier is <pin type 0>. Bank layout from
  * Google's pinctrl-gs201.c: CON/DAT/PUD at the bank offset (+0/+4/+8), and
@@ -33,6 +34,7 @@
 #define CON_INPUT	0x0
 #define CON_OUTPUT	0x1
 #define CON_EINT	0xf
+#define PUD_DOWN	0x1
 #define ECON		0x700
 #define EMASK		0x900
 #define EPEND		0xa00
@@ -46,17 +48,19 @@ struct pixel_bank_desc {
 	u8 lines;		/* GPIO lines exposed */
 	u8 irqs;		/* wake-up EINTs exposed (gpa banks only) */
 	u8 modem_lines, modem_irqs; /* enabled only with modem=1 */
+	u8 pulldown;		/* EINTs pulled down while requested */
 	const char *use;
 };
 
 static const struct pixel_bank_desc descs[] = {
-	{ "/pinctrl@10840000/gpp17", 0x10840000, 0x220, 0x44, 2, BIT(1), 0, 0, 0, "left amp reset" },
-	{ "/pinctrl@10C40000/gpp25", 0x10c40000, 0x0a0, 0x14, 4, BIT(2), 0, 0, 0, "right amp reset" },
-	{ "/pinctrl@180E0000/gpa6", 0x180e0000, 0x000, 0x00, 8, 0, BIT(3), 0, 0, "left amp interrupt" },
-	{ "/pinctrl@180E0000/gpa8", 0x180e0000, 0x040, 0x08, 8, 0, BIT(6), BIT(2) | BIT(3) | BIT(4), BIT(3) | BIT(4), "right amp / optional modem interrupts" },
-	{ "/pinctrl@11840000/gph0", 0x11840000, 0x000, 0, 6, 0, 0, BIT(2) | BIT(3), 0, "modem wake / dump" },
-	{ "/pinctrl@11840000/gph1", 0x11840000, 0x020, 0, 7, 0, 0, BIT(1) | BIT(2) | BIT(3) | BIT(6), 0, "modem power / reset" },
-	{ "/pinctrl@180D0000/gpa0", 0x180d0000, 0x000, 0, 8, 0, 0, BIT(2) | BIT(3), 0, "modem watchdog / PM reset" },
+	{ "/pinctrl@10840000/gpp16", 0x10840000, 0x200, 0x40, 4, BIT(3), 0, 0, 0, 0, "Bluetooth device wake" },
+	{ "/pinctrl@10840000/gpp17", 0x10840000, 0x220, 0x44, 2, BIT(1), 0, 0, 0, 0, "left amp reset" },
+	{ "/pinctrl@10C40000/gpp25", 0x10c40000, 0x0a0, 0x14, 4, BIT(2), 0, 0, 0, 0, "right amp reset" },
+	{ "/pinctrl@180E0000/gpa6", 0x180e0000, 0x000, 0x00, 8, 0, BIT(3) | BIT(6), 0, 0, BIT(6), "left amp interrupt, Bluetooth host wake" },
+	{ "/pinctrl@180E0000/gpa8", 0x180e0000, 0x040, 0x08, 8, 0, BIT(6), BIT(2) | BIT(3) | BIT(4), BIT(3) | BIT(4), 0, "right amp / optional modem interrupts" },
+	{ "/pinctrl@11840000/gph0", 0x11840000, 0x000, 0, 6, 0, 0, BIT(2) | BIT(3), 0, 0, "modem wake / dump" },
+	{ "/pinctrl@11840000/gph1", 0x11840000, 0x020, 0, 7, 0, 0, BIT(1) | BIT(2) | BIT(3) | BIT(5) | BIT(6), 0, 0, "modem power / reset, NFC enable" },
+	{ "/pinctrl@180D0000/gpa0", 0x180d0000, 0x000, 0, 8, 0, 0, BIT(2) | BIT(3), 0, 0, "modem watchdog / PM reset" },
 };
 
 /* Manual bring-up only; normal audio startup keeps its existing pin set. */
@@ -133,6 +137,64 @@ static int bank_direction_output(struct gpio_chip *gc, unsigned int pin, int val
 	rmw(b, b->desc->bank, nibble(pin), CON_OUTPUT << (4 * pin));
 	return 0;
 }
+
+/* The ST54J's VEN (gph1-5, stock nfc-rst): high runs the NFC controller and
+ * its secure element, low holds the chip in hard power-down. The bootloader
+ * leaves it high; nothing here drives NFC, so the session switches it off
+ * unless NFC is turned on in Settings. Shares gph1 with the modem's control
+ * lines: exposed with them (modem=1, so probe touches the bank only as
+ * before) and written under the bank lock like them, never by another writer.
+ */
+#define NFC_VEN		5
+/* gph1 is in HSI1, which can be powered down (the modem's PCIe domain): its
+ * registers are touched only while the PMU reports it on (HSI1_STATUS bit 0,
+ * as kernel/suspend's pin save does). */
+#define PMU_HSI1_STATUS	0x18062104
+
+static struct pixel_bank *nfc_bank(void)
+{
+	void __iomem *status;
+	unsigned int i;
+	bool on;
+
+	status = ioremap(PMU_HSI1_STATUS, 4);
+	if (!status)
+		return NULL;
+	on = readl(status) & BIT(0);
+	iounmap(status);
+	if (!on)
+		return NULL;
+	for (i = 0; i < ARRAY_SIZE(banks); i++)
+		if (banks[i].regs && (banks[i].lines & BIT(NFC_VEN)) &&
+		    !strcmp(kbasename(banks[i].desc->node), "gph1"))
+			return &banks[i];
+	return NULL;
+}
+
+static int nfc_ven_set(const char *val, const struct kernel_param *kp)
+{
+	struct pixel_bank *b = nfc_bank();
+	bool on;
+
+	if (kstrtobool(val, &on))
+		return -EINVAL;
+	if (!b)
+		return -ENODEV;
+	return bank_direction_output(&b->gc, NFC_VEN, on);
+}
+
+static int nfc_ven_get(char *buf, const struct kernel_param *kp)
+{
+	struct pixel_bank *b = nfc_bank();
+
+	if (!b)
+		return -ENODEV;
+	return sysfs_emit(buf, "%u\n", !!(readl(b->regs + b->desc->bank + 4) & BIT(NFC_VEN)));
+}
+
+static const struct kernel_param_ops nfc_ven_ops = { .set = nfc_ven_set, .get = nfc_ven_get };
+module_param_cb(nfc_ven, &nfc_ven_ops, NULL, 0664);
+MODULE_PARM_DESC(nfc_ven, "NFC controller enable (gph1-5): 1 on, 0 hard power-down");
 
 static int bank_get(struct gpio_chip *gc, unsigned int pin)
 {
@@ -226,7 +288,9 @@ static int eint_request_resources(struct irq_data *d)
 	 * existing pull-up. Applying Android's later pull-down loses it.
 	 * Amplifier EINTs retain their established no-pull configuration.
 	 */
-	if (!(b->desc->modem_irqs & BIT(pin)))
+	if (b->desc->pulldown & BIT(pin))
+		rmw(b, b->desc->bank + 8, nibble(pin), PUD_DOWN << (4 * pin));
+	else if (!(b->desc->modem_irqs & BIT(pin)))
 		rmw(b, b->desc->bank + 8, nibble(pin), 0);
 	rmw(b, b->desc->bank, nibble(pin), CON_EINT << (4 * pin));
 	return 0;

@@ -117,9 +117,15 @@ HW.pixel7pro = {
               + "(5,016 mAh at 4.42 V). The charge limit works; it pauses at 45 °C.",
           ref: "devices/pixel7pro/kernel/battery/README.md" },
         { n: "Fast charging", s: "no", cap: "fastcharge",
-          note: "5 V only: no USB PD and no BC1.2 port detection, so the 1.5 A limit applies to any port.",
-          ref: "devices/pixel7pro/kernel/battery/README.md" },
-        { n: "Wireless charging", s: "no", cap: "wireless", note: "Not attempted yet." },
+          note: "5 V only: no USB PD yet, and the 1.5 A limit applies to any port. October 1: the port's "
+              + "Type-C current, VBUS and BC1.2 type are now readable (typec_status); the PC's port is a plain "
+              + "500 mA data port. Plan: input limit from those (about 14 W from a 3 A Type-C charger), then "
+              + "9 V over USB PD.",
+          ref: "devices/pixel7pro/kernel/usb/README.md" },
+        { n: "Wireless charging", s: "no", cap: "wireless",
+          note: "Researched October 2: an IDT P9412 receiver on hsi2c_15 feeding the MAX77759's wireless input; "
+              + "Google's GPL driver exists. First test: basic 5 W Qi with no driver, on a pad.",
+          ref: "devices/pixel7pro/kernel/wireless/README.md" },
         { n: "True power-off / shutdown", s: "no", cap: "poweroff",
           note: "The power menu offers Restart and Restart to bootloader, both orderly (modem stopped, storage "
               + "synced), but there is no Power off yet; ordinary shutdown still becomes a reboot.",
@@ -149,11 +155,11 @@ HW.pixel7pro = {
           note: "The panel's brightness register is a backlight device; the shell's slider works and the level "
               + "is restored at session start. Automatic brightness waits on the light sensor.",
           ref: "devices/pixel7pro/docs/status.md" },
-        { n: "Always-on / ambient display", s: "no",
-          note: "Not checked on the Pixel. The shared ambient clock would keep the panel in its normal mode and "
-              + "the phone awake. Planned: the S6E3HC4's low-power mode, with the SoC in SYS_SLEEP between "
-              + "minute updates.",
-          ref: "docs/mobile-roadmap.md" },
+        { n: "Always-on / ambient display", s: "partial",
+          note: "The panel's AOD mode (10 nit, 10 Hz self-refresh), with the display pipeline off between frames "
+              + "and the phone in SYS_SLEEP between minute updates (kernel v30). Asleep it costs about 25 mA "
+              + "over a dark screen. Not yet: pocket detection while asleep.",
+          ref: "devices/pixel7pro/kernel/display-v30/README.md" },
         { n: "Multitouch (Synaptics S3908)", s: "ok", cap: "touch",
           note: "On the SPI0 controller with its attention interrupt: about 240 Hz for 0.12 ms of CPU per frame, "
               + "user-confirmed smooth, with recovery after controller errors. Still a register-level driver, "
@@ -276,7 +282,11 @@ HW.pixel7pro = {
           ref: "devices/pixel7pro/sensors/README.md" },
         { n: "Rear light, flicker and spectral sensor (VD6282)", s: "no",
           note: "On the AoC's buses; not used.", ref: "devices/pixel7pro/sensors/README.md" },
-        { n: "Under-display fingerprint reader", s: "no", cap: "fingerprint", note: "Not started." }
+        { n: "Under-display fingerprint reader", s: "no", cap: "fingerprint",
+          note: "Not started. October 1 research: a Goodix trusted app in Trusty (the secure OS) owns the "
+              + "sensor, so the path is running Google's own stack. Trusty already runs under our kernel (it "
+              + "answers and serves the AoC); next is loading the encrypted Goodix app, then binder and the "
+              + "stock HAL, and the panel's local high-brightness spot. About 4–8 weeks." }
       ]
     },
 
@@ -285,29 +295,49 @@ HW.pixel7pro = {
       title: "Cameras",
       items: [
         { n: "Rear main camera (Samsung GN1)", s: "partial", cap: "camera-rear",
-          note: "Preview and photos in Omarchy Camera (1×) through our V4L2 driver and libcamera: 2016×1136 at "
-              + "120 fps over 3-trio C-PHY, with autofocus. Binned mode only; full-resolution photos are next.",
+          note: "Preview and photos in Omarchy Camera (1×) through our V4L2 driver and libcamera, over 3-trio "
+              + "C-PHY, with autofocus: 4080×3072 at 30 fps for 12.5 MP photos, and 2016×1136 for video. That "
+              + "mode can run at 120 fps; since October 1 every mode starts at 30 fps (VBLANK), since libcamera "
+              + "never sets the frame length and 120 fps capped exposure at 8 ms.",
           ref: "devices/pixel7pro/kernel/camera/README.md" },
         { n: "Rear ultra-wide camera (Sony IMX386)", s: "partial", cap: "camera-rear",
-          note: "Preview and photos (0.5×): 2016×1508 at 60 fps over 4-lane D-PHY, with autofocus. Binned mode "
-              + "only.",
+          note: "Preview at 2016×1508, 60 fps, over 4-lane D-PHY, with autofocus. Since October 1 there is a "
+              + "full-resolution mode, 4032×3016 at 30 fps, for 12 MP photos (0.5×).",
           ref: "devices/pixel7pro/kernel/camera/README.md" },
         { n: "Rear telephoto camera (Samsung GM5)", s: "partial", cap: "camera-rear",
-          note: "Preview and photos (5×): 2016×1512 at 60 fps over 2-trio C-PHY with LRTE packet delimiters. "
-              + "Its autofocus is not driven yet, so close subjects are soft.",
+          note: "Preview at 2016×1512, 60 fps, over 2-trio C-PHY with LRTE packet delimiters. Since October 1 "
+              + "there is a full-resolution mode, 4032×3024 at 30 fps (link ~1200 Msps), for 12 MP photos (5×). "
+              + "Autofocus since October 1: the SEMCO SEM1215SA's AF registers, recovered from the stock HAL, "
+              + "with libcamera's contrast AF.",
           ref: "devices/pixel7pro/kernel/camera/README.md" },
         { n: "Front camera (Samsung 3J1)", s: "partial", cap: "camera-front",
-          note: "Preview and photos: 1920×1368 at 60 fps over 4-lane D-PHY. Binned mode only.",
+          note: "Preview at 1920×1368, 60 fps, over 4-lane D-PHY. Since October 1 there is a full-resolution "
+              + "mode, 3840×2736 at 30 fps, for 10.5 MP photos.",
+          ref: "devices/pixel7pro/kernel/camera/README.md" },
+        { n: "Video recording and slow motion", s: "partial", cap: "camera-rear",
+          note: "Omarchy Camera records 1080p H.264 with sound (October 1): about 29 fps on the main camera, 22 on "
+              + "the front (1920×1080 needs its full-resolution mode) and 17 on the telephoto, limited by "
+              + "libcamera's software ISP and x264 on the CPU. Goal: full frame rate on every camera, and the main "
+              + "camera's 120 fps slow motion. That needs frame-duration control in libcamera's simple "
+              + "pipeline, a faster ISP path and the hardware encoder (MFC).",
           ref: "devices/pixel7pro/kernel/camera/README.md" },
         { n: "LED flash / torch (LM3644)", s: "partial", cap: "flash",
           note: "The torch lights from the shade's flashlight toggle (measured +0.81 W at the default step). "
               + "Camera flash waits on a camera.", ref: "devices/pixel7pro/kernel/torch/README.md" },
         { n: "Image signal processor", s: "partial",
           note: "libcamera's software ISP debayers on the Mali GPU at the sensors' full rate (cached capture "
-              + "buffers keep its statistics at 4 ms a frame). Google's hardware ISP is not used.",
+              + "buffers keep its statistics at 4 ms a frame). Google's hardware ISP is not used. October 1 "
+              + "research: Google's closed camera HAL programs every ISP register, so running or "
+              + "reverse-engineering it is 20–45 person-weeks; improving the GPU path (lens shading, noise, "
+              + "statistics) comes first.",
           ref: "devices/pixel7pro/adapter/camera/libcamera/README.md" },
         { n: "Video codec (hardware encode / decode)", s: "no",
-          note: "Not started; its power domains are switched off at boot.", ref: "devices/pixel7pro/kernel/pd/README.md" }
+          note: "Not started; its power domains are switched off at boot. October 1 research: the encoder is "
+              + "Samsung MFC v15.6, close to the v12 mainline's s5p-mfc already drives, with unsigned firmware the "
+              + "kernel loads. A GS201 variant is about 8–12 person-weeks; the domain's power-on path is "
+              + "prepared. AV1 decode (BigOcean) is left to software. Meanwhile Omarchy Camera records video "
+              + "with x264 on the CPU.",
+          ref: "devices/pixel7pro/kernel/pd/README.md" }
       ]
     },
 

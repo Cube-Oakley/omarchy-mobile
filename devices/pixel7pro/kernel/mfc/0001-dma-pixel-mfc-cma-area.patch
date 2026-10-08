@@ -1,0 +1,56 @@
+diff --git i/include/linux/dma-map-ops.h w/include/linux/dma-map-ops.h
+index 8fae2b7de..e6892bab8 100644
+--- i/include/linux/dma-map-ops.h
++++ w/include/linux/dma-map-ops.h
+@@ -92,6 +92,8 @@ static inline void set_dma_ops(struct device *dev,
+ 
+ #ifdef CONFIG_DMA_CMA
+ struct cma *dev_get_cma_area(struct device *dev);
++/* pixel_mfc_cma=: the GS201 video codec's own area (kernel/dma/contiguous.c) */
++extern struct cma *pixel_mfc_cma_area;
+ struct cma *dma_contiguous_get_area_by_idx(unsigned int idx);
+ 
+ void dma_contiguous_reserve(phys_addr_t addr_limit);
+diff --git i/kernel/dma/contiguous.c w/kernel/dma/contiguous.c
+index 660934605..95334369c 100644
+--- i/kernel/dma/contiguous.c
++++ w/kernel/dma/contiguous.c
+@@ -121,6 +121,26 @@ static int __init early_cma(char *p)
+ }
+ early_param("cma", early_cma);
+ 
++/*
++ * pixel_mfc_cma=SIZE: a CMA area of its own, below 4 GiB, for the Pixel 7
++ * Pro's video codec (GS201's MFC v15.6, driven by s5p-mfc without its
++ * SysMMU). The codec's RISC addresses memory upward from its firmware's
++ * base: a context buffer below the firmware failed SYS_INIT. So the driver
++ * gives its device this area (dev->cma_area) and allocates the firmware
++ * first, at the area's bottom; every later buffer lands above it.
++ */
++static phys_addr_t pixel_mfc_cma_size __initdata;
++struct cma *pixel_mfc_cma_area;
++EXPORT_SYMBOL_GPL(pixel_mfc_cma_area);
++
++static int __init early_pixel_mfc_cma(char *p)
++{
++	if (p)
++		pixel_mfc_cma_size = memparse(p, &p);
++	return 0;
++}
++early_param("pixel_mfc_cma", early_pixel_mfc_cma);
++
+ struct cma *dev_get_cma_area(struct device *dev)
+ {
+ 	if (dev && dev->cma_area)
+@@ -254,6 +274,11 @@ void __init dma_contiguous_reserve(phys_addr_t limit)
+ 	phys_addr_t selected_limit = limit;
+ 	bool fixed = false;
+ 
++	if (pixel_mfc_cma_size &&
++	    cma_declare_contiguous(0, pixel_mfc_cma_size, SZ_4G, 0, 0, false,
++				   "pixel-mfc", &pixel_mfc_cma_area))
++		pr_err("pixel_mfc_cma: could not reserve %pa\n", &pixel_mfc_cma_size);
++
+ 	pr_debug("%s(limit %08lx)\n", __func__, (unsigned long)limit);
+ 
+ 	if (size_cmdline != -1) {

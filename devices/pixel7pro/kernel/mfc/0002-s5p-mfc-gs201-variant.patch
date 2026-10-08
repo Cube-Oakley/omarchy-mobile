@@ -1,0 +1,478 @@
+diff --git i/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v12.h w/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v12.h
+index 24e669d8e..48cb6f15c 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v12.h
++++ w/drivers/media/platform/samsung/s5p-mfc/regs-mfc-v12.h
+@@ -25,6 +25,13 @@
+ #define MAX_CPB_SIZE_V12		(7 * SZ_1M)
+ #define MFC_VERSION_V12			0xC0
+ #define MFC_NUM_PORTS_V12		1
++
++/* Google GS201 (MFC v15.6), from Google's GPL mfc_regs.h */
++#define S5P_FIMV_RISC_NONSECURE_BASE_GS201	0x0068
++#define S5P_FIMV_FW_STATUS_INFO_GS201		0xf0a4
++#define S5P_FIMV_D_DISPLAY_ASPECT_RATIO_GS201	0xf634
++#define S5P_FIMV_D_DISPLAY_EXTENDED_AR_GS201	0xf638
++#define S5P_FIMV_D_H264_INFO_GS201		0xf690
+ #define S5P_FIMV_CODEC_VP9_ENC		27
+ #define MFC_CHROMA_PAD_BYTES_V12        256
+ #define S5P_FIMV_D_ALIGN_PLANE_SIZE_V12 256
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+index 32eb402d4..37915ae92 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -20,6 +20,7 @@
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/of_reserved_mem.h>
++#include <linux/dma-map-ops.h>
+ #include <media/videobuf2-v4l2.h>
+ #include "s5p_mfc_common.h"
+ #include "s5p_mfc_ctrl.h"
+@@ -526,6 +527,12 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 		if (ctx->c_ops->post_seq_start(ctx))
+ 			mfc_err("post_seq_start() failed\n");
+ 	} else {
++		static const struct v4l2_event ev_src_ch = {
++			.type = V4L2_EVENT_SOURCE_CHANGE,
++			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
++		};
++		const bool initial = ctx->state == MFCINST_GOT_INST;
++
+ 		ctx->img_width = s5p_mfc_hw_call(dev->mfc_ops, get_img_width,
+ 				dev);
+ 		ctx->img_height = s5p_mfc_hw_call(dev->mfc_ops, get_img_height,
+@@ -544,6 +551,14 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
+ 			ctx->state = MFCINST_ERROR;
+ 		else
+ 			ctx->state = MFCINST_HEAD_PARSED;
++		/*
++		 * The stateful decoder interface: the first header is parsed and
++		 * the CAPTURE format is known. Chromium waits for this event;
++		 * G_FMT also waits for the header, for older clients. A
++		 * resolution change mid-stream has its own event (RES_CHANGE_END).
++		 */
++		if (initial && ctx->state == MFCINST_HEAD_PARSED)
++			v4l2_event_queue_fh(&ctx->fh, &ev_src_ch);
+ 
+ 		if ((ctx->codec_mode == S5P_MFC_CODEC_H264_DEC ||
+ 			ctx->codec_mode == S5P_MFC_CODEC_H264_MVC_DEC) &&
+@@ -1037,12 +1052,13 @@ static __poll_t s5p_mfc_poll(struct file *file,
+ 	src_q = &ctx->vq_src;
+ 	dst_q = &ctx->vq_dst;
+ 	/*
+-	 * There has to be at least one buffer queued on each queued_list, which
+-	 * means either in driver already or waiting for driver to claim it
+-	 * and start processing.
++	 * Nothing can arrive with neither queue streaming and no event waiting.
++	 * With only OUTPUT streaming and nothing queued, the client may be
++	 * waiting for the header's source change event: wait with it rather
++	 * than fail (the event was masked by POLLERR here before).
+ 	 */
+-	if ((!vb2_is_streaming(src_q) || list_empty(&src_q->queued_list)) &&
+-	    (!vb2_is_streaming(dst_q) || list_empty(&dst_q->queued_list))) {
++	if (!vb2_is_streaming(src_q) && !vb2_is_streaming(dst_q) &&
++	    !v4l2_event_pending(&ctx->fh)) {
+ 		rc = EPOLLERR;
+ 		goto end;
+ 	}
+@@ -1226,6 +1242,19 @@ static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
+ 	if (mfc_mem_size)
+ 		mem_size = memparse(mfc_mem_size, NULL);
+ 
++	/*
++	 * GS201: the RISC addresses memory upward from its firmware, which goes
++	 * first in this block (s5p_mfc_load_firmware). The device's own CMA
++	 * area puts the block, and every buffer allocated after it, above.
++	 */
++	if (IS_GS201(mfc_dev)) {
++		if (!pixel_mfc_cma_area) {
++			mfc_err("GS201 needs its own CMA area (pixel_mfc_cma=)\n");
++			return -ENOMEM;
++		}
++		dev->cma_area = pixel_mfc_cma_area;
++	}
++
+ 	mfc_dev->mem_bitmap = bitmap_zalloc(mem_size >> PAGE_SHIFT, GFP_KERNEL);
+ 	if (!mfc_dev->mem_bitmap)
+ 		return -ENOMEM;
+@@ -1350,6 +1379,10 @@ static int s5p_mfc_probe(struct platform_device *pdev)
+ 		goto err_dma;
+ 	}
+ 
++	ret = s5p_mfc_gs201_init_power(dev);
++	if (ret)
++		goto err_v4l2_dev_reg;
++
+ 	/*
+ 	 * Load fails if fs isn't mounted. Try loading anyway.
+ 	 * _open() will load it, it fails now. Ignore failure.
+@@ -1404,6 +1437,15 @@ static int s5p_mfc_probe(struct platform_device *pdev)
+ 	dev->vfd_enc	= vfd;
+ 	video_set_drvdata(vfd, dev);
+ 	platform_set_drvdata(pdev, dev);
++	/*
++	 * GS201's encoder registers differ from v12's (no E_FRAME_WIDTH or
++	 * HEIGHT at 0xf770, where v15 has a decoder register): no encoder yet,
++	 * or an app would record through it.
++	 */
++	if (IS_GS201(dev)) {
++		video_device_release(dev->vfd_enc);
++		dev->vfd_enc = NULL;
++	}
+ 
+ 	/* Initialize HW ops and commands based on MFC version */
+ 	s5p_mfc_init_hw_ops(dev);
+@@ -1419,13 +1461,15 @@ static int s5p_mfc_probe(struct platform_device *pdev)
+ 	v4l2_info(&dev->v4l2_dev,
+ 		  "decoder registered as /dev/video%d\n", dev->vfd_dec->num);
+ 
+-	ret = video_register_device(dev->vfd_enc, VFL_TYPE_VIDEO, 0);
+-	if (ret) {
+-		v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
+-		goto err_enc_reg;
++	if (dev->vfd_enc) {
++		ret = video_register_device(dev->vfd_enc, VFL_TYPE_VIDEO, 0);
++		if (ret) {
++			v4l2_err(&dev->v4l2_dev, "Failed to register video device\n");
++			goto err_enc_reg;
++		}
++		v4l2_info(&dev->v4l2_dev,
++			  "encoder registered as /dev/video%d\n", dev->vfd_enc->num);
+ 	}
+-	v4l2_info(&dev->v4l2_dev,
+-		  "encoder registered as /dev/video%d\n", dev->vfd_enc->num);
+ 
+ 	pr_debug("%s--\n", __func__);
+ 	return 0;
+@@ -1441,6 +1485,7 @@ static int s5p_mfc_probe(struct platform_device *pdev)
+ err_dec_alloc:
+ 	v4l2_device_unregister(&dev->v4l2_dev);
+ err_v4l2_dev_reg:
++	s5p_mfc_gs201_final_power(dev);
+ 	s5p_mfc_final_pm(dev);
+ err_dma:
+ 	s5p_mfc_unconfigure_dma_memory(dev);
+@@ -1483,6 +1528,7 @@ static void s5p_mfc_remove(struct platform_device *pdev)
+ 	s5p_mfc_unconfigure_dma_memory(dev);
+ 
+ 	s5p_mfc_final_pm(dev);
++	s5p_mfc_gs201_final_power(dev);
+ }
+ 
+ #ifdef CONFIG_PM_SLEEP
+@@ -1517,7 +1563,17 @@ static int s5p_mfc_suspend(struct device *dev)
+ 	if (ret) {
+ 		clear_bit(0, &m_dev->enter_suspend);
+ 		clear_bit(0, &m_dev->hw_lock);
++		return ret;
+ 	}
++	/*
++	 * GS201: system sleep would cut the domain without the save list, and
++	 * it would come back with CMU_MFC and the S2MPUs at reset values. The
++	 * firmware has saved its state, so power it off properly instead, or
++	 * wake it again and refuse the sleep.
++	 */
++	ret = s5p_mfc_gs201_power(m_dev, false);
++	if (ret)
++		s5p_mfc_wakeup(m_dev);
+ 	return ret;
+ }
+ 
+@@ -1525,8 +1581,13 @@ static int s5p_mfc_resume(struct device *dev)
+ {
+ 	struct s5p_mfc_dev *m_dev = dev_get_drvdata(dev);
+ 
++	int ret;
++
+ 	if (m_dev->num_inst == 0)
+ 		return 0;
++	ret = s5p_mfc_gs201_power(m_dev, true);
++	if (ret)
++		return ret;
+ 	return s5p_mfc_wakeup(m_dev);
+ }
+ #endif
+@@ -1705,7 +1766,23 @@ static struct s5p_mfc_variant mfc_drvdata_v12 = {
+ 	.num_clocks	= 1,
+ };
+ 
++static struct s5p_mfc_variant mfc_drvdata_gs201 = {
++	.version        = MFC_VERSION_V12,
++	.version_bit    = MFC_V12_BIT,
++	.port_num       = MFC_NUM_PORTS_V12,
++	.buf_size       = &buf_size_v12,
++	/* From the phone's own vendor partition (/firmware/mfc_fw.bin) */
++	.fw_name[0]     = "mfc_fw.bin",
++	/* The boot leaves CMU_MFC's gates on; no GS201 clock driver yet */
++	.num_clocks	= 0,
++	.gs201		= true,
++};
++
+ static const struct of_device_id exynos_mfc_match[] = {
++	{
++		.compatible = "google,gs201-mfc",
++		.data = &mfc_drvdata_gs201,
++	},
+ 	{
+ 		.compatible = "samsung,mfc-v5",
+ 		.data = &mfc_drvdata_v5,
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_cmd_v6.c w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_cmd_v6.c
+index f7c682fca..5799c6932 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_cmd_v6.c
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_cmd_v6.c
+@@ -18,6 +18,19 @@ static int s5p_mfc_cmd_host2risc_v6(struct s5p_mfc_dev *dev, int cmd)
+ {
+ 	mfc_debug(2, "Issue the command: %d\n", cmd);
+ 
++	/* GS201, as stock's mfc_core_wait_fw_status: firmware ready first */
++	if (IS_GS201(dev)) {
++		unsigned long timeout = jiffies + msecs_to_jiffies(MFC_BW_TIMEOUT);
++
++		while (!(mfc_read(dev, S5P_FIMV_FW_STATUS_INFO_GS201) & 0x1)) {
++			if (time_after(jiffies, timeout)) {
++				mfc_err("Timeout while waiting for the firmware\n");
++				return -EIO;
++			}
++			cpu_relax();
++		}
++	}
++
+ 	/* Reset RISC2HOST command */
+ 	mfc_write(dev, 0x0, S5P_FIMV_RISC2HOST_CMD_V6);
+ 
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+index 58dc17680..bbbef5353 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_common.h
+@@ -43,6 +43,7 @@
+ 
+ /* MFC definitions */
+ #define MFC_MAX_EXTRA_DPB       5
++#define MFC_MAX_EXTRA_DPB_GS201	12
+ #define MFC_MAX_BUFFERS		32
+ #define MFC_NUM_CONTEXTS	4
+ /* Interrupt timeout */
+@@ -234,6 +235,7 @@ struct s5p_mfc_variant {
+ 	const char	*clk_names[MFC_MAX_CLOCKS];
+ 	int		num_clocks;
+ 	bool		use_clock_gating;
++	bool		gs201;
+ };
+ 
+ /**
+@@ -790,6 +792,13 @@ void s5p_mfc_cleanup_queue(struct list_head *lh, struct vb2_queue *vq);
+ #define IS_MFCV8_PLUS(dev)	((dev)->variant->version >= 0x80)
+ #define IS_MFCV10_PLUS(dev)	((dev)->variant->version >= 0xA0)
+ #define IS_MFCV12(dev)		((dev)->variant->version >= 0xC0)
++/*
++ * Google GS201 (Pixel 7 Pro): MFC v15.6, programmed as v12 with a few
++ * differences (the firmware base register, a firmware status poll before
++ * each command, three moved decoder registers), no SysMMU and every buffer
++ * from the pixel_mfc_cma area, above the firmware.
++ */
++#define IS_GS201(dev)		((dev)->variant->gs201)
+ #define FW_HAS_E_MIN_SCRATCH_BUF(dev) (IS_MFCV10_PLUS(dev))
+ 
+ #define MFC_V5_BIT	BIT(0)
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_ctrl.c w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_ctrl.c
+index 625d77b2b..57b492a11 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_ctrl.c
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_ctrl.c
+@@ -178,7 +178,13 @@ int s5p_mfc_reset(struct s5p_mfc_dev *dev)
+ 
+ static inline void s5p_mfc_init_memctrl(struct s5p_mfc_dev *dev)
+ {
+-	if (IS_MFCV6_PLUS(dev)) {
++	if (IS_GS201(dev)) {
++		/* The stock DT sets security_ctrl: the non-secure base */
++		mfc_write(dev, dev->dma_base[BANK_L_CTX],
++			  S5P_FIMV_RISC_NONSECURE_BASE_GS201);
++		mfc_debug(2, "Base Address : %pad\n",
++			  &dev->dma_base[BANK_L_CTX]);
++	} else if (IS_MFCV6_PLUS(dev)) {
+ 		mfc_write(dev, dev->dma_base[BANK_L_CTX],
+ 			  S5P_FIMV_RISC_BASE_ADDRESS_V6);
+ 		mfc_debug(2, "Base Address : %pad\n",
+@@ -235,6 +241,9 @@ int s5p_mfc_init_hw(struct s5p_mfc_dev *dev)
+ 	s5p_mfc_clear_cmds(dev);
+ 	/* 3. Release reset signal to the RISC */
+ 	s5p_mfc_clean_dev_int_flags(dev);
++	/* GS201, as stock's mfc_core_risc_on: MFC_OFF cleared first */
++	if (IS_GS201(dev))
++		mfc_write(dev, 0x0, S5P_FIMV_MFC_CLOCK_OFF_V10);
+ 	if (IS_MFCV6_PLUS(dev)) {
+ 		dev->risc_on = 1;
+ 		mfc_write(dev, 0x1, S5P_FIMV_RISC_ON_V6);
+@@ -337,6 +346,8 @@ static int s5p_mfc_v8_wait_wakeup(struct s5p_mfc_dev *dev)
+ 
+ 	/* Release reset signal to the RISC */
+ 	dev->risc_on = 1;
++	if (IS_GS201(dev))
++		mfc_write(dev, 0x0, S5P_FIMV_MFC_CLOCK_OFF_V10);
+ 	mfc_write(dev, 0x1, S5P_FIMV_RISC_ON_V6);
+ 
+ 	if (s5p_mfc_wait_for_done_dev(dev, S5P_MFC_R2H_CMD_FW_STATUS_RET)) {
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+index afd28beab..f97f31ea1 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+@@ -966,8 +966,14 @@ static int s5p_mfc_queue_setup(struct vb2_queue *vq,
+ 		/* Setup buffer count */
+ 		if (*buf_count < ctx->pb_count)
+ 			*buf_count = ctx->pb_count;
+-		if (*buf_count > ctx->pb_count + MFC_MAX_EXTRA_DPB)
+-			*buf_count = ctx->pb_count + MFC_MAX_EXTRA_DPB;
++		/*
++		 * GS201: a browser shows the decoder's own buffers and holds
++		 * several for its playback queue, while pb_count stay queued.
++		 */
++		if (*buf_count > ctx->pb_count + (IS_GS201(dev) ? MFC_MAX_EXTRA_DPB_GS201 :
++						 MFC_MAX_EXTRA_DPB))
++			*buf_count = ctx->pb_count + (IS_GS201(dev) ? MFC_MAX_EXTRA_DPB_GS201 :
++						      MFC_MAX_EXTRA_DPB);
+ 		if (*buf_count > MFC_MAX_BUFFERS)
+ 			*buf_count = MFC_MAX_BUFFERS;
+ 	} else {
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+index 98f8292b3..9d7104a46 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr_v6.c
+@@ -2656,6 +2656,13 @@ const struct s5p_mfc_regs *s5p_mfc_init_regs_v6_plus(struct s5p_mfc_dev *dev)
+ 	R(e_hevc_lf_tc_offset_div2, S5P_FIMV_E_HEVC_LF_TC_OFFSET_DIV2_V10);
+ 	R(e_hevc_nal_control, S5P_FIMV_E_HEVC_NAL_CONTROL_V10);
+ 
++	/* GS201 (MFC v15): decoder registers 0x100 above v12's */
++	if (IS_GS201(dev)) {
++		R(d_display_aspect_ratio, S5P_FIMV_D_DISPLAY_ASPECT_RATIO_GS201);
++		R(d_display_extended_ar, S5P_FIMV_D_DISPLAY_EXTENDED_AR_GS201);
++		R(d_h264_info, S5P_FIMV_D_H264_INFO_GS201);
++	}
++
+ done:
+ 	return &mfc_regs;
+ #undef S5P_MFC_REG_ADDR
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.c w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.c
+index ae4241408..49a61abd6 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.c
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.c
+@@ -8,6 +8,8 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/err.h>
++#include <linux/io.h>
++#include <linux/module.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+ #include "s5p_mfc_common.h"
+@@ -61,6 +63,76 @@ void s5p_mfc_clock_off(struct s5p_mfc_dev *dev)
+ 	clk_disable(dev->pm.clock_gate);
+ }
+ 
++/*
++ * GS201: the MFC power domain has no genpd here. pixel-pd-off (the Pixel
++ * tree's kernel/pd) powers it with its stock save list, context SMC and
++ * S2MPU restore: on for the first instance, off after the last, so the
++ * codec draws nothing between videos. Found at probe, not linked: without
++ * the module (or with one built before its MFC list) the domain stays as
++ * the boot left it, and the codec is refused if that is off, since MMIO to
++ * a powered-off block hangs the SoC.
++ */
++#define GS201_PMU_MFC_STATUS	0x18062384
++static int (*gs201_pd_power)(const char *name, bool on);
++
++static bool s5p_mfc_gs201_domain_is_on(void)
++{
++	void __iomem *status = ioremap(GS201_PMU_MFC_STATUS, 4);
++	bool on;
++
++	if (!status)
++		return false;
++	on = readl(status) & BIT(0);
++	iounmap(status);
++	return on;
++}
++
++int s5p_mfc_gs201_power(struct s5p_mfc_dev *dev, bool on)
++{
++	int ret;
++
++	if (!IS_GS201(dev))
++		return 0;
++	if (!gs201_pd_power) {
++		if (on && !s5p_mfc_gs201_domain_is_on()) {
++			mfc_err("the MFC domain is off and nothing can power it on\n");
++			return -ENODEV;
++		}
++		return 0;
++	}
++	ret = gs201_pd_power("mfc", on);
++	if (ret)
++		mfc_err("MFC domain did not power %s (%d)\n", on ? "on" : "off", ret);
++	return ret;
++}
++
++int s5p_mfc_gs201_init_power(struct s5p_mfc_dev *dev)
++{
++	if (!IS_GS201(dev))
++		return 0;
++	gs201_pd_power = __symbol_get("pixel_pd_power");
++	if (gs201_pd_power && gs201_pd_power("mfc", false)) {
++		symbol_put_addr(gs201_pd_power);
++		gs201_pd_power = NULL;
++	}
++	if (gs201_pd_power)
++		return 0;	/* off until the first instance */
++	if (!s5p_mfc_gs201_domain_is_on()) {
++		mfc_err("the MFC domain is off and pixel-pd-off cannot power it on\n");
++		return -ENODEV;
++	}
++	mfc_err("no MFC power control (pixel-pd-off): the domain stays on\n");
++	return 0;
++}
++
++void s5p_mfc_gs201_final_power(struct s5p_mfc_dev *dev)
++{
++	if (!gs201_pd_power)
++		return;
++	symbol_put_addr(gs201_pd_power);
++	gs201_pd_power = NULL;
++}
++
+ int s5p_mfc_power_on(struct s5p_mfc_dev *dev)
+ {
+ 	int i, ret = 0;
+@@ -69,6 +141,12 @@ int s5p_mfc_power_on(struct s5p_mfc_dev *dev)
+ 	if (ret < 0)
+ 		return ret;
+ 
++	ret = s5p_mfc_gs201_power(dev, true);
++	if (ret) {
++		pm_runtime_put(dev->pm.device);
++		return ret;
++	}
++
+ 	/* clock control */
+ 	for (i = 0; i < dev->pm.num_clocks; i++) {
+ 		ret = clk_prepare_enable(dev->pm.clocks[i]);
+@@ -100,6 +178,7 @@ int s5p_mfc_power_off(struct s5p_mfc_dev *dev)
+ 	for (i = 0; i < dev->pm.num_clocks; i++)
+ 		clk_disable_unprepare(dev->pm.clocks[i]);
+ 
++	s5p_mfc_gs201_power(dev, false);
+ 	return pm_runtime_put_sync(dev->pm.device);
+ }
+ 
+diff --git i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.h w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.h
+index 9c71036f0..0e2473475 100644
+--- i/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.h
++++ w/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_pm.h
+@@ -15,6 +15,9 @@ void s5p_mfc_final_pm(struct s5p_mfc_dev *dev);
+ int s5p_mfc_clock_on(struct s5p_mfc_dev *dev);
+ void s5p_mfc_clock_off(struct s5p_mfc_dev *dev);
+ int s5p_mfc_power_on(struct s5p_mfc_dev *dev);
++int s5p_mfc_gs201_init_power(struct s5p_mfc_dev *dev);
++int s5p_mfc_gs201_power(struct s5p_mfc_dev *dev, bool on);
++void s5p_mfc_gs201_final_power(struct s5p_mfc_dev *dev);
+ int s5p_mfc_power_off(struct s5p_mfc_dev *dev);
+ 
+ #endif /* S5P_MFC_PM_H_ */

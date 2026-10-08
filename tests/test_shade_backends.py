@@ -24,6 +24,48 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(r['chargers'][0]['status'],'Full')
             self.assertEqual(r['chargers'][0]['input_limit_ma'],500)
 
+    def test_battery_usage_by_screen_state_on_battery_only(self):
+        m=module('battery')
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            h=[dict(time=1000,screen='on',capacity=100,charge=5000000,plugged=True),
+               dict(time=1600,screen='on',capacity=100,charge=5000000,plugged=False),
+               dict(time=2200,screen='ambient',capacity=99,charge=4900000,plugged=False),
+               dict(time=5800,screen='ambient',capacity=97,charge=4800000,plugged=False,event='wake:touch')]
+            (root/'battery-history.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in h)+'not json\n')
+            (root/'sleep.log').write_text(json.dumps(dict(time=5800,woke='touch',slept=3500,deep_ma=60.0,minute_ticks=58))+'\n')
+            u=m.usage(hours=2,now=6000,root=root)
+            # Charging time counts, its charge does not.
+            self.assertEqual(u['states']['on'],{'seconds':1200.0,'mah':100.0})
+            self.assertEqual(u['states']['ambient'],{'seconds':3600.0,'mah':100.0})
+            self.assertEqual((u['deep']['seconds'],u['deep']['average_ma'],u['wakes'],u['minute_ticks']),(3500,60.0,{'touch':1},58))
+            self.assertEqual((u['since_unplugged']['percent'],u['since_unplugged']['mah']),(3,200.0))
+
+    def test_battery_details_by_component_and_process(self):
+        m=module('battery')
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            h=[dict(time=1000,screen='ambient',capacity=90,charge=4500000,voltage=3900000,plugged=False,radios={'wifi':True}),
+               dict(time=4600,screen='on',capacity=88,charge=4400000,voltage=3900000,plugged=False,metered=3600.0,
+                    rails={'VSYS_DISPLAY':36000000,'S4M_VDD_CPUCL0':18000000,'VSYS_MODEM':7200000,'VSYS_RFFE':3600000},
+                    cpu={'shell':12.5,'manager.py':3.0},wakeups={'cp2ap_wakeup':[40,1200]},irqs={'pixel-touch-attn':5},
+                    net={'wlp1s0':[1000,200]},radios={'wifi':False}),
+               dict(time=4660,screen='on',capacity=88,charge=4399000,plugged=False,metered=60.0,
+                    rails={'VSYS_DISPLAY':6000000},cpu={'shell':1.5})]
+            (root/'battery-history.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in h))
+            r=m.details(hours=2,now=5000,root=root)
+            parts={c['name']:c for c in r['components']}
+            # 36 J over the always-on hour is 10 mWh; 6 J on screen 1.67 mWh.
+            self.assertEqual(parts['Display']['mwh'],11.67)
+            self.assertEqual(parts['Display']['by_screen'],{'on':1.67,'ambient':10.0,'off':0.0})
+            self.assertEqual(parts['Cellular radio']['mwh'],3.0)
+            self.assertTrue(parts['CPU, little cores']['floor'])
+            self.assertEqual(r['components'][0]['name'],'Display')
+            self.assertEqual(r['battery_mwh']['ambient'],390.0)
+            self.assertEqual(r['cpu'],[['shell',14.0],['manager.py',3.0]])
+            self.assertEqual(r['wakeups'],[['cp2ap_wakeup',40,1.2]])
+            self.assertEqual((r['net'],r['radio_seconds']['wifi']),({'wlp1s0':[1000,200]},3600))
+
     def test_nmcli_escaping_and_deduplication(self):
         m=module('wifi')
         sample='*:aa\\:bb\\:cc\\:dd\\:ee\\:ff:My\\:Net\\\\name:45:WPA2\n:11\\:22\\:33\\:44\\:55\\:66:My\\:Net\\\\name:90:WPA2\n'
@@ -192,7 +234,16 @@ class BackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'prefs.json'
             self.assertEqual(m.main([],path=path),{'dnd':False,'fontFamily':'JetBrainsMono Nerd Font','corners':'','alwaysOn':False,
-                                                   'sleep':True,'sleepCheck':15,'screenTimeout':60})
+                                                   'sleep':True,'sleepCheck':15,'sleepCheckNetwork':'wifi','screenTimeout':60,
+                                                   'fingerprintUnlock':True,'fingerprintHaptics':True,'fingerprintAmbient':False,
+                                                   'ambientWeather':False})
+            result=m.main(['set'],stdin=__import__('io').StringIO('{"fingerprintAmbient":true,"ambientWeather":true}'),path=path)
+            self.assertTrue(result['fingerprintAmbient'])
+            self.assertTrue(result['ambientWeather'])
+            result=m.main(['set'],stdin=__import__('io').StringIO('{"dnd":false}'),path=path)
+            self.assertTrue(json.loads(path.read_text())['fingerprintAmbient'])
+            with self.assertRaises(ValueError):
+                m.main(['set'],stdin=__import__('io').StringIO('{"fingerprintHaptics":"on"}'),path=path)
             result=m.main(['set'],stdin=__import__('io').StringIO('{"dnd":true}'),path=path)
             self.assertTrue(result['dnd'])
             self.assertEqual(json.loads(path.read_text())['dnd'], True)
@@ -222,5 +273,19 @@ class BackendTests(unittest.TestCase):
                     m.main(['set'],stdin=io.StringIO(bad),path=path)
             path.write_text('{"sleepCheck":999,"screenTimeout":-1}')
             self.assertEqual((m.read(path)['sleepCheck'],m.read(path)['screenTimeout'],m.read(path)['sleep']),(15,60,True))
+
+    def test_prefs_background_check_network(self):
+        m=module('prefs')
+        io=__import__('io')
+        with tempfile.TemporaryDirectory() as d:
+            path=Path(d)/'prefs.json'
+            self.assertEqual(m.read(path)['sleepCheckNetwork'],'wifi')
+            result=m.main(['set'],stdin=io.StringIO('{"sleepCheckNetwork":"data"}'),path=path)
+            self.assertEqual(result['sleepCheckNetwork'],'data')
+            self.assertEqual(m.read(path)['sleepCheckNetwork'],'data')
+            with self.assertRaises(ValueError):
+                m.main(['set'],stdin=io.StringIO('{"sleepCheckNetwork":"lte"}'),path=path)
+            path.write_text('{"sleepCheckNetwork":7}')
+            self.assertEqual(m.read(path)['sleepCheckNetwork'],'wifi')
 
 if __name__=='__main__': unittest.main()

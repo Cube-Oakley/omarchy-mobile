@@ -7,6 +7,11 @@ configuration. Install them only inside the target Arch root.
 - `telephony.json`: selects the Pixel SIT backend for Phone and Messages.
   Requires `modem/app_service.py`. The optional private modem bundle and boot
   manager provide automatic startup; this adapter only selects the app backend.
+  Its `mms` part is for picture messages: rmnet0 is the mobile data interface
+  (`modem/data_network.py`) and the server is Tello's, whose APN the modem
+  code uses. The server's name resolves publicly to a carrier-private address,
+  so `omarchy-mobile-mms` binds its connections to rmnet0 (unprivileged
+  SO_BINDTODEVICE) and they work while Wi-Fi is the route.
 - `reboot.sh`: orderly Restart and Restart to bootloader actions for the
   shared power menu. Hold the power button for two seconds to open it; a tap
   still controls the display. Uses `pixel-reboot`, which stops the modem and

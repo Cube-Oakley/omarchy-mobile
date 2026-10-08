@@ -111,17 +111,18 @@
 				polling-delay = <250>;
 				polling-delay-passive = <100>;
 				thermal-sensors = <&gs201_thermal 0>;
-				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
-				 * well before, and reboot below them; a reboot resumes stock control. */
+				/* Stock GS201 trips: power allocator from 75 C holding 95-98 C,
+				 * hardware DFS 102-115 C, hot 120 C. pixel-cpu-thermal caps from
+				 * 85 C; these throttle from 88 C and reboot at 99 C. */
 				critical-action = "reboot";
 				trips {
 					big_passive: passive {
-						temperature = <75000>;
+						temperature = <88000>;
 						hysteresis = <2000>;
 						type = "passive";
 					};
 					critical {
-						temperature = <95000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};
@@ -138,17 +139,18 @@
 				polling-delay = <250>;
 				polling-delay-passive = <100>;
 				thermal-sensors = <&gs201_thermal 1>;
-				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
-				 * well before, and reboot below them; a reboot resumes stock control. */
+				/* Stock GS201 trips: power allocator from 75 C holding 95-98 C,
+				 * hardware DFS 102-115 C, hot 120 C. pixel-cpu-thermal caps from
+				 * 85 C; these throttle from 88 C and reboot at 99 C. */
 				critical-action = "reboot";
 				trips {
 					mid_passive: passive {
-						temperature = <75000>;
+						temperature = <88000>;
 						hysteresis = <2000>;
 						type = "passive";
 					};
 					critical {
-						temperature = <95000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};
@@ -165,17 +167,18 @@
 				polling-delay = <250>;
 				polling-delay-passive = <100>;
 				thermal-sensors = <&gs201_thermal 2>;
-				/* Stock GS201 CPU trips: control 100 C, DFS 110 C, hot 120 C. Throttle
-				 * well before, and reboot below them; a reboot resumes stock control. */
+				/* Stock GS201 trips: power allocator from 75 C holding 95-98 C,
+				 * hardware DFS 102-115 C, hot 120 C. pixel-cpu-thermal caps from
+				 * 85 C; these throttle from 88 C and reboot at 99 C. */
 				critical-action = "reboot";
 				trips {
 					little_passive: passive {
-						temperature = <75000>;
+						temperature = <88000>;
 						hysteresis = <2000>;
 						type = "passive";
 					};
 					critical {
-						temperature = <95000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};
@@ -192,11 +195,11 @@
 				polling-delay = <1000>;
 				polling-delay-passive = <250>;
 				thermal-sensors = <&gs201_thermal 3>;
-				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				/* Below stock's 102 C hardware limits; pixel_gpu caps G3D from 85 C. */
 				critical-action = "reboot";
 				trips {
 					critical {
-						temperature = <80000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};
@@ -206,11 +209,11 @@
 				polling-delay = <1000>;
 				polling-delay-passive = <250>;
 				thermal-sensors = <&gs201_thermal 4>;
-				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				/* Below stock's 102 C hardware limits. */
 				critical-action = "reboot";
 				trips {
 					critical {
-						temperature = <80000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};
@@ -220,11 +223,11 @@
 				polling-delay = <1000>;
 				polling-delay-passive = <250>;
 				thermal-sensors = <&gs201_thermal 5>;
-				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				/* Below stock's 102 C hardware limits. */
 				critical-action = "reboot";
 				trips {
 					critical {
-						temperature = <80000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};
@@ -234,11 +237,11 @@
 				polling-delay = <1000>;
 				polling-delay-passive = <250>;
 				thermal-sensors = <&gs201_thermal 6>;
-				/* RAM bring-up limit; reboot resumes stock thermal control. */
+				/* Below stock's 102 C hardware limits. */
 				critical-action = "reboot";
 				trips {
 					critical {
-						temperature = <80000>;
+						temperature = <99000>;
 						hysteresis = <2000>;
 						type = "critical";
 					};

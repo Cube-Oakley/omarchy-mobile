@@ -10,12 +10,20 @@ must refuse work the grant does not allow.
 Launching replaces an existing window for that app, the same way Settings does,
 and does not touch the main shell. An optional argument (a conversation, a
 number to dial) reaches the app as OMARCHY_MOBILE_APP_ARG.
+
+Web apps (sites the browser added to the home screen) are desktop entries
+omarchy-mobile-webapp-SITE.desktop; `webapps` lists them and `webapp-remove
+ID` removes one with its icon and its own browser profile (cookies, storage,
+cache).
 """
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
+import time
 
 
 PERMISSIONS = {
@@ -25,7 +33,11 @@ PERMISSIONS = {
     },
     'camera': {
         'title': 'Camera',
-        'detail': 'Use the cameras, and save photos to Pictures.',
+        'detail': 'Use the cameras, and save photos and videos to Pictures.',
+    },
+    'microphone': {
+        'title': 'Microphone',
+        'detail': 'Record sound, such as the sound of videos.',
     },
     'phone': {
         'title': 'Phone calls',
@@ -38,6 +50,10 @@ PERMISSIONS = {
     'contacts': {
         'title': 'Contacts',
         'detail': 'Read and change your contacts.',
+    },
+    'calendar': {
+        'title': 'Calendar',
+        'detail': 'Read and change your calendars and their events.',
     },
 }
 
@@ -154,6 +170,114 @@ def installed():
     return {'ok': True, 'apps': found}
 
 
+WEBAPP_ID = re.compile(r'^omarchy-mobile-webapp-([a-z0-9]+(?:-[a-z0-9]+)*)$')
+
+
+def cache_root():
+    base = os.environ.get('XDG_CACHE_HOME')
+    return Path(base) if base else Path.home() / '.cache'
+
+
+def desktop_values(path):
+    values = {}
+    for line in path.read_text().splitlines():
+        if line.startswith('[') and values:
+            break
+        key, sep, value = line.partition('=')
+        if sep:
+            values.setdefault(key.strip(), value.strip())
+    return values
+
+
+def webapps():
+    found = []
+    for path in sorted((data_root() / 'applications').glob('omarchy-mobile-webapp-*.desktop')):
+        if not WEBAPP_ID.match(path.stem):
+            continue
+        try:
+            values = desktop_values(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        found.append({'id': path.stem, 'name': values.get('Name', path.stem),
+                      'url': values.get('X-Omarchy-Mobile-WebApp', '')})
+    return {'ok': True, 'webapps': found}
+
+
+def remove_webapp(webapp_id):
+    match = WEBAPP_ID.match(webapp_id or '')
+    if not match:
+        raise ValueError('Invalid web app id')
+    slug = match.group(1)
+    entry = data_root() / 'applications' / (webapp_id + '.desktop')
+    if not entry.is_file():
+        raise ValueError('No such web app')
+    entry.unlink()
+    (data_root() / 'omarchy-mobile/webapps' / (slug + '.png')).unlink(missing_ok=True)
+    for root in (data_root(), cache_root()):
+        profile = root / 'omarchy-mobile-browser/QtWebEngine' / ('webapp-' + slug)
+        if profile.is_dir() and not profile.is_symlink():
+            shutil.rmtree(profile)
+    return webapps()
+
+
+# Android apps (Waydroid). Waydroid writes waydroid.PACKAGE.desktop for each
+# Android app with a launcher activity, and keeps the keys it does not set
+# when it updates one. An Android app is in the app drawer only once chosen:
+# the shell lists a waydroid.* entry only with this category.
+ANDROID_ID = re.compile(r'^waydroid\.([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)$')
+ANDROID_SHOWN = 'X-Omarchy-Mobile-Shown'
+
+
+def android_apps():
+    found = []
+    for path in (data_root() / 'applications').glob('waydroid.*.desktop'):
+        match = ANDROID_ID.match(path.stem)
+        if not match:
+            continue
+        try:
+            values = desktop_values(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        categories = values.get('Categories', '').split(';')
+        if 'X-WayDroid-App' not in categories:
+            continue
+        found.append({'package': match.group(1), 'id': path.stem,
+                      'name': values.get('Name', match.group(1)),
+                      'icon': values.get('Icon', ''),
+                      'shown': ANDROID_SHOWN in categories,
+                      # Waydroid hides Android's own apps from launchers.
+                      'builtin': values.get('NoDisplay', '').lower() == 'true'})
+    found.sort(key=lambda app: (app['builtin'], app['name'].lower()))
+    return {'ok': True, 'android': found}
+
+
+def android_show(package, shown):
+    match = ANDROID_ID.match('waydroid.' + (package or ''))
+    if not match:
+        raise ValueError('Invalid Android package')
+    path = data_root() / 'applications' / f'waydroid.{package}.desktop'
+    if not path.is_file():
+        raise ValueError('No such Android app')
+    lines = path.read_text().splitlines()
+    group, done = '', False
+    for i, line in enumerate(lines):
+        if line.startswith('['):
+            if group == '[Desktop Entry]' and not done:
+                break
+            group = line.strip()
+            continue
+        if group == '[Desktop Entry]' and line.startswith('Categories='):
+            values = [c for c in line.partition('=')[2].split(';') if c and c != ANDROID_SHOWN]
+            lines[i] = 'Categories=' + ';'.join(values + ([ANDROID_SHOWN] if shown else [])) + ';'
+            done = True
+    if not done and shown:
+        lines.insert(lines.index('[Desktop Entry]') + 1, f'Categories={ANDROID_SHOWN};')
+    temporary = path.with_name(path.name + '.new')
+    temporary.write_text('\n'.join(lines) + '\n')
+    temporary.replace(path)
+    return android_apps()
+
+
 def has_grant(app_id, permission):
     return read_grants(app_id).get(permission, False)
 
@@ -164,6 +288,7 @@ def qml_path(app_id):
 
 def stop_previous(qml):
     needle = str(qml)
+    stopped = []
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit():
             continue
@@ -173,6 +298,15 @@ def stop_previous(qml):
             continue
         if 'quickshell' in command and needle in command:
             os.kill(int(entry.name), 15)
+            stopped.append(entry)
+    # The new instance starts with -n (no duplicate): while the old one is
+    # still closing (the camera releasing its sensor) it would exit at once
+    # and nothing would open. Wait for the old ones, four seconds at most.
+    deadline = time.monotonic() + 4
+    while stopped and time.monotonic() < deadline:
+        stopped = [entry for entry in stopped if entry.exists()]
+        if stopped:
+            time.sleep(0.05)
 
 
 def launch(app_id, argument=''):
@@ -216,9 +350,22 @@ def main(argv):
         if action == 'apps' and len(argv) == 2:
             print(json.dumps(installed()))
             return 0
+        if action == 'webapps' and len(argv) == 2:
+            print(json.dumps(webapps()))
+            return 0
+        if action == 'webapp-remove' and len(argv) == 3:
+            print(json.dumps(remove_webapp(argv[2])))
+            return 0
+        if action == 'android' and len(argv) == 2:
+            print(json.dumps(android_apps()))
+            return 0
+        if action in ('android-show', 'android-hide') and len(argv) == 3:
+            print(json.dumps(android_show(argv[2], action == 'android-show')))
+            return 0
         if action == 'launch' and len(argv) in (3, 4):
             launch(argv[2], argv[3] if len(argv) == 4 else '')
-        print('Usage: omarchy-mobile-app status|grant|revoke|apps|launch ...', file=sys.stderr)
+        print('Usage: omarchy-mobile-app status|grant|revoke|apps|webapps|webapp-remove|'
+              'android|android-show|android-hide|launch ...', file=sys.stderr)
         return 2
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
         print(json.dumps({'ok': False, 'error': str(error)}))

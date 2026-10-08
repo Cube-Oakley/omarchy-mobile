@@ -2,7 +2,7 @@
 Name=Files
 Comment=Browse and open files in the home folder
 Exec=omarchy-mobile-app launch files
-Icon=system-file-manager
+Icon=filemanager-app
 Terminal=false
 Type=Application
 Categories=Utility;FileManager;

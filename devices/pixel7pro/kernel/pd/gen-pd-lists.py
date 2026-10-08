@@ -9,8 +9,10 @@ file kernel/suspend/gen-sleep-lists.py reads. For each domain in DOMAINS it
 emits the SAVE_RESTORE entries of `<domain>_save[]` in order, as physical
 addresses, each tagged with its line. Stock saves them before the domain's
 `_off` sequence and writes them back after `_on` (pmucal_local.c:63,119).
-The lists' debug READs (DBG_NFO_*) are left out; any other access type is
-refused, so a PLL wait can never be replayed as a register write.
+The lists' debug READs (DBG_NFO_*) are left out. A WAIT (the display list's
+divider and mux BUSY bits) is emitted as a poll the restore must pass before
+the next write; any other access type is refused, so a PLL wait can never be
+replayed as a register write.
 
 Usage: gen-pd-lists.py LOCAL_H [-o pixel-pd-lists.h]
 """
@@ -18,42 +20,71 @@ import argparse
 import re
 import sys
 
-DOMAINS = ("csis", "pdp")
-# Register blocks the lists may touch: the domain's own CMU and SYSREG.
+DOMAINS = ("csis", "pdp", "dpu", "disp", "mfc")
+# Register blocks the lists may touch: the domain's own CMU and SYSREG (and
+# for DPU its DMA block's clock gating).
 BLOCKS = {
     "csis": (0x1A400000, 0x1A420000),
     "pdp": (0x1AA00000, 0x1AA20000),
+    "dpu": (0x1C000000, 0x1C020000, 0x1C0B0000),
+    "disp": (0x1C200000, 0x1C220000),
+    "mfc": (0x1C800000, 0x1C820000),
 }
-SEQ = re.compile(r'PMUCAL_SEQ_DESC\((\w+), "(\w+)", (0x[0-9a-f]+), (0x[0-9a-f]+),')
+SEQ = re.compile(r'PMUCAL_SEQ_DESC\((\w+),\s*"(\w+)",\s*(0x[0-9a-f]+),\s*(0x[0-9a-f]+),\s*([^,]+),\s*([^,]+),')
+NUMBER = re.compile(r"^[0-9a-fx()<< ]+$")
+
+
+def number(text):
+    text = text.strip()
+    if not NUMBER.match(text):
+        sys.exit(f"unexpected mask or value {text!r}")
+    return eval(text, {"__builtins__": {}})  # digits, hex, parentheses and << only
+
+
+def entries(path):
+    """Each PMUCAL_SEQ_DESC with its source line, joining continued lines."""
+    pending, start = "", 0
+    with open(path) as f:
+        for number_, line in enumerate(f, 1):
+            if pending:
+                pending += " " + line.strip()
+            elif "PMUCAL_SEQ_DESC(" in line:
+                pending, start = line.strip(), number_
+            else:
+                yield number_, line
+                continue
+            if pending.endswith("),") or pending.endswith(")"):
+                yield start, pending
+                pending = ""
 
 
 def lists(path):
     found = {}
     current = None
-    with open(path) as f:
-        for number, line in enumerate(f, 1):
-            start = re.match(r"struct pmucal_seq (\w+)_save\[\] = \{", line)
-            if start:
-                current = start.group(1) if start.group(1) in DOMAINS else None
-                if current:
-                    found[current] = []
-                continue
-            if current and line.startswith("};"):
-                current = None
-                continue
-            if not current:
-                continue
-            m = SEQ.search(line)
-            if not m:
-                continue
-            kind, name, base, offset = m.group(1), m.group(2), int(m.group(3), 16), int(m.group(4), 16)
-            if kind == "PMUCAL_READ":
-                continue
-            if kind != "PMUCAL_SAVE_RESTORE":
-                sys.exit(f"{current}_save line {number}: {kind} {name} is not a plain save/restore")
-            if base not in BLOCKS[current]:
-                sys.exit(f"{current}_save line {number}: {name} at {base:#x} is outside the domain")
-            found[current].append((base + offset, name, number))
+    for number_, line in entries(path):
+        start = re.match(r"struct pmucal_seq (\w+)_save\[\] = \{", line)
+        if start:
+            current = start.group(1) if start.group(1) in DOMAINS else None
+            if current:
+                found[current] = []
+            continue
+        if current and line.startswith("};"):
+            current = None
+            continue
+        if not current:
+            continue
+        m = SEQ.search(line)
+        if not m:
+            continue
+        kind, name, base, offset = m.group(1), m.group(2), int(m.group(3), 16), int(m.group(4), 16)
+        if kind == "PMUCAL_READ":
+            continue
+        if kind not in ("PMUCAL_SAVE_RESTORE", "PMUCAL_WAIT"):
+            sys.exit(f"{current}_save line {number_}: {kind} {name} is not a save/restore or wait")
+        if base not in BLOCKS[current]:
+            sys.exit(f"{current}_save line {number_}: {name} at {base:#x} is outside the domain")
+        wait = (number(m.group(5)), number(m.group(6))) if kind == "PMUCAL_WAIT" else None
+        found[current].append((base + offset, name, number_, wait))
     missing = [d for d in DOMAINS if d not in found]
     if missing:
         sys.exit(f"no save list for {', '.join(missing)}")
@@ -72,8 +103,11 @@ def main():
            "#ifndef PIXEL_PD_LISTS_H", "#define PIXEL_PD_LISTS_H", ""]
     for domain in DOMAINS:
         out.append(f"static const struct pd_reg {domain}_save[] = {{")
-        for pa, name, number in found[domain]:
-            out.append(f"\t{{ {pa:#010x}, \"{name}\" }},\t/* line {number} */")
+        for pa, name, number_, wait in found[domain]:
+            if wait:
+                out.append(f"\t{{ {pa:#010x}, \"{name}\", true, {wait[0]:#x}, {wait[1]:#x} }},\t/* line {number_}: wait */")
+            else:
+                out.append(f"\t{{ {pa:#010x}, \"{name}\" }},\t/* line {number_} */")
         out += ["};", ""]
     out.append("#endif")
     with open(a.output, "w") as f:

@@ -43,3 +43,25 @@ fallback if Linux is unreachable.
 The stock driver also writes battery-backed reboot storage; this module does not.
 Do not reboot while installation is writing storage, and do not factory-reset
 from Android recovery after installing the Linux root.
+
+## Power off (to test with the user present)
+
+The power menu has no Power off, and a plain shutdown has come back up as a
+reboot. Google's GS201 reboot module (`exynos-gs201-reboot.c`) only selects
+reboot modes and has no power-off handler, so stock Android powers off through
+PSCI `SYSTEM_OFF` (firmware, then the PMIC). Mainline's gs101 uses a
+`syscon-poweroff` on PMU `PAD_CTRL_PWR_HOLD` (0x3e9c, bit 8) instead.
+
+Likely explanation, not yet tested: with a cable connected, the bootloader
+does not stay off. It boots the kernel for off-mode charging, which stock
+handles with a charging screen and our init treats as a normal boot.
+
+Test:
+1. Unplugged, `poweroff`. The phone should stay off, and the power key should
+   start it.
+2. Plugged in, `poweroff`, then check `/proc/bootconfig` and `/proc/cmdline`
+   for `androidboot.mode=charger` (or similar) on the boot that follows.
+
+If both hold:
+- add Power off to the menu;
+- on a charger-mode boot, show a charging screen instead of the full session.

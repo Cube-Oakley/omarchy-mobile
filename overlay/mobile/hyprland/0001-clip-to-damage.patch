@@ -1,0 +1,24 @@
+Draw a clipped texture only where it is damaged (Omarchy Mobile)
+
+renderTextureInternal() scissors a texture with a clip box or a clip region
+(a surface's visible region from hyprland_surface_v1, which Quickshell sets
+for a masked panel) to the clip alone, not to the clip within the damage, as
+renderRect() and the other clipped paths do. Such a surface is redrawn whole
+on every frame of anything on the screen: on a Pixel 7 Pro with the shell's
+full-screen panels, an 8-pixel animation cost Hyprland 1.97 ms of fragment
+work per frame (Panfrost's u_trace), as much as a full-screen change.
+
+--- a/src/render/OpenGL.cpp
++++ b/src/render/OpenGL.cpp
+@@ -1581,6 +1581,11 @@
+                 damageClip.intersect(data.clipRegion);
+         }
+ 
++        // Only the damage within the clip, as without one: a surface with a
++        // visible region (hyprland_surface_v1, a Quickshell panel's mask) was
++        // redrawn whole on every frame of anything on the screen.
++        damageClip.intersect(*data.damage);
++
+         if (!damageClip.empty()) {
+             damageClip.forEachRect([this](const auto& RECT) {
+                 scissor(&RECT, g_pHyprRenderer->m_renderData.transformDamage);

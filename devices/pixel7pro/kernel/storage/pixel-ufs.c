@@ -14,6 +14,12 @@
  * the bootloader's session.
  * deep_link_off=1 (with both) handles deep suspend as stock does: the link
  * goes off and the device powers down; the host is re-initialized on resume.
+ * idle_hibern8=1 (with vendor_cal) lets the UFS core's clock gating put the
+ * idle link in Hibern8 (clkgate_delay_ms, 150 ms), through the same
+ * post_h8_enter / pre_h8_exit tables as system suspend. No clock is
+ * registered, so gating itself changes nothing else. An active idle HS link
+ * costs about 260 mW at the PMIC (L2S_PLL_MIPI_UFS, L4M_HSI). The sysfs
+ * clkgate_enable switches it off at run time.
  */
 #include <linux/arm-smccc.h>
 #include <linux/delay.h>
@@ -50,6 +56,9 @@ MODULE_PARM_DESC(dev_reset, "Reset the UFS device (RST_N) before host enable");
 static bool system_hibern8;
 module_param(system_hibern8, bool, 0644);
 MODULE_PARM_DESC(system_hibern8, "Opt in to calibrated HS Hibern8 during system suspend");
+static bool idle_hibern8;
+module_param(idle_hibern8, bool, 0400);
+MODULE_PARM_DESC(idle_hibern8, "Hibern8 for the idle link while running (UFS core clock gating; needs vendor_cal)");
 static uint hibern8_entries, hibern8_exits;
 module_param(hibern8_entries, uint, 0444);
 module_param(hibern8_exits, uint, 0444);
@@ -452,6 +461,8 @@ static int pixel_init(struct ufs_hba *hba)
 	hba->quirks = UFSHCD_QUIRK_SKIP_DEF_UNIPRO_TIMEOUT_SETTING |
 		      UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8;
 	hba->caps = 0;
+	if (idle_hibern8 && vendor_cal)
+		hba->caps |= UFSHCD_CAP_CLK_GATING | UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
 	hba->rpm_lvl = UFS_PM_LVL_0;
 	hba->spm_lvl = UFS_PM_LVL_0;
 	hba->lanes_per_direction = 2;

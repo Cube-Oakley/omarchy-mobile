@@ -1,0 +1,18 @@
+# Omarchy Mobile on the Pixel: the desktop's entry points to the hardware
+# (docs/user-session-plan-20261002.md). Each program checks its own
+# arguments; nothing else runs as root without a password.
+# Administration from a terminal asks for the lock screen's PIN or password.
+%wheel ALL=(ALL:ALL) ALL
+# Last, because sudo applies the last rule that matches.
+Cmnd_Alias OMARCHY_DEVICE = /usr/local/sbin/pixel-display-hook, \
+                            /usr/local/sbin/pixel-suspend, \
+                            /usr/local/sbin/pixel-reboot, \
+                            /usr/local/sbin/pixel-hotspot-iface, \
+                            /usr/local/sbin/pixel-report-root
+%wheel ALL=(root) NOPASSWD: OMARCHY_DEVICE
+Defaults:%wheel !lecture, passprompt="[sudo] PIN or password for %p: "
+# These run on every screen change and sleep: no terminal and no PAM session
+# to set up (about 100 ms each otherwise). The sleep policy's choices pass
+# through; pixel-suspend checks each and takes no path from them.
+Defaults!OMARCHY_DEVICE !use_pty, !pam_session, \
+    env_keep += "OMARCHY_MOBILE_CHECK_NETWORK OMARCHY_MOBILE_WAKE_PURPOSE OMARCHY_MOBILE_MINUTE_TICK"

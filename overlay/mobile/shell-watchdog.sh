@@ -36,7 +36,14 @@ while sleep 3 9>&-; do
     missing=$((missing + 1))
     (( missing < 2 )) && continue
     echo "$(date -Is) the shell is not running; starting it"
-    [[ -n $shell ]] && stop_helpers "$shell"
+    if [[ -n $shell ]]; then
+        # Quickshell relaunches a crashed shell in place: the same PID, with
+        # only the binary for a command line, which the match above misses.
+        # Left running, two shells draw (October 2), so it goes too.
+        [[ $(cat "/proc/$shell/comm" 2>/dev/null) == quickshell ]] && kill "$shell" 2>/dev/null &&
+            echo "  stopped $shell: the shell Quickshell relaunched after a crash"
+        stop_helpers "$shell"
+    fi
     "$HOME/.local/bin/omarchy-mobile-session" launch </dev/null >/dev/null 2>&1 9>&- ||
         echo "$(date -Is) starting the shell failed"
     missing=0

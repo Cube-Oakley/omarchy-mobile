@@ -104,3 +104,26 @@ Neither reading sees the panel's own light: 1% and full brightness read the
 same 61.6 lux.
 The Pixel's device profile therefore sets `panelLux` to 0, where the OnePlus's
 is 190.
+
+## Step counting
+
+Google's Step Counter on the AoC (USF type 30, handle 58 here) counts by
+itself; the AP only collects its cumulative readings. When step counting is
+on (Settings > Activity, `omarchy-mobile-steps enable`), `pixel-sensor-proxy`
+keeps it sampling: on change, at most once a second, with non-wakeup delivery,
+and through the sleep Pause that stops the UI sensors (a still phone sends
+nothing; walking, at most a sample a second). Each sample's AoC time maps to
+wall-clock time through `aoc_clock_and_kernel_boottime`, so steps the AoC
+buffered while the AP slept land in the minute they were taken.
+
+The readings become rows of steps per minute in
+`/var/lib/omarchy-mobile/steps/steps.db` (SQLite, append-only, readable by
+everyone; see `overlay/mobile/steps.py` for the table): a random UUID per row,
+the minute, the count, the source and when the row was written, so a sync can
+take the rows recorded since its last run (`omarchy-mobile-steps export
+SINCE_MS`). The last cumulative reading is kept in the `state` table; a lower
+reading means the counter started again (an AoC restart) and counts from zero.
+The service is `org.omarchy.Mobile.Steps` at `/org/omarchy/Mobile/Steps`
+(`Enabled`, `Today`, `SetEnabled`), switched by root or the session user.
+
+Still to measure: the cost in SYS_SLEEP with counting on, unplugged.

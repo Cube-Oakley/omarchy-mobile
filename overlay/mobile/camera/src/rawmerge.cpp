@@ -57,6 +57,11 @@ constexpr float kWarmTo = 3.5f;
 constexpr float kMostWarmth = 2.0f;
 constexpr float kWarmRed = 0.12f;
 constexpr float kWarmBlue = 0.20f;
+// Very warm light (a fire, candles) is not neutralised past this blue-to-red
+// gain ratio: the eye keeps firelight orange, and the large blue gain it
+// would take lifted the dim blue of embers and flame edges into pink
+// (October 4). Indoor bulbs (about 2.2) stay below it.
+constexpr float kMaxBlueRed = 2.6f;
 // Black point: the darkest share of the frame goes to black, unless that
 // would take more than this much of the sensor's range.
 constexpr double kBlackShare = 0.005;
@@ -461,6 +466,12 @@ Balance balance(const std::vector<float> &raw, const RawLayout &layout, float bl
     const float tint = std::clamp(std::sqrt(gains[0] * gains[1]) / std::sqrt(start[0] * start[1]),
                                   1.0f / kBalanceTrust, kBalanceTrust);
     gains = { start[0] * tint, start[1] * tint };
+    // Past kMaxBlueRed, red is raised and blue lowered by the same factor,
+    // keeping their product (the green balance).
+    if (gains[1] / gains[0] > kMaxBlueRed) {
+        const float ease = std::sqrt(gains[1] / gains[0] / kMaxBlueRed);
+        gains = { gains[0] * ease, gains[1] / ease };
+    }
 
     const float ratio = std::log(gains[1] / gains[0]);
     const float warmth = std::clamp((ratio - std::log(kWarmFrom)) /

@@ -62,21 +62,23 @@ class PowerButton:
             return False
 
     def act(self):
+        start = time.monotonic()
+        took = lambda: round(time.monotonic() - start, 2)
         if self.ambient.exists():
             self.set_display('on')
-            self.record('ambient-wake')
+            self.record('ambient-wake', took=took())
             return
         if not self.display_on():
             self.set_display('on')
-            self.record('display-on')
+            self.record('display-on', took=took())
             return
         # The always-on display keeps the panel lit, so it never suspends.
         if self.always_on():
             self.set_display('ambient')
-            self.record('ambient')
+            self.record('ambient', took=took())
             return
         self.start_display('off').wait(timeout=8)
-        self.record('display-off')
+        self.record('display-off', took=took())
 
     def start_hold(self, token):
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'hold', str(token)],
@@ -106,7 +108,10 @@ class PowerButton:
         # One process per key event. The press that wakes the phone and its
         # release arrive together once it is awake, so each waits its turn
         # for the lock, and a release that finds no press yet gives the press
-        # of its pair a moment to be recorded.
+        # of its pair a moment to be recorded. A press made while the last
+        # change was still under way (the screen still lighting) is dropped
+        # with its release: acting once that change finished would undo it.
+        arrived = time.monotonic()
         for attempt in range(2):
             with (self.runtime / 'omarchy-mobile-power.lock').open('w') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
@@ -115,6 +120,9 @@ class PowerButton:
                 if event == 'press':
                     if 'pressed' in state and 0 <= now - state['pressed'] < 60:
                         return  # Ignore repeat events while the key is held.
+                    if arrived < state.get('settled', 0) <= now:
+                        self.record('ignored-press-during-change')
+                        return
                     self.save({'pressed': now})
                     self.start_hold(now)
                     return
@@ -125,6 +133,7 @@ class PowerButton:
                             self.show_menu()  # Timer was delayed by scheduling.
                         else:
                             self.act()
+                            self.save({'settled': time.monotonic()})
                     return
             if attempt == 0:
                 time.sleep(0.4)

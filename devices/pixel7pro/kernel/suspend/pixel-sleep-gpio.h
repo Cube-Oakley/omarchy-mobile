@@ -105,12 +105,42 @@ struct psg_pdn {
 	s8 con, pud;
 };
 
+#define PDN_INPUT	2
 #define PDN_PREV	3
 #define PUD_NONE	0
 #define PUD_DOWN	1
 #define PUD_UP		3
 
+/* The bootloader leaves every PERIC pin's power-down state at input with
+ * pull-down. For the touch controller (held in reset while the screen is
+ * dark, by pixel_touch_input) that made its DVDD (L25M) draw 30 mW in
+ * SYS_SLEEP against 0.004 awake: about 9.5 mA of battery current
+ * (2026-10-03, pixel-odpm survey=2). Stock's ts-reset keeps the reset line
+ * as it was and ts_suspend leaves the SPI lines unpulled, chip select
+ * pulled up (gs201 cheetah touch pinctrl: ts_active, ts_suspend).
+ * The same default pulled both speaker amps' and the haptics driver's reset
+ * lines low in every sleep: the amps lost their DSP firmware, and the
+ * cs35l41 driver's next wake from hibernation timed out (no speaker sound
+ * after any deep sleep). Stock keeps those resets and the I2C buses as they
+ * were (cs35l41-l-rst, cs35l41-r-rst, hapt-amp-rst, hapt-amp-trig,
+ * hsi2c13/15-bus); hsi2c8-bus sets only the pull.
+ */
 static const struct psg_pdn psg_pdn[] = {
+	{ 1, 3, 2, PDN_PREV, PUD_NONE },	/* ts-reset (gpp23-2) */
+	{ 1, 0, 0, PDN_INPUT, PUD_NONE },	/* ts_spi_bus_sleep: clk (gpp20-0) */
+	{ 1, 0, 1, PDN_INPUT, PUD_NONE },	/* mosi */
+	{ 1, 0, 2, PDN_INPUT, PUD_NONE },	/* miso */
+	{ 1, 0, 3, PDN_INPUT, PUD_UP },		/* ts_spi_cs_sleep (gpp20-3) */
+	{ 0, 17, 1, PDN_PREV, PUD_NONE },	/* cs35l41-l-rst (gpp17-1) */
+	{ 1, 5, 2, PDN_PREV, PUD_NONE },	/* cs35l41-r-rst (gpp25-2) */
+	{ 1, 4, 3, PDN_PREV, PUD_NONE },	/* hapt-amp-rst (gpp24-3) */
+	{ 1, 4, 2, PDN_PREV, PUD_NONE },	/* hapt-amp-trig (gpp24-2) */
+	{ 1, 4, 0, PDN_PREV, PUD_NONE },	/* hsi2c15-bus (gpp24-0) */
+	{ 1, 4, 1, PDN_PREV, PUD_NONE },	/* (gpp24-1) */
+	{ 1, 5, 0, PDN_PREV, PUD_NONE },	/* hsi2c13-bus (gpp25-0) */
+	{ 1, 5, 1, PDN_PREV, PUD_NONE },	/* (gpp25-1) */
+	{ 0, 16, 0, PDN_INPUT, PUD_NONE },	/* hsi2c8-bus (gpp16-0) */
+	{ 0, 16, 1, PDN_INPUT, PUD_NONE },	/* (gpp16-1) */
 	{ 2, 0, 0, PDN_PREV, -1 },		/* pcie0_perst */
 	{ 2, 0, 1, PDN_PREV, PUD_UP },		/* pcie0_clkreq */
 	{ 2, 0, 2, PDN_PREV, PUD_NONE },	/* s5100_ap2cp_wakeup */
@@ -228,11 +258,17 @@ static void psg_save(void)
 	}
 }
 
+/* Every saved register is written back, as samsung_pinctrl_resume_dev()
+ * does: a read is no test of what a write would change. DAT reads the pad,
+ * and under retention a pin whose power-down state is "previous" still
+ * reads its old level while the output latch is at its reset value 0;
+ * skipping that write dropped the pin when retention was released (both
+ * speaker amplifiers' resets after every deep sleep, 2026-10-03).
+ */
 static void psg_put(void __iomem *reg, u32 val, bool write)
 {
-	if (readl(reg) == val)
-		return;
-	psg.differed++;
+	if (readl(reg) != val)
+		psg.differed++;
 	if (write) {
 		writel(val, reg);
 		psg.restored++;

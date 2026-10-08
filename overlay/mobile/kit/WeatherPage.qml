@@ -71,7 +71,7 @@ Flickable {
             width: parent.width
             placeholderText: "City or postal code"
             editing: page.editing
-            onEditingRequested: page.editing = true
+            onEditingRequested: { page.editing = true; forceActiveFocus(); }
             onAccepted: page.find()
         }
         TouchButton {

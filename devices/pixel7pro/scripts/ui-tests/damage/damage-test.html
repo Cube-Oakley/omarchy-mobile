@@ -1,0 +1,17 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Damage test</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #202020; color: #ddd; font: 16px sans-serif; }
+  p { padding: 16px; }
+  #small { position: absolute; left: 120px; top: 40px; width: 57px; height: 57px; background: #6a6; visibility: hidden; }
+  #full { position: fixed; inset: 0; background: #224; opacity: 0; visibility: hidden; }
+  body.small #small { visibility: visible; animation: spin 1s linear infinite; }
+  body.full #full { visibility: visible; animation: pulse 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%, 100% { opacity: 0.05; } 50% { opacity: 0.6; } }
+</style>
+<body>
+<div id="full"></div>
+<div id="small"></div>
+<p>Damage test page (Omarchy Mobile, test only). A small square spins, or the whole page pulses.</p>

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-mobile.link",
+  "name": "Phone Link",
+  "version": "0.1.0",
+  "author": "Omarchy Mobile",
+  "license": "MIT",
+  "description": "Your Omarchy phone in the bar: battery, texts, phone notifications, ring, theme sync. Uses the KDE Connect protocol on its own ports, so it stays apart from a KDE Connect app on the same computer.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Phone Link",
+    "description": "Texts, notifications and battery from a paired phone.",
+    "category": "Devices",
+    "aliases": [
+      "phone",
+      "kdeconnect",
+      "link"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}
