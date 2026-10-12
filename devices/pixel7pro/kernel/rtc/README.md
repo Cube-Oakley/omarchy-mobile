@@ -13,8 +13,15 @@ Transport and registers, from the stock DT and Google's GS201 sources
   The [power-key module](../powerkey/README.md) uses the same channel with bank 1.
 - Registers 0x00–0x1b match the S2MPG10's (`rtc-s2mpg12.h`); the S2MPG12 adds
   nonce and scratch registers after them.
-- Time is SEC..YEAR at 0x06–0x0c, binary and 24-hour. The module refuses to
-  load unless RTC_CTRL shows binary 24-hour mode.
+- Time is SEC..YEAR at 0x06–0x0c, binary and 24-hour.
+- A battery run flat resets the RTC: RTC_CTRL reads 0 (12-hour mode) and the
+  counters restart at 2000-01-01. The module then puts the mode back as the
+  vendor `s2m_rtc_init_reg()` does: RTC_CTRL = binary 24-hour, latched with
+  an AUDR pulse, and NONCE0_0 (0x1c) = 222, the vendor's marker. The time is
+  left as it counts; `pixel-time` drops the offset it kept (it now lands
+  decades before the last sync) and sets the clock at the next network sync.
+  Before October 11 the module refused to load, and with no RTC the phone had
+  no wake alarms and never slept.
 
 Reading follows the vendor `s2m_rtc_update()`:
 1. Read RTC_UPDATE (0x01).
@@ -55,7 +62,8 @@ Validated on 2026-09-29, with the AoC, audio, sensors and Wi-Fi running:
 - USB came back in 1-2 s;
 - audio and the sensors still worked afterwards.
 
-The persistent boot script loads it right after ACPM activation. The earlier
+The persistent boot script loads it right after ACPM activation, preferring
+a copy in /usr/local/lib/omarchy-mobile over the boot image's. The earlier
 clock floor (newest log timestamp) stays as a guard in case the RTC ever reads
 earlier than it. Verified on image N: RAM boot and three normal reboots set
 the clock at about 2 s.

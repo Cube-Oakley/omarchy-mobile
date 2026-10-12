@@ -88,7 +88,7 @@ PanelWindow {
     }
     Process {
         id: watch
-        command: ["pactl", "subscribe"]
+        command: ["setpriv", "--pdeathsig", "TERM", "pactl", "subscribe"]
         running: true
         stdout: SplitParser {
             // Sink volumes and the default output; stream events are too frequent.

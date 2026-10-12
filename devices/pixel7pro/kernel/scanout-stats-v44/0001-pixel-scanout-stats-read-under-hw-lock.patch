@@ -1,0 +1,25 @@
+--- a/drivers/gpu/drm/sysfb/pixel_scanout.c
++++ b/drivers/gpu/drm/sysfb/pixel_scanout.c
+@@ -880,13 +880,21 @@
+ {
+ 	struct drm_debugfs_entry *entry = m->private;
+ 	struct pixel_scanout *p = to_pixel(entry->dev);
++	u32 active_dma;
++
++	/* pixel_power_down() turns the domains off before it sets power.off,
++	 * so the register is read only under the lock every power-off holds;
++	 * a read in that window was a synchronous external abort (October 7, 8). */
++	mutex_lock(&p->hw_lock);
++	active_dma = p->power.off ? 0 : readl(p->dma + 0x440);
++	mutex_unlock(&p->hw_lock);
+ 
+ 	seq_puts(m, "Native DMA scanout; on-demand frame IRQs, not continuous panel TE.\n");
+ 	seq_printf(m, "starts %lld\ndones %lld\ncompleted_transfers %lld\nfailures %lld\n",
+ 		   atomic64_read(&p->starts), atomic64_read(&p->dones),
+ 		   atomic64_read(&p->flips), atomic64_read(&p->failures));
+ 	seq_printf(m, "cpu_pixel_copy_bytes 0\nactive_dma %08x\nfaulted %u\n",
+-		   p->power.off ? 0 : readl(p->dma + 0x440), p->faulted);
++		   active_dma, p->faulted);
+ 	seq_printf(m, "display_powered_off %u\ndisplay_power_cycles %u\n",
+ 		   p->power.off, p->power.cycles);
+ 	seq_printf(m, "ambient_lp %u\nambient_hibernations %u\n", p->panel.lp, p->hibernations);

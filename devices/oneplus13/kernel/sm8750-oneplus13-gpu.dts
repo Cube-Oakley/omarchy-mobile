@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* RAM-only GPU bring-up: retain bootloader scanout, cap GPU at 342 MHz. */
+#include "sm8750-oneplus13-touch.dts"
+&gpu { status = "okay"; };
+&gpu_zap_shader { firmware-name = "qcom/sm8750/gen80000_zap.mbn"; };
+&gpu_opp_table {
+    /delete-node/ opp-389000000;
+    /delete-node/ opp-443000000;
+    /delete-node/ opp-525000000;
+    /delete-node/ opp-607000000;
+    /delete-node/ opp-660000000;
+    /delete-node/ opp-734000000;
+    /delete-node/ opp-832000000;
+    /delete-node/ opp-900000000-0;
+    /delete-node/ opp-900000000-1;
+    /delete-node/ opp-967000000;
+    /delete-node/ opp-1050000000;
+    /delete-node/ opp-1100000000;
+    /delete-node/ opp-1150000000;
+    /delete-node/ opp-1200000000;
+};

@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: BSD-3-Clause
+#include "sm8750-oneplus13-display.dts"
+&apps_rsc {
+    regulators-0 {
+        vreg_l4b_1p8: ldo4 {
+            regulator-name = "vreg_l4b_1p8";
+            regulator-min-microvolt = <1800000>;
+            regulator-max-microvolt = <1800000>;
+            regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+        };
+    };
+};
+&qupv3_1 { status = "okay"; };
+&gpi_dma1 { status = "okay"; };
+&spi4 {
+    status = "okay";
+    touchscreen@0 {
+        compatible = "omarchy,s3910-probe";
+        reg = <0>;
+        spi-max-frequency = <1000000>;
+        vdd-supply = <&vreg_l4b_1p8>;
+        reset-gpios = <&tlmm 161 GPIO_ACTIVE_LOW>;
+        interrupt-gpios = <&tlmm 162 GPIO_ACTIVE_LOW>;
+        /* Stock legacy GPIO API drives physical high for power-on, despite
+         * the vendor DT's unused ACTIVE_LOW specifier. */
+        enable-gpios = <&pm8550vs_j_gpios 3 GPIO_ACTIVE_HIGH>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&touch_irq &touch_reset>;
+    };
+};
+&tlmm {
+    touch_irq: touch-irq-state {
+        pins = "gpio162";
+        function = "gpio";
+        drive-strength = <8>;
+        bias-disable;
+        input-enable;
+    };
+    touch_reset: touch-reset-state {
+        pins = "gpio161";
+        function = "gpio";
+        drive-strength = <8>;
+        bias-disable;
+    };
+};

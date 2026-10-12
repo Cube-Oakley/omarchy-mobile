@@ -1,0 +1,71 @@
+--- a/drivers/firmware/samsung/exynos-acpm.c
++++ b/drivers/firmware/samsung/exynos-acpm.c
+@@ -400,6 +400,57 @@
+ }
+ 
+ /**
++ * acpm_wait_for_reply_room() - make room for the reply to the next command.
++ * @achan:		ACPM channel info.
++ * @next_tx_front:	next front index of the TX queue.
++ *
++ * The firmware answers the command in TX slot i in RX slot i, and halts
++ * ("qfull", then the APM watchdog resets the SoC) when that slot is not free,
++ * that is when the replies before it have not been read: it does not drop.
++ * Google's acpm_ipc reads replies from an interrupt and still keeps two
++ * elements in reserve "to prevent buffer full and qfull". Here replies are
++ * read only by waiting senders, and the check against RX front alone let a
++ * command go out while its reply had no room: on 2026-10-10 the firmware
++ * found channel 2's five-slot reply ring full right after a deep-sleep exit,
++ * when several drivers talk to the PMIC at once. So read the replies that
++ * are waiting (kept for their senders), then send only while the commands
++ * ahead of this one, counted from the last reply read, leave this one's
++ * reply a slot and one to spare, as stock does. Channels shorter than three
++ * elements, which stock never sends on this way, keep the plain check.
++ *
++ * Return: 0 on success, -errno otherwise.
++ */
++static int acpm_wait_for_reply_room(struct acpm_chan *achan, u32 next_tx_front)
++{
++	u32 none = 0, tx_front, rear, ahead;
++	const struct acpm_xfer drain = { .txd = &none };
++	ktime_t timeout;
++	bool native_match;
++	int ret;
++
++	if (achan->qlen < 3)
++		return 0;
++	tx_front = (next_tx_front + achan->qlen - 1) % achan->qlen;
++	timeout = ktime_add_us(ktime_get(), ACPM_TX_TIMEOUT_US);
++	for (;;) {
++		/* Sequence number 0 matches no reply: all are kept. */
++		ret = acpm_get_rx(achan, &drain, &native_match);
++		if (ret)
++			return ret;
++		rear = readl(achan->rx.rear);
++		ahead = (tx_front + achan->qlen - rear) % achan->qlen;
++		if (ahead <= achan->qlen - 3)
++			return 0;
++		if (!ktime_before(ktime_get(), timeout))
++			break;
++		udelay(20);
++	}
++	dev_err(achan->acpm->dev, "No room for a reply on ch:%u (tx f:%u rx r:%u).\n",
++		achan->id, tx_front, rear);
++	return -ETIME;
++}
++
++/**
+  * acpm_wait_for_queue_slots() - wait for queue slots.
+  *
+  * @achan:		ACPM channel info.
+@@ -411,6 +462,10 @@
+ {
+ 	u32 val, ret;
+ 
++	ret = acpm_wait_for_reply_room(achan, next_tx_front);
++	if (ret)
++		return ret;
++
+ 	/*
+ 	 * Wait for RX front to keep up with TX front. Make sure there's at
+ 	 * least one element between them.

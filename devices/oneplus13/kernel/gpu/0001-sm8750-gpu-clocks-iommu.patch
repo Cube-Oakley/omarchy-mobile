@@ -1,0 +1,160 @@
+From: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+
+Add the GPU_CC and GX_CC (brand new! as far as we're concerned, this
+is simply a separate block housing the GX GDSC) nodes, required to
+power up the graphics-related hardware.
+
+Make use of it by enabling the associated IOMMU as well. The GPU itself
+needs some more work and will be enabled later.
+
+Reviewed-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
+Signed-off-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Co-developed-by: Taniya Das <taniya.das@oss.qualcomm.com>
+Signed-off-by: Taniya Das <taniya.das@oss.qualcomm.com>
+---
+Support the graphics clock controller for SM8750 for Graphics SW
+driver to use the clocks. GXCLKCTL (Graphics GX Clock Controller) is a
+block dedicated to managing clocks for the GPU subsystem on GX power
+domain. The GX clock controller driver manages only the GX GDSC and the
+rest of the resources of the controller are managed by the firmware.
+
+The Graphics GX clock controller is a reuse of the Kaanapali SW driver.
+
+The dt-bindings and driver patches from the previous revision were
+already applied; this revision carries forward only the devicetree
+change rebased on the linux-next.
+
+Changes in v6:
+- Carry forward only the devicetree patch (rebase on the linux-next);
+  dt-bindings and driver patches were applied from v5.
+- Link to v5: https://lore.kernel.org/r/20260305-gpucc_sm8750_v2-v5-0-78292b40b053@oss.qualcomm.com
+
+Changes in v5:
+- Update 'fw_name' to index for GPUCC driver [Dmitry].
+- Add RB-by [Abel] for code and DT changes.
+- Link to v4: https://lore.kernel.org/r/20260303-gpucc_sm8750_v2-v4-0-2f28562db7c9@oss.qualcomm.com
+
+Changes in v4:
+- Add RB-by [Krzysztof] for GPUCC bindings.
+- There was a documentation errata update for GPUCC and updated the
+  bindings to capture the MX and CX power-domains and required-opps.
+- Update the compatible[qcom,sm8750-gxclkctl] in code which was missed in earlier patch.
+- Add the 'use_rpm' for GPUCC.
+- Update the power-domain/required-opp handles in GPUCC device node.
+- Link to v3: https://lore.kernel.org/r/20260220-gpucc_sm8750_v2-v3-0-6c5408564c3c@oss.qualcomm.com
+
+Changes in v3:
+- SM8750 GX controller is reuse of Kaanapali SW driver, update the
+  bindings.
+- Remove 'qcom,sm8750-gxcc.yaml' as it reuses the driver.
+- Cleanup the 'gpucc-sm8750.c' to remove the GX clock controller
+  reference.
+- Add the corresponding changes in Makefile for gxclkctl-kaanapali.o
+- Update the device node for GX clock controller.
+- Link to v2: https://lore.kernel.org/all/20250723-topic-8750_gpucc-v2-0-56c93b84c390@oss.qualcomm.com/
+
+Changes in v2:
+- gxcc bindings: remove double colon & list the names for power-domains
+- Link to v1: https://lore.kernel.org/r/20250708-topic-8750_gpucc-v1-0-86c86a504d47@oss.qualcomm.com
+---
+ arch/arm64/boot/dts/qcom/sm8750.dtsi | 68 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 68 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8750.dtsi b/arch/arm64/boot/dts/qcom/sm8750.dtsi
+index 3496f00ac4f5566809252ea0eaeae6cd5c7aac5d..6282730b67e28c6ed05837ec1d8d2149f9a92537 100644
+--- a/arch/arm64/boot/dts/qcom/sm8750.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8750.dtsi
+@@ -5,10 +5,12 @@
+ 
+ #include <dt-bindings/clock/qcom,dsi-phy-28nm.h>
+ #include <dt-bindings/clock/qcom,rpmh.h>
++#include <dt-bindings/clock/qcom,kaanapali-gxclkctl.h>
+ #include <dt-bindings/clock/qcom,sm8750-cambistmclkcc.h>
+ #include <dt-bindings/clock/qcom,sm8750-camcc.h>
+ #include <dt-bindings/clock/qcom,sm8750-dispcc.h>
+ #include <dt-bindings/clock/qcom,sm8750-gcc.h>
++#include <dt-bindings/clock/qcom,sm8750-gpucc.h>
+ #include <dt-bindings/clock/qcom,sm8750-tcsr.h>
+ #include <dt-bindings/clock/qcom,sm8750-videocc.h>
+ #include <dt-bindings/dma/qcom-gpi.h>
+@@ -2180,6 +2182,72 @@ tcsr_mutex: hwlock@1f40000 {
+ 			#hwlock-cells = <1>;
+ 		};
+ 
++		gxclkctl: clock-controller@3d64000 {
++			compatible = "qcom,sm8750-gxclkctl";
++			reg = <0x0 0x03d64000 0x0 0x6000>;
++
++			power-domains = <&rpmhpd RPMHPD_GFX>,
++					<&rpmhpd RPMHPD_GMXC>,
++					<&gpucc GPU_CC_CX_GDSC>;
++
++			#power-domain-cells = <1>;
++		};
++
++		gpucc: clock-controller@3d90000 {
++			compatible = "qcom,sm8750-gpucc";
++			reg = <0x0 0x03d90000 0x0 0x9800>;
++
++			clocks = <&bi_tcxo_div2>,
++				 <&gcc GCC_GPU_GPLL0_CLK_SRC>,
++				 <&gcc GCC_GPU_GPLL0_DIV_CLK_SRC>;
++
++			power-domains = <&rpmhpd RPMHPD_MX>,
++					<&rpmhpd RPMHPD_CX>;
++			required-opps = <&rpmhpd_opp_low_svs>,
++					<&rpmhpd_opp_low_svs>;
++			#clock-cells = <1>;
++			#reset-cells = <1>;
++			#power-domain-cells = <1>;
++		};
++
++		adreno_smmu: iommu@3da0000 {
++			compatible = "qcom,sm8750-smmu-500", "qcom,adreno-smmu",
++				     "qcom,smmu-500", "arm,mmu-500";
++			reg = <0x0 0x03da0000 0x0 0x40000>;
++			#iommu-cells = <2>;
++			#global-interrupts = <1>;
++			interrupts = <GIC_SPI 674 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 678 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 679 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 680 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 681 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 682 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 683 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 684 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 685 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 686 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 687 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 688 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 422 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 476 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 574 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 575 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 576 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 577 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 660 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 662 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 665 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 666 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 667 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 669 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 670 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 700 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&gpucc GPU_CC_HLOS1_VOTE_GPU_SMMU_CLK>;
++			clock-names = "hlos";
++			power-domains = <&gpucc GPU_CC_CX_GDSC>;
++			dma-coherent;
++		};
++
+ 		remoteproc_mpss: remoteproc@4080000 {
+ 			compatible = "qcom,sm8750-mpss-pas";
+ 			reg = <0x0 0x04080000 0x0 0x10000>;
+
+---
+base-commit: 49362394dad7df66c274c867a271394c10ca2bb8
+change-id: 20260714-gpucc_dt_v6-2f8a40232381
+
+Best regards,
+-- 
+Taniya Das <taniya.das@oss.qualcomm.com>

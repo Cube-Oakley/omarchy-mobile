@@ -37,7 +37,12 @@ mid-sentence, left one).
 Alarms and timers (omarchy-mobile-clock) and calendar reminders
 (omarchy-mobile-calendar) end a sleep: it lasts no longer than until the
 next one is due (purpose "clock"), and with one due within CLOCK_LEAD
-seconds the phone stays up. Their watchers ring or notify.
+seconds the phone stays up. Their watchers ring or notify. Any program may
+ask for the same with a file in $XDG_RUNTIME_DIR/omarchy-mobile-wake.d/,
+named for it, holding the time (epoch seconds): the phone is up then and
+stays up for WAKE_REQUEST_HOLD seconds past it, time for the program to
+light the screen or take an inhibit file. A request left longer (its
+program died) is ignored.
 
 Under the always-on clock, a device whose profile sets ambientSleep (its
 panel keeps showing the clock while the phone sleeps) sleeps as if dark. The
@@ -80,6 +85,8 @@ MAX_WAKE = 3600
 ADAPTER_WAKE = 900
 # An alarm or timer this close (seconds) keeps the phone up instead.
 CLOCK_LEAD = 15
+# A program's wake request holds the phone up this long past its time.
+WAKE_REQUEST_HOLD = 60
 # A refusal (the charger, a low battery) is asked again after this long.
 REFUSED_WAIT = 60
 # A refusal that lasts is logged again this often: logged only when it
@@ -184,7 +191,27 @@ def clock_due():
             when = None
         if when is not None:
             due.append(when)
+    due += wake_requests()
     return min(due) if due else None
+
+
+def wake_requests(now=None):
+    """The times programs asked the phone to be up (epoch seconds, one file
+    each in wake.d), less those more than WAKE_REQUEST_HOLD past."""
+    now = time.time() if now is None else now
+    try:
+        files = list((runtime() / 'omarchy-mobile-wake.d').iterdir())
+    except OSError:
+        return []
+    times = []
+    for path in files:
+        try:
+            when = float(path.read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            continue
+        if when > now - WAKE_REQUEST_HOLD:
+            times.append(when)
+    return times
 
 
 def clock_wake(wake, purpose, check_minutes, due, wall):
@@ -358,6 +385,23 @@ def notify_cannot_sleep(reason, seconds):
                         '--object-path', '/org/freedesktop/Notifications',
                         '--method', 'org.freedesktop.Notifications.Notify', '--',
                         'Battery', '0', 'battery-caution', "Phone can't sleep", body, '[]', hints, '-1'],
+                       capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def notify_cellular_stopped():
+    """A notification, once: the modem's session ended, and the phone sleeps
+    without it (the adapter's result says cellular: stopped). Before, sleep
+    was refused instead, and that refusal was the only sign (October 8)."""
+    hints = "{'urgency': <byte 2>, 'category': <'x-omarchy.cellular'>}"
+    try:
+        subprocess.run(['gdbus', 'call', '--session', '--dest', 'org.freedesktop.Notifications',
+                        '--object-path', '/org/freedesktop/Notifications',
+                        '--method', 'org.freedesktop.Notifications.Notify', '--',
+                        'Phone', '0', 'network-cellular-offline', 'Mobile network stopped',
+                        'Calls, texts and mobile data are off. Restart the phone to bring them back.',
+                        '[]', hints, '-1'],
                        capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         pass
@@ -835,6 +879,8 @@ def run():
     # Each stretch awake goes to the battery history with its reason: the
     # one found at the start of the stretch.
     stretch_reason, stretch_start = None, time.monotonic()
+    # Said once per run: the modem stays down until a restart.
+    cellular_noted = False
 
     def account(why):
         nonlocal stretch_reason, stretch_start
@@ -905,6 +951,9 @@ def run():
             entry['battery'] = {'capacity': after['capacity'], 'used_uah': before['charge'] - after['charge']}
         record(entry)
         emit(entry)
+        if result.get('cellular') == 'stopped' and not cellular_noted:
+            notify_cellular_stopped()
+            cellular_noted = True
         history.note(screen, event='wake:' + str(result.get('woke', 'error')))
         if result.get('crashed'):
             policy.retry(time.monotonic())

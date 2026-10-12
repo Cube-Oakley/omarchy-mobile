@@ -32,7 +32,8 @@ Item {
     }
     Process {
         id: events
-        command: probe.eventCommand
+        // Ends with the shell (setpriv's parent-death signal; see shell.qml).
+        command: ["setpriv", "--pdeathsig", "TERM"].concat(probe.eventCommand)
         running: probe.eventCommand.length > 0
         stdout: SplitParser {
             onRead: data => { if (data.trim().length) debounce.restart(); }

@@ -1,0 +1,13 @@
+diff -ruN a/sound/soc/qcom/qdsp6/q6apm.c b/sound/soc/qcom/qdsp6/q6apm.c
+--- a/sound/soc/qcom/qdsp6/q6apm.c	2026-10-12 14:26:51.699282271 -0700
++++ b/sound/soc/qcom/qdsp6/q6apm.c	2026-10-12 14:26:51.701113898 -0700
+@@ -599,6 +599,9 @@
+ 		    upper_32_bits(phys) == done->buf_addr_msw) {
+ 			graph->result.opcode = hdr->opcode;
+ 			graph->result.status = done->status;
++			if (done->status)
++				dev_err_ratelimited(dev, "WR buffer %u done with status %d\n",
++						    token, done->status);
+ 			if (graph->cb)
+ 				graph->cb(client_event, hdr->token, data->payload, graph->priv);
+ 		} else {

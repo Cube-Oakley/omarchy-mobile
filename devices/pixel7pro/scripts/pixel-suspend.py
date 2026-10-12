@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Bounded Pixel sleep with the persistent modem supervisor running.
+"""Bounded Pixel sleep with the persistent modem supervisor running, or with
+no modem session and CP off (the result then says cellular: stopped).
 
 The shell owns idle policy and display wake. --keep-dark leaves the display
 alone; --allow-charging is for explicit, connected diagnostics only.
@@ -11,11 +12,12 @@ s2idle. SYS_SLEEP needs Wi-Fi unloaded, so Wi-Fi is off while the screen is
 dark: it is loaded again after the shell's background alarm (the periodic
 check for mail and messages) unless the shell asks for that check over mobile
 data (OMARCHY_MOBILE_CHECK_NETWORK=data, Settings > Battery), after the power
-key, and by the display hook when the screen lights; a modem wake keeps it
-off. Bluetooth stays on through SYS_SLEEP when it is on and its low-power
-mode is wired (pixel-bt sleep_ready): its links stay up, and the chip's host
-wake (EINT 51) wakes the phone for their traffic. Otherwise it is unloaded,
-and only the display hook loads it again.
+key, and by the display hook when the screen lights (by this call instead
+when the screen lit while it got ready); a modem wake keeps it off. Bluetooth
+stays on through SYS_SLEEP when it is on and its low-power mode is wired
+(pixel-bt sleep_ready): its links stay up, and the chip's host wake (EINT 51)
+wakes the phone for their traffic. Otherwise it is unloaded, and the display
+hook loads it again (or this call, as for Wi-Fi).
 
 Under the always-on clock the shell sets OMARCHY_MOBILE_MINUTE_TICK to a file
 it watches. The phone then wakes a second after each minute until
@@ -42,6 +44,7 @@ RTC = Path('/sys/class/rtc/rtc0')
 SOCKET = '/run/omarchy-mobile-telephony/socket'
 WIFI_PCI = '0000:01:00.0'
 WIFI_RESTART = '/usr/local/sbin/pixel-wifi-restart'
+BT_RESTART = '/usr/local/sbin/pixel-bt-restart'
 WIFI_MODULES = ('brcmfmac_wcc', 'brcmfmac', 'pixel_pcie')
 # In SYS_SLEEP the PERIC0 pads take their power-down state. pixel-bt sets
 # BT_REG_ON's to "previous", so the chip stays powered; with its low-power
@@ -80,6 +83,13 @@ MODEM_WATCHDOG = Path('/var/lib/omarchy-mobile/modem/pixel-wdt-pm.ko')
 # second or two of idle.
 DEEP_TRIES = 4
 DEEP_RETRY_GAP = 2
+# pixel-sleep's modem_link: 1 while the modem's PCIe link is up, when a deep
+# sleep is refused at its very end, after every device has suspended and
+# resumed. In the battery run of October 9-10 that was 10 of 87 tries, most
+# within a millisecond of a wake while the modem brought its link up again.
+# Each try waits this long at most for the link to go down.
+MODEM_LINK_WAIT = 3
+MODEM_LINK_POLL = 0.1
 FREEZE_RETRY_GAP = 0.5
 # Interrupts that tell what ended a deep sleep: the wake source stays
 # pending through the resume and is counted once the kernel runs.
@@ -193,6 +203,8 @@ def idle_modem():
 
 
 def prerequisites(allow_charging=False):
+    """Raises what keeps the phone from sleeping; whether the modem sleeps
+    with it (False: no modem session, CP off)."""
     if b'google,GS201 CHEETAH' not in Path('/sys/firmware/devicetree/base/compatible').read_bytes():
         raise RuntimeError('Unsupported phone')
     if '[s2idle]' not in read(POWER / 'mem_sleep') or '[none]' not in read(POWER / 'pm_test'):
@@ -218,11 +230,26 @@ def prerequisites(allow_charging=False):
     spec = importlib.util.spec_from_file_location('pixel_manager', '/usr/local/lib/omarchy-mobile/modem/manager.py')
     manager = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(manager)
+    return modem_session(manager)
+
+
+def modem_session(manager):
+    """Whether the modem's session sleeps with the phone, idled first (False:
+    there is none, and CP is off)."""
     if not all(manager.recorded_pid(name) for name in ('manager', 'watchdog', 'runtime', 'apps')):
-        raise RuntimeError('Persistent modem supervision is unavailable')
+        # No modem session (it ended, or the modem crashed while starting).
+        # With CP powered off nothing needs the phone awake: it sleeps
+        # without the modem (October 8: three hours awake, refused, after
+        # the session ended). A CP still powered with no one supervising it
+        # is not slept on. The user reads this in the "can't sleep"
+        # notification.
+        if manager.cp_state() == 0:
+            return False
+        raise RuntimeError('mobile network stopped; restart the phone to bring it back')
     if manager.cp_state() != 4:
         raise RuntimeError('Modem is not online')
     idle_modem()
+    return True
 
 
 def wake_count():
@@ -695,21 +722,54 @@ def display(on):
     subprocess.run(command, env=env, check=True, timeout=10, stdout=subprocess.DEVNULL)
 
 
-def deep_sleep():
+def screen_lit():
+    """The screen came on during this call (the power key while it got ready,
+    the shell): no more sleeping. Each try freezes the session, and its
+    freeze cut through the display hook's Wi-Fi load on October 9 (brcmfmac's
+    request for its vendor module failed with EBUSY, and Wi-Fi stayed dead).
+    The display script writes the state before it runs the hook."""
+    try:
+        return (session_runtime() / 'omarchy-mobile/screen').read_text().strip() == 'on'
+    except (OSError, KeyError):
+        return False
+
+
+def modem_link_down(seconds=MODEM_LINK_WAIT):
+    """Wait up to SECONDS for the modem's PCIe link to go down; whether it
+    did (True too with a pixel-sleep that cannot tell)."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            if read(SLEEP_PARAMS / 'modem_link') != '1':
+                return True
+        except OSError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(MODEM_LINK_POLL)
+
+
+def deep_sleep(modem=True):
     """One SYS_SLEEP, retried while pixel-sleep refuses to arm (the modem's
-    link still up); the UFS link goes down with it (pixel-ufs deep_link_off)."""
+    link still up); the UFS link goes down with it (pixel-ufs deep_link_off).
+    MODEM: a modem session to idle first. A lit screen ends it unslept."""
     refused = int(read(SLEEP_PARAMS / 'refused'))
     early = int(read(SLEEP_PARAMS / 'early_count'))
     irqs = irq_counts()
     (UFS_PARAMS / 'deep_link_off').write_text('1\n')
     try:
         for attempt in range(DEEP_TRIES):
+            if screen_lit():
+                return dict(woke='screen', slept=0.0, sleep='deep-early')
+            if modem:
+                modem_link_down()
             (SLEEP_PARAMS / 'budget').write_text('1\n')
             POWER.joinpath('mem_sleep').write_text('deep\n')
             try:
                 try:
                     count = wake_count()
-                    idle_modem()
+                    if modem:
+                        idle_modem()
                     POWER.joinpath('wakeup_count').write_text(count + '\n')
                 except OSError:
                     # Wake sources still active (the modem sending), or an
@@ -760,7 +820,12 @@ def deep_sleep():
 
 
 def suspend(seconds, keep_dark, allow_charging):
-    prerequisites(allow_charging)
+    # The wake is due SECONDS from the call, not from the end of the getting
+    # ready below: moving the push connection onto mobile data and letting it
+    # settle took 35-45 s (October 9), and every alarm, timer and wake request
+    # came that much late.
+    called = time.time()
+    modem = prerequisites(allow_charging)
     alarm = None
     changed_screen = False
     paused = False
@@ -771,9 +836,10 @@ def suspend(seconds, keep_dark, allow_charging):
             display(False)
         # The display hook keeps the modem's screen state with the display;
         # put back what it was (still off while the screen stays dark).
-        prior = request('power-status').get('screen_on')
-        changed_screen = True  # Restore even if a request was only partly accepted.
-        request('screen-state', on=False)
+        if modem:
+            prior = request('power-status').get('screen_on')
+            changed_screen = True  # Restore even if a request was only partly accepted.
+            request('screen-state', on=False)
         deep = deep_ready()
         bluetooth = None
         push = None
@@ -794,7 +860,7 @@ def suspend(seconds, keep_dark, allow_charging):
         tick = session_runtime() / 'omarchy-mobile-minute-tick' \
             if deep and os.environ.get('OMARCHY_MOBILE_MINUTE_TICK') else None
         # Wall time: the monotonic clock stops in suspend.
-        end = time.time() + seconds
+        end = called + seconds
         tick_at = time.time() + seconds_to_minute() if tick else None
         keep_at = time.time() + PUSH_KEEPALIVE if push else None
         wake_at = min(t for t in (end, tick_at, keep_at) if t)
@@ -805,7 +871,7 @@ def suspend(seconds, keep_dark, allow_charging):
             used, measured = 0, 0.0
             quiet = ticks = keeps = early = 0
             marker = message_marker()
-            events = modem_events()
+            events = modem_events() if modem else None
             cycles, counted = [], suspend_attempts()
             while True:
                 # The minute or the push keepalive: its alarm woke the phone,
@@ -828,7 +894,7 @@ def suspend(seconds, keep_dark, allow_charging):
                     wake_at = min(t for t in (end, tick_at, keep_at) if t)
                     alarm = Alarm(max(1, round(wake_at - time.time())))
                 packets = data_packets()
-                result = deep_sleep()
+                result = deep_sleep(modem)
                 now_attempts = suspend_attempts()
                 if counted is not None and now_attempts is not None:
                     cycles += [time.monotonic()] * max(0, now_attempts - counted)
@@ -868,6 +934,8 @@ def suspend(seconds, keep_dark, allow_charging):
                 result['minute_ticks'] = ticks
             if push:
                 result.update(push=push, push_keepalives=keeps)
+            if not modem:
+                result['cellular'] = 'stopped'
             # The average current in deep sleep, each sleep's entry and exit
             # included: the gauge's coulomb counter around every state write.
             if measured >= 60:
@@ -878,12 +946,20 @@ def suspend(seconds, keep_dark, allow_charging):
             check_network = check_network if check_network in ('wifi', 'data') else 'wifi'
             purpose = os.environ.get('OMARCHY_MOBILE_WAKE_PURPOSE', 'check')
             purpose = purpose if purpose in ('check', 'ambient', 'clock') else 'check'
-            if result['woke'] == 'power-key' or (result['woke'] == 'alarm' and check_network != 'data'
-                                                 and purpose != 'ambient'):
+            # A screen lit while this got ready (the power key again within
+            # the push move's 35-45 s) found Wi-Fi still loaded and the
+            # Bluetooth marker not yet written, so the display hook loaded
+            # neither, and both stayed off after the unload (October 9).
+            lit = screen_lit()
+            if lit or result['woke'] == 'power-key' or (result['woke'] == 'alarm' and check_network != 'data'
+                                                        and purpose != 'ambient'):
                 wifi_on()
+            if lit and BT_SLEEPING.exists():
+                subprocess.run([BT_RESTART], capture_output=True, timeout=60)
             return result
         count = wake_count()
-        idle_modem()
+        if modem:
+            idle_modem()
         POWER.joinpath('wakeup_count').write_text(count + '\n')
         before = (time.clock_gettime(time.CLOCK_BOOTTIME), time.monotonic())
         try:
@@ -899,6 +975,8 @@ def suspend(seconds, keep_dark, allow_charging):
             raise RuntimeError(f'Suspend refused by {device or "a wake event"} ({step}){note}') from error
         slept = time.clock_gettime(time.CLOCK_BOOTTIME) - before[0] - (time.monotonic() - before[1])
         result = dict(woke=wake_reason(), slept=round(max(0, slept), 3))
+        if not modem:
+            result['cellular'] = 'stopped'
     finally:
         cleanups = [lambda: SUSPEND_ACTIVE.unlink(missing_ok=True)]
         if alarm:
@@ -939,8 +1017,9 @@ def main():
         with open('/run/pixel-suspend.lock', 'w') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if args.check:
-                prerequisites(args.allow_charging)
-                print('Ready for bounded ' + ('SYS_SLEEP' if deep_ready() else 's2idle'))
+                modem = prerequisites(args.allow_charging)
+                print('Ready for bounded ' + ('SYS_SLEEP' if deep_ready() else 's2idle') +
+                      ('' if modem else ' without the modem'))
             else:
                 print(json.dumps(suspend(args.wake_after, args.keep_dark, args.allow_charging)))
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:

@@ -1,0 +1,168 @@
+--- a/drivers/net/wireless/ath/ath12k/qmi.h
++++ b/drivers/net/wireless/ath/ath12k/qmi.h
+@@ -144,6 +144,7 @@
+ 	bool target_mem_delayed;
+ 	u8 cal_done;
+ 	bool peach_cal_attempted;
++	bool peach_cal_restarted;
+ 	struct completion peach_cal_complete;
+ 
+ 	/* protected with struct ath12k_qmi::event_lock */
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -9,12 +9,17 @@
+ 
+ #include "qmi.h"
+ #include "core.h"
++#include "hif.h"
+ #include "debug.h"
+ #include <linux/of.h>
+ #include <linux/firmware.h>
+ #include <linux/of_address.h>
+ #include <linux/ioport.h>
+ #include <linux/of_reserved_mem.h>
++
++static bool peach_mission_probe;
++module_param(peach_mission_probe, bool, 0444);
++MODULE_PARM_DESC(peach_mission_probe, "Experimental CPH2655 station startup after calibration");
+ 
+ static bool peach_calibration_probe;
+ module_param(peach_calibration_probe, bool, 0444);
+@@ -3705,7 +3710,7 @@
+ 	struct qmi_txn txn;
+ 	int ret = 0;
+ 
+-	if (ab->hw_rev == ATH12K_HW_PEACH_HW20 &&
++	if (ab->hw_rev == ATH12K_HW_PEACH_HW20 && !peach_mission_probe &&
+ 	    (!peach_calibration_probe ||
+ 	     (mode != ATH12K_PEACH_CALIBRATION_MODE &&
+ 	      mode != ATH12K_QMI_FIRMWARE_MODE_OFF))) {
+@@ -3840,7 +3845,7 @@
+ 	off_ret = ath12k_qmi_wlanfw_mode_send(ab, ATH12K_QMI_FIRMWARE_MODE_OFF);
+ 	if (off_ret >= 0)
+ 		off_ret = 0;
+-	ath12k_info(ab, "CPH2655 calibration result=%d off=%d; mission mode blocked\n",
++	ath12k_info(ab, "CPH2655 calibration result=%d off=%d\n",
+ 		    ret, off_ret);
+ 	return ret ? ret : off_ret;
+ }
+@@ -4574,13 +4579,31 @@
+ 			break;
+ 		case ATH12K_QMI_EVENT_FW_READY:
+ 			if (ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++				if (test_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE, &ab->dev_flags))
++					break; /* No automatic recovery in this probe. */
+ 				if (peach_calibration_probe) {
+ 					ret = ath12k_qmi_peach_calibration_probe(ab);
+ 					ath12k_info(ab, "CPH2655 calibration probe returned %d\n", ret);
+ 				} else {
+ 					ath12k_info(ab, "CPH2655 firmware ready; RF startup disabled\n");
+ 				}
+-				break;
++				if (!peach_mission_probe || !peach_calibration_probe ||
++				    ret < 0 || !ab->qmi.cal_done)
++					break;
++				if (!ab->qmi.peach_cal_restarted) {
++					/* CNSS power-cycles after CALIBRATION/OFF. Keep the
++					 * calibration DMA buffers and advertise cal_done=1
++					 * when the new QMI service appears.
++					 */
++					ab->qmi.peach_cal_restarted = true;
++					ath12k_info(ab, "CPH2655 restarting firmware after calibration\n");
++					ath12k_hif_power_down(ab, false);
++					msleep(100);
++					ret = ath12k_hif_power_up(ab);
++					ath12k_info(ab, "CPH2655 post-calibration power-up returned %d\n", ret);
++					break;
++				}
++				ath12k_info(ab, "CPH2655 calibration passed; testing station initialization\n");
+ 			}
+ 			clear_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+ 			if (test_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE, &ab->dev_flags)) {
+@@ -4595,6 +4618,8 @@
+ 			clear_bit(ATH12K_FLAG_CRASH_FLUSH,
+ 				  &ab->dev_flags);
+ 			ret = ath12k_core_qmi_firmware_ready(ab);
++			if (ab->hw_rev == ATH12K_HW_PEACH_HW20)
++				ath12k_info(ab, "CPH2655 station initialization returned %d\n", ret);
+ 			if (!ret)
+ 				set_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE,
+ 					&ab->dev_flags);
+--- a/drivers/net/wireless/ath/ath12k/pci.c
++++ b/drivers/net/wireless/ath/ath12k/pci.c
+@@ -1718,7 +1718,8 @@
+ 	ath12k_pci_set_irq_affinity_hint(ab_pci, NULL);
+ 
+ 	if (test_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags) ||
+-	    ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++	    (ab->hw_rev == ATH12K_HW_PEACH_HW20 &&
++	     !test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags))) {
+ 		ath12k_pci_power_down(ab, false);
+ 		goto qmi_fail;
+ 	}
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -547,7 +547,7 @@
+ 		 * hw_ops + HAL (ops/desc/regs); the rest (ring/CE/MHI/WMI/QMI)
+ 		 * is shared with WCN7850 exactly as QCC2072 does.
+ 		 */
+-		.name = "CPH2655 Peach firmware probe",
++		.name = "CPH2655 Peach station probe",
+ 		.hw_rev = ATH12K_HW_PEACH_HW20,
+ 
+ 		.fw = {
+@@ -580,16 +580,12 @@
+ 		.rx_mac_buf_ring = true,
+ 		.vdev_start_delay = true,
+ 
+-		.interface_modes = BIT(NL80211_IFTYPE_STATION) |
+-				   BIT(NL80211_IFTYPE_AP) |
+-				   BIT(NL80211_IFTYPE_P2P_DEVICE) |
+-				   BIT(NL80211_IFTYPE_P2P_CLIENT) |
+-				   BIT(NL80211_IFTYPE_P2P_GO),
+-		.supports_monitor = true,
+-
+-		.idle_ps = true,
++		.interface_modes = BIT(NL80211_IFTYPE_STATION),
++		.supports_monitor = false,
++
++		.idle_ps = false,
+ 		.download_calib = false,
+-		.supports_suspend = true,
++		.supports_suspend = false,
+ 		.tcl_ring_retry = false,
+ 		.reoq_lut_support = false,
+ 		.supports_shadow_regs = true,
+@@ -605,7 +601,8 @@
+ 					   BIT(CNSS_WLAN_EN_SUPPORT_V01) |
+ 					   BIT(CNSS_AUX_UC_SUPPORT_V01),
+ 
+-		.rfkill_pin = 48,
++		/* No external WLAN kill switch in the stock CPH2655 profile. */
++		.rfkill_pin = 0,
+ 		.rfkill_cfg = 0,
+ 		.rfkill_on_level = 1,
+ 
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -14558,6 +14558,8 @@
+ static
+ void ath12k_mac_cleanup_iface_comb(const struct ieee80211_iface_combination *iface_comb)
+ {
++	if (!iface_comb)
++		return;
+ 	kfree(iface_comb[0].limits);
+ 	kfree(iface_comb);
+ }
+@@ -14587,6 +14589,11 @@
+ 	int n_combinations = 1;
+ 	struct ath12k *ar;
+ 	int i, ret;
++
++	/* A single station needs no concurrent-interface combinations. */
++	if (ah->num_radio == 1 &&
++	    ah->radio[0].ab->hw_params->interface_modes == BIT(NL80211_IFTYPE_STATION))
++		return 0;
+ 
+ 	if (ah->num_radio == 1) {
+ 		ar = &ah->radio[0];

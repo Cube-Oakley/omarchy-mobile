@@ -58,7 +58,7 @@ Scope {
 
     Process {
         id: watcher
-        command: [clock.bin("omarchy-mobile-clock"), "watch"]
+        command: ["setpriv", "--pdeathsig", "TERM", clock.bin("omarchy-mobile-clock"), "watch"]
         running: true
         stdout: SplitParser { onRead: line => clock.take(line) }
         // A watcher still running for a shell before this one holds the

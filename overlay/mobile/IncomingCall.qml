@@ -94,7 +94,7 @@ Scope {
 
     Process {
         id: watcher
-        command: [phone.bin("omarchy-mobile-phone"), "watch"]
+        command: ["setpriv", "--pdeathsig", "TERM", phone.bin("omarchy-mobile-phone"), "watch"]
         running: true
         stdout: SplitParser { onRead: line => phone.take(line) }
         // Exit 3: no ModemManager on this system, so nothing to follow.
@@ -108,7 +108,7 @@ Scope {
     }
     Process {
         id: proximity
-        command: ["stdbuf", "-oL", "monitor-sensor", "--proximity"]
+        command: ["setpriv", "--pdeathsig", "TERM", "stdbuf", "-oL", "monitor-sensor", "--proximity"]
         running: phone.earpieceCall
         stdout: SplitParser {
             onRead: line => {

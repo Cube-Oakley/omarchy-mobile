@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Read-only storage probe; retains the USB-only base and stock rail limits.
+ * Additional regulator mapping derived from index986's OnePlus-13-WIP DTS.
+ * Copyright (c) 2025 index986. All rights reserved.
+ */
+#include "sm8750-oneplus13-probe.dts"
+&apps_rsc {
+ regulators-0 {
+ vdd-l17-supply = <&vreg_bob2>;
+		vreg_bob2: bob2 {
+			regulator-name = "vreg_bob2";
+			regulator-min-microvolt = <2704000>;
+			regulator-max-microvolt = <3008000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_AUTO>;
+		};
+		vreg_l17b_2p5: ldo17 {
+			regulator-name = "vreg_l17b_2p5";
+			regulator-min-microvolt = <2504000>;
+			regulator-max-microvolt = <2504000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+ };
+ regulators-1 {
+		vreg_l1d_1p2: ldo1 {
+			regulator-name = "vreg_l1d_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+ };
+ regulators-5 {
+ compatible = "qcom,pm8550vs-rpmh-regulators";
+ qcom,pmic-id = "j";
+ vdd-l1-supply = <&vreg_s1d_0p97>;
+		vreg_l1j_0p91: ldo1 {
+			regulator-name = "vreg_l1j_0p91";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+ };
+};
+/* Match the stock active UFS PHY vote (912 mV). */
+&vreg_l1j_0p91 { regulator-min-microvolt = <912000>; regulator-max-microvolt = <912000>; };
+/* Preserve the stock parent rail's 976 mV instead of its 880 mV lower bound. */
+&vreg_s1d_0p97 { regulator-min-microvolt = <976000>; regulator-max-microvolt = <976000>; };
+&ufs_mem_phy {
+ vdda-phy-supply = <&vreg_l1j_0p91>;
+ vdda-pll-supply = <&vreg_l3g_1p2>;
+ status = "okay";
+};
+&ufs_mem_hc {
+ reset-gpios = <&tlmm 215 GPIO_ACTIVE_LOW>;
+ vcc-supply = <&vreg_l17b_2p5>; vcc-max-microamp = <1300000>;
+ vccq-supply = <&vreg_l1d_1p2>; vccq-max-microamp = <1200000>;
+ limit-hs-gear = <3>;
+ status = "okay";
+};

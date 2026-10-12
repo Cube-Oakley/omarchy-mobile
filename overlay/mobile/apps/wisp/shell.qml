@@ -308,7 +308,8 @@ ShellRoot {
     // Speech in: Moonshine, through omarchy-mobile-dictate.
     Process {
         id: listener
-        command: [root.bin("omarchy-mobile-dictate"), "listen"]
+        // Ends with this app however it goes (setpriv --pdeathsig TERM).
+        command: ["setpriv", "--pdeathsig", "TERM", root.bin("omarchy-mobile-dictate"), "listen"]
         stdinEnabled: true
         stdout: SplitParser {
             onRead: line => {
@@ -332,7 +333,7 @@ ShellRoot {
     // Speech out: the voice, loaded once (it exits after five quiet minutes).
     Process {
         id: speaker
-        command: root.helper(["voice", "serve"])
+        command: ["setpriv", "--pdeathsig", "TERM"].concat(root.helper(["voice", "serve"]))
         stdinEnabled: true
         stdout: SplitParser {
             onRead: line => {

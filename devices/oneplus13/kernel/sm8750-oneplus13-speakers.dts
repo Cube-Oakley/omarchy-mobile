@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Speakers. Two Awinic AW88461 (product 0x2308) smart amps on I2C hub 4
+ * (0x34 channel 0 = top/earpiece, 0x35 channel 1 = bottom speaker, as heard;
+ * resets TLMM2 and TLMM164) share secondary MI2S from LPASS: TLMM121 SCK,
+ * 123 WS, 122 data to the amps (the DSP's "SD1"; see audio/OnePlus-13.m4) and
+ * 124 their I/V feedback. Stock pairs the earpiece with the bottom speaker as
+ * a stereo pair ("receiver as left speaker"). The
+ * amps load the stock acf profile file; their driver never goes above the
+ * profile's own volume. Values match the saved CPH2655 stock tree.
+ */
+#include "sm8750-oneplus13-audio.dts"
+
+&sound {
+	pinctrl-0 = <&op13_i2s1_active>;
+	pinctrl-names = "default";
+
+	speaker-dai-link {
+		link-name = "Speaker Playback";
+
+		cpu {
+			sound-dai = <&q6apmbedai SECONDARY_MI2S_RX>;
+		};
+
+		codec {
+			sound-dai = <&spk_amp_0>, <&spk_amp_1>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+};
+
+/* LPASS drives the secondary MI2S bit clock (and word select) for the amps. */
+&q6apmbedai {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	dai@12 {
+		reg = <SECONDARY_MI2S_RX>;
+		clocks = <&q6prmcc LPASS_CLK_ID_SEC_MI2S_IBIT LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+		clock-names = "bclk";
+	};
+};
+
+&i2c_master_hub_0 {
+	status = "okay";
+};
+
+&i2c_hub_4 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	spk_amp_0: audio-codec@34 {
+		compatible = "awinic,aw88461";
+		reg = <0x34>;
+		reset-gpios = <&tlmm 2 GPIO_ACTIVE_LOW>;
+		awinic,audio-channel = <0>;
+		firmware-name = "aw882xx_acf.bin";
+		sound-name-prefix = "Top";
+		#sound-dai-cells = <0>;
+	};
+
+	spk_amp_1: audio-codec@35 {
+		compatible = "awinic,aw88461";
+		reg = <0x35>;
+		reset-gpios = <&tlmm 164 GPIO_ACTIVE_LOW>;
+		awinic,audio-channel = <1>;
+		firmware-name = "aw882xx_acf.bin";
+		sound-name-prefix = "Bottom";
+		#sound-dai-cells = <0>;
+	};
+};
+
+&tlmm {
+	/* Stock i2s1_*_active: 4 mA, no bias */
+	op13_i2s1_active: oneplus13-i2s1-active-state {
+		sck {
+			pins = "gpio121";
+			function = "i2s1_sck";
+			drive-strength = <4>;
+			bias-disable;
+		};
+
+		data0 {
+			pins = "gpio122";
+			function = "i2s1_data0";
+			drive-strength = <4>;
+			bias-disable;
+		};
+
+		ws {
+			pins = "gpio123";
+			function = "i2s1_ws";
+			drive-strength = <4>;
+			bias-disable;
+		};
+
+		/* Amp I/V feedback into the SoC (stock: pulled down) */
+		data1 {
+			pins = "gpio124";
+			function = "i2s1_data1";
+			drive-strength = <4>;
+			bias-pull-down;
+		};
+	};
+};

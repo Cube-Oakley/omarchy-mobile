@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Timed RAM diagnostic only; no native DPU/DSI binding or IOMMU takeover. */
+#include "sm8750-oneplus13-gpu.dts"
+/ { compatible = "oneplus,cph2655-omarchy-probe", "oneplus,dodge", "qcom,sm8750"; };
+&mdss {
+    compatible = "omarchy,oneplus13-display-probe";
+    reg = <0x0 0x0ae00000 0x0 0x93800>;
+    /delete-property/ resets;
+    /delete-property/ iommus;
+    status = "okay";
+};

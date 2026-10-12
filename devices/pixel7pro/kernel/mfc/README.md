@@ -174,13 +174,45 @@ all in the patch:
 Media Source Extensions. At 1080p the GPU process uses about 8 % of a CPU.
 GStreamer still decodes.
 
+## Out of memory, cleanly (2026-10-08)
+
+On October 8 X, in the web app, ran the 128 MB area dry. Allocations from it
+failed (`cma: pixel-mfc: alloc failed`, -EBUSY covers a full area too), and
+dma-direct quietly gave the decoder ordinary pages instead: they came from
+0x83200000, the area (and the firmware) at 0xeb200000. The firmware cannot
+reach memory below its base; it failed with error 0x37 and the instance went
+to `MFCINST_ERROR`. s5p-mfc then marked every CAPTURE buffer done with an
+error and answered POLLIN for them while DQBUF failed with EIO, and Chromium
+polled and dequeued in a loop (5.7 million suppressed messages in 7 minutes,
+heat). `0003-s5p-mfc-no-busy-poll-or-unreachable-buffers.patch`:
+- **poll:** EPOLLERR alone once the instance is in `MFCINST_ERROR`;
+- **reach:** a vb2 buffer (`buf_init`, both queues) or a codec buffer
+  (`s5p_mfc_alloc_generic_buf`) below the firmware's base is refused with
+  -ENOMEM, so REQBUFS fails where the client sees it.
+
+Chromium's side is QtWebEngine patch `0008` (failures fail the decode, and at
+most three MFC decoders: three 2 MiB contexts fit the 8 MiB block beside the
+firmware; three concurrent GStreamer decodes confirmed it). Kernel v45 makes
+the area 384 MB (`--mfc-cma 384M`, `kernel/mfc-pool-v45`): Chromium asks for
+16 CAPTURE buffers, about 48 MB at 1080p, about 55 MB per decoder with its
+codec and input buffers, and a seek briefly holds two sets. The low zone had
+1.42 GB free before; it now holds 640 MB of CMA (256 MB default + 384 MB).
+
+`scripts/ui-tests/mfc-pressure-test.sh` (five looping 1080p videos, a scratch
+profile, DevTools' Media domain via `cdp-media.py`): on the 128 MB area all
+three hardware decoders failed to get buffers and fell back to FFmpeg, no
+codec error, no busy loop; on 384 MB three decode on the MFC (no dropped
+frames on two, the third shares the CPU with two FFmpeg decoders) with no
+failed allocation in 70 s and three loops.
+
+Installed October 8: s5p-mfc.ko `ca249846…` in `/usr/local/lib/omarchy-mobile/mfc`
+(previous `/root/backups/s5p-mfc.ko.before-poll-error`), built as above from a
+copy with this patch; reloaded with the boot script's marker.
+
 ## Next
 
-1. **CMA size:** each decoder takes its buffers from the 128 MB area: about
-   16 frames of 3 MB at 1080p, plus the firmware's context buffers. Two
-   1080p videos at once may not fit, and a test with four tabs saw one
-   decoder fail to allocate (whether the browser then falls back to
-   software is untested). A later kernel can make the area 256 MB.
+1. **CMA size:** done October 8 (384 MB, three decoders; a fourth video
+   decodes in software).
 2. **DVFS:** the MFC clock is whatever CMU_TOP left (the stock table asks for
    134 MHz at 1080p30 and up to 666 MHz).
 3. **Encoders:** v15's encoder registers (report §2.4) for the camera's

@@ -1,3 +1,4 @@
 e1a02e22549aeb9ca64688baedb72ab210643a729a2bc378977f17f3ff383a7c  0001-dma-pixel-mfc-cma-area.patch
 01647ae3aaf743260deaa57ab3e458ee87a24c01ff539951a59bbc6ddb5cc6d5  0002-s5p-mfc-gs201-variant.patch
+c08b5e5dce4d1f82d625bf88bd3632d8d7c8005471044494ac3131a3c6ddc73c  0003-s5p-mfc-no-busy-poll-or-unreachable-buffers.patch
 100119bc8a4fd3b6435724a8ce6e56741cfc8b61f768aec9f2724871c958801d  pixel-mfc-overlay.dts

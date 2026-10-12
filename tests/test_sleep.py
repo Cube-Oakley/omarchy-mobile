@@ -259,6 +259,19 @@ class AdapterTests(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
+    def test_a_programs_wake_request_counts_until_its_hold_runs_out(self):
+        wake = self.root / 'omarchy-mobile-wake.d'
+        self.assertEqual(module.wake_requests(1000), [])
+        wake.mkdir()
+        (wake / 'soon').write_text('1300\n')
+        (wake / 'past').write_text('970')
+        (wake / 'stale').write_text(str(1000 - module.WAKE_REQUEST_HOLD - 1))
+        (wake / 'garbage').write_text('soon')
+        self.assertEqual(sorted(module.wake_requests(1000)), [970.0, 1300.0])
+        with patch.object(module, 'helper_module', return_value=None), patch.object(module.time, 'time', return_value=1000):
+            (wake / 'past').unlink()
+            self.assertEqual(module.clock_due(), 1300.0)
+
     def test_sleep_passes_the_background_interval_and_reads_the_wake(self):
         done = subprocess.CompletedProcess([], 0, 'noise\n{"woke": "modem", "slept": 812.4}\n', '')
         with patch.object(module.subprocess, 'run', return_value=done) as run:
@@ -380,3 +393,12 @@ class AwakeReasonTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CellularNoticeTests(unittest.TestCase):
+    def test_the_notice_names_the_fix(self):
+        with patch.object(module.subprocess, 'run') as run:
+            module.notify_cellular_stopped()
+        args = run.call_args.args[0]
+        self.assertIn('Mobile network stopped', args)
+        self.assertTrue(any('Restart the phone' in arg for arg in args))

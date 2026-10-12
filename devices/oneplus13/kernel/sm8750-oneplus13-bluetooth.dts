@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Peach Bluetooth in the base tree (replaces the runtime overlay and the
+ * separate serial alias overlay). UART14, the PM8550VE-F GPIO3 enable, the
+ * TLMM18 switch-control input, RF_CLK1 and the six rails match the tested
+ * overlay and the saved CPH2655 stock live tree; startup still loads the
+ * private hci_uart build only after verifying its package.
+ */
+#include "sm8750-oneplus13-pcie-msi.dts"
+
+/ {
+	aliases {
+		serial0 = &uart14;
+	};
+};
+
+&tlmm {
+	op13_bt_uart: oneplus13-bt-uart-state {
+		cts { pins = "gpio24"; function = "qup2_se6"; drive-strength = <2>; bias-disable; };
+		rts { pins = "gpio25"; function = "qup2_se6"; drive-strength = <2>; bias-pull-down; };
+		tx { pins = "gpio26"; function = "qup2_se6"; drive-strength = <2>; bias-pull-up; };
+		rx { pins = "gpio27"; function = "qup2_se6"; drive-strength = <2>; bias-disable; };
+	};
+
+	op13_bt_swctrl: oneplus13-bt-swctrl-state {
+		pins = "gpio18";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		input-enable;
+	};
+};
+
+&pm8550ve_f_gpios {
+	op13_bt_enable: oneplus13-bt-enable-state {
+		pins = "gpio3";
+		function = "normal";
+		input-disable;
+		output-low;
+		bias-disable;
+		power-source = <1>;
+	};
+};
+
+&qupv3_2 {
+	status = "okay";
+};
+
+&uart14 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&op13_bt_uart>;
+	status = "okay";
+
+	bluetooth {
+		compatible = "oneplus,cph2655-peach-bt";
+		max-speed = <115200>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&op13_bt_enable &op13_bt_swctrl>;
+		enable-gpios = <&pm8550ve_f_gpios 3 GPIO_ACTIVE_HIGH>;
+		swctrl-gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
+		clocks = <&rpmhcc RPMH_RF_CLK1>;
+		vddio-supply = <&vreg_l3f_1p8>;
+		vddio1p2-supply = <&vreg_l2f_1p2>;
+		vddaon-supply = <&vreg_s4d_wlan>;
+		vdddig-supply = <&vreg_s5f_wlan>;
+		vddrfa1p8-supply = <&vreg_s3g_1p8>;
+		vddrfa1p2-supply = <&vreg_s7i_1p2>;
+	};
+};

@@ -19,6 +19,10 @@ import time
 
 ROOT = Path('/run/modem-lab')
 BOOT_FD = None
+# Kept across boots, root-only: what the modem left about each crash.
+CRASH_LOG = Path('/var/log/omarchy-mobile/modem-crashes.log')
+GET_CP_CRASH_REASON = 0x82046F55  # _IOR('o', 0x55, struct crash_reason): u32 type, char[512]
+GET_CP_BOOTLOG = 0x6F47  # cpif prints the modem's boot log (shared memory) to the kernel log
 
 
 def cp_ioctl(command):
@@ -26,6 +30,48 @@ def cp_ioctl(command):
     if BOOT_FD is None:
         BOOT_FD = os.open('/dev/umts_boot0', os.O_RDWR | os.O_CLOEXEC)
     return fcntl.ioctl(BOOT_FD, command, 0)
+
+
+def record_crash():
+    """Before the CP is powered off, keep what it left: cpif's crash reason
+    and the modem's boot log, read-only, as stock's cbd collects them (its
+    dumps are not ported). On October 8 a crash while registering left only
+    a PHONE_ACTIVE drop in the kernel log, and power-off lost the rest."""
+    entry = [time.strftime('%F %T') + ' CP left ONLINE']
+    try:
+        reason = bytearray(4 + 512)
+        fcntl.ioctl(BOOT_FD, GET_CP_CRASH_REASON, reason)
+        text = bytes(reason[4:]).split(b'\0', 1)[0].decode(errors='replace')
+        entry.append(f'crash reason type {int.from_bytes(reason[:4], "little")}: {text}')
+    except OSError as error:
+        entry.append(f'crash reason unavailable: {error}')
+    try:
+        fcntl.ioctl(BOOT_FD, GET_CP_BOOTLOG)
+    except OSError as error:
+        entry.append(f'boot log unavailable: {error}')
+    try:
+        kernel = subprocess.run(['dmesg'], capture_output=True, text=True, timeout=10).stdout.splitlines()
+        entry += [line for line in kernel if 'cpif' in line][-40:]
+    except (OSError, subprocess.SubprocessError) as error:
+        entry.append(f'kernel log unavailable: {error}')
+    # RFS can crash CP on purpose (CsumCheckForFileAndForceCrash, an NV
+    # checksum), and these logs go with /run/modem-lab at power-off.
+    for log, lines in ((ROOT / 'rfsd-supervised.log', 60), (ROOT / 'cbd-supervised.log', 20),
+                       (Path('/run/pixel-modem/apps.log'), 20)):
+        try:
+            entry += [f'--- {log.name}'] + log.read_text(errors='replace').splitlines()[-lines:]
+        except OSError as error:
+            entry.append(f'--- {log.name} unavailable: {error}')
+    print('\n'.join(entry[:3]), flush=True)
+    try:
+        CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(CRASH_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'a') as out:
+            out.write('\n'.join(entry) + '\n\n')
+            out.flush()
+            os.fsync(out.fileno())
+    except OSError as error:
+        print(f'Crash record not kept: {error}', flush=True)
 
 
 def daemon(program, *args):
@@ -108,6 +154,7 @@ def main():
             if rfs.poll() is not None:
                 raise RuntimeError('RFS exited; powering CP off')
             if cp_ioctl(0x6f27) != 4:
+                record_crash()
                 raise RuntimeError('CP left ONLINE; stopping laboratory')
             time.sleep(0.5)
     finally:

@@ -92,8 +92,12 @@ done
 echo 1 >/sys/module/pixel_acpm/parameters/activate
 sleep 1
 # Battery-backed S2MPG12 RTC through ACPM (kernel/rtc); registering it sets the
-# system clock (CONFIG_RTC_HCTOSYS). Never stops the boot.
-if insmod /proc/1/root/lib/modules/pixel/pixel-rtc.ko; then
+# system clock (CONFIG_RTC_HCTOSYS). Never stops the boot. The root copy puts
+# the RTC's mode back after a flat battery (October 10) without a new image.
+rtc=/usr/local/lib/omarchy-mobile/pixel-rtc.ko
+[[ -f $rtc ]] || rtc=/proc/1/root/lib/modules/pixel/pixel-rtc.ko
+if insmod "$rtc" ||
+   { [[ $rtc != /proc/* ]] && insmod /proc/1/root/lib/modules/pixel/pixel-rtc.ko; }; then
     # The RTC is read-only and drifts: the offset the last network time sync
     # measured corrects it (scripts/pixel-time.py).
     timeout 10 /usr/local/sbin/pixel-time restore || echo 'Clock correction not applied.' >&2

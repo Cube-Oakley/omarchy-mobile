@@ -242,9 +242,10 @@ ShellRoot {
             } catch (e) {}
         }
     }
+    // Ends with this app however it goes (setpriv --pdeathsig TERM).
     Process {
         id: watcher
-        command: root.phone(["watch"])
+        command: ["setpriv", "--pdeathsig", "TERM"].concat(root.phone(["watch"]))
         running: root.allowed
         stdout: SplitParser { onRead: line => root.take(line) }
         onExited: if (root.allowed) watchRetry.start()

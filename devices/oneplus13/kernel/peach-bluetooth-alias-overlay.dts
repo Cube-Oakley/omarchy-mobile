@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Apply to the tested DTB on the host before building the RAM test image.
+ * GENI UART obtains this alias from the kernel's boot-time alias cache.
+ * UART14 remains disabled until the separate identification overlay is loaded.
+ */
+/dts-v1/;
+/plugin/;
+/ {
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            aliases { serial0 = "/soc@0/geniqup@8c0000/serial@898000"; };
+        };
+    };
+};

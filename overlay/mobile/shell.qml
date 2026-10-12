@@ -1112,9 +1112,15 @@ ShellRoot {
             else MobileStatus.refresh();
         }
     }
+    // Every helper the shell keeps running starts through setpriv
+    // --pdeathsig TERM: the kernel stops it when the shell goes, however it
+    // goes. A shell that died with Hyprland, or was killed, left its helpers
+    // running (October 8: eleven sets of the phone, messages and media
+    // watchers and their monitors, from one evening's session restarts, used
+    // about a tenth of a core all day).
     Process {
         id: clipboardWatch
-        command: ["wl-paste", "--watch", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-clipboard", "ingest"]
+        command: ["setpriv", "--pdeathsig", "TERM", "wl-paste", "--watch", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-clipboard", "ingest"]
         running: true
         onExited: clipboardWatchRetry.start()
     }
@@ -1133,7 +1139,7 @@ ShellRoot {
     // their times; the sleep policy reads the next one and wakes for it.
     Process {
         id: calendarWatch
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-calendar", "watch"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-calendar", "watch"]
         running: true
         onExited: calendarWatchRetry.start()
     }
@@ -1179,7 +1185,7 @@ ShellRoot {
     // device's suspend adapter; Settings can turn it off).
     Process {
         id: sleepPolicy
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-sleep", "run"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-sleep", "run"]
         running: true
         // Always again: 3 is another copy holding the lock, which may end
         // too (October 8: a retry that met the lock stopped the retries, and
@@ -1194,7 +1200,7 @@ ShellRoot {
     // (omarchy-mobile-android-media; it waits on a file, no wakeups).
     Process {
         id: androidMedia
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-android-media", "run"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-android-media", "run"]
         running: true
         onExited: androidMediaRetry.start()
     }
@@ -1204,14 +1210,14 @@ ShellRoot {
     // them): each waits for an app to capture before it turns its camera on.
     Process {
         id: frontCameraBridge
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-camera-bridge", "/dev/video20", "front"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-camera-bridge", "/dev/video20", "front"]
         running: true
         onExited: frontCameraBridgeRetry.start()
     }
     Timer { id: frontCameraBridgeRetry; interval: 60000; onTriggered: frontCameraBridge.running = true }
     Process {
         id: backCameraBridge
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-camera-bridge", "/dev/video21", "back"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-camera-bridge", "/dev/video21", "back"]
         running: true
         onExited: backCameraBridgeRetry.start()
     }
@@ -1221,7 +1227,7 @@ ShellRoot {
     property int unreadTexts: 0
     Process {
         id: textWatch
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-messages", "watch"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-messages", "watch"]
         running: true
         stdout: SplitParser {
             onRead: line => {

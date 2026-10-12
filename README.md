@@ -5,8 +5,9 @@ rendering and a touch-oriented Quickshell interface. One mobile shell and one OS
 brought up handset by handset, with the kernel, firmware and power work for each
 phone kept in its own device directory.
 
-**Status: experimental, October 8, 2026.** Two phones are in bring-up. Neither
-is a daily phone or a general-purpose installation image yet.
+**Status: experimental, October 11, 2026.** Two phones run the shared shell;
+OnePlus 13 native Linux bring-up is underway. These are development
+devices, not general-purpose installation images.
 
 **Project plan and status tracker:** [`plans/`](plans/index.html), with a page per
 device, a side-by-side comparison, and the shared software and desktop integration.
@@ -17,6 +18,7 @@ device, a side-by-side comparison, and the shared software and desktop integrati
 |---|---|---|---|
 | OnePlus 7 Pro (`guacamole`) | Snapdragon 855 · Adreno 640 | Boots from internal storage into the full touch shell on the GPU; Wi-Fi, audio, Bluetooth, sensors and the rear cameras work; cellular waits on a SIM | [README](devices/oneplus7pro/README.md) · [status](devices/oneplus7pro/docs/status.md) |
 | Pixel 7 Pro (`cheetah`) | Google Tensor G2 · Mali-G710 | Mainline Linux boots from internal storage into the shared shell at 120 Hz on the GPU; Wi-Fi, Bluetooth, audio, sensors, cellular data, texts and calls, all four cameras, fingerprint unlock, deep sleep and Android apps (Waydroid) work; GPS and power tuning continue | [README](devices/pixel7pro/README.md) · [status](devices/pixel7pro/docs/status.md) |
+| OnePlus 13 (`dodge`) | Snapdragon 8 Elite · Adreno 830 | Native persistent boot, station Wi-Fi and Bluetooth discovery verified; GPU desktop, touch, battery and motion sensors partly working. Bluetooth pairing/audio and hardware parity pending | [README](devices/oneplus13/README.md) · [status](devices/oneplus13/docs/status.md) |
 
 ## The shared shell
 

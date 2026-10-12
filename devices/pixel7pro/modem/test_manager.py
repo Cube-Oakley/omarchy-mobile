@@ -57,11 +57,27 @@ class ManagerTests(unittest.TestCase):
                     manager.recover_after_crash()
                 self.assertTrue(guard.exists())
 
+    def test_a_crash_after_the_firmware_came_online_starts_again_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            guard = Path(folder) / 'starting.json'
+            with patch.object(manager, 'GUARD', guard), patch.object(manager, 'boot_id', return_value='new'), \
+                 patch.object(manager.os, 'sync'):
+                guard.write_text(json.dumps({'boot': 'old', 'stage': 'online'}))
+                manager.recover_after_crash()
+                self.assertFalse(guard.exists())
+                self.assertTrue((Path(folder) / 'starting.json.crashed-online-old').exists())
+                # It shares the window with ends while running.
+                guard.write_text(json.dumps({'boot': 'older', 'stage': 'running'}))
+                with self.assertRaises(RuntimeError):
+                    manager.recover_after_crash()
+                self.assertTrue(guard.exists())
+
     def test_an_end_during_start_or_in_this_boot_still_blocks(self):
         with tempfile.TemporaryDirectory() as folder:
             guard = Path(folder) / 'starting.json'
             with patch.object(manager, 'GUARD', guard), patch.object(manager, 'boot_id', return_value='new'):
-                for data in ({'boot': 'old', 'stage': 'gpio-ready'}, {'boot': 'new', 'stage': 'running'}):
+                for data in ({'boot': 'old', 'stage': 'gpio-ready'}, {'boot': 'old', 'stage': 'starting'},
+                             {'boot': 'new', 'stage': 'running'}, {'boot': 'new', 'stage': 'online'}):
                     guard.write_text(json.dumps(data))
                     with self.assertRaises(RuntimeError):
                         manager.recover_after_crash()

@@ -1,0 +1,45 @@
+#!/bin/sh
+# RAM-only bring-up: no block device mounts or writes.
+/bin/busybox --install -s /bin
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mkdir -p /dev/pts /tmp /run
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
+test_seconds=180
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in oneplus13_test_seconds=*) test_seconds=${arg#*=};; esac
+done
+case "$test_seconds" in ''|*[!0-9]*) test_seconds=180;; esac
+[ "$test_seconds" -ge 30 ] && [ "$test_seconds" -le 3600 ] || test_seconds=180
+echo "OMARCHY ONEPLUS13 NATIVE PROBE: PID1; reboot in $test_seconds seconds" >/dev/kmsg
+echo 8 >/proc/sys/kernel/printk
+( sleep "$test_seconds"; echo 'OMARCHY PROBE DEADLINE' >/dev/kmsg; reboot -f ) &
+if [ -x /bin/framebuffer-pattern ]; then
+    ( sleep 3; /bin/framebuffer-pattern >/run/display-test.log 2>&1 ) &
+fi
+if [ -f /etc/usb-network ]; then
+    (
+        tries=0
+        while [ ! -e /sys/class/net/usb0 ] && [ "$tries" -lt 15 ]; do
+            sleep 1
+            tries=$((tries + 1))
+        done
+        ip link set lo up
+        ip addr add 10.77.13.1/30 dev usb0
+        ip link set usb0 up
+    ) >/run/network.log 2>&1 &
+fi
+for node in /sys/class/block/sd*; do
+    [ -e "$node" ] || continue
+    blockdev --setro "/dev/${node##*/}" || { echo "Cannot protect UFS" >/dev/kmsg; reboot -f; }
+done
+export PATH=/bin
+export PS1='oneplus13-linux# '
+while [ ! -c /dev/ttyGS0 ]; do sleep 1; done
+while :; do
+    setsid -c sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1
+    sleep 1
+done

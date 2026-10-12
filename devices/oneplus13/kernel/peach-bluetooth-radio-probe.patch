@@ -1,0 +1,36 @@
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -68,6 +68,9 @@
+ MODULE_PARM_DESC(peach_version_probe, "CPH2655 one-shot ROM identity probe; no firmware or radio startup");
+ static bool peach_version_attempted;
+ static bool peach_firmware_probe;
++static bool peach_radio_probe;
++module_param(peach_radio_probe, bool, 0444);
++MODULE_PARM_DESC(peach_radio_probe, "CPH2655 experimental radio; requires firmware/version opt-ins");
+ module_param(peach_firmware_probe, bool, 0444);
+ MODULE_PARM_DESC(peach_firmware_probe, "CPH2655 one-shot stock firmware setup then power-off");
+ 
+@@ -1947,7 +1950,8 @@
+ 	set_bit(QCA_IBS_DISABLED, &qca->flags);
+ 
+ 	if (soc_type == QCA_CPH2655_PEACH) {
+-		if (!peach_version_probe || peach_version_attempted)
++		if (!peach_version_probe || (peach_radio_probe && !peach_firmware_probe) ||
++		    (!peach_radio_probe && peach_version_attempted))
+ 			return -EPERM;
+ 		peach_version_attempted = true;
+ 		ret = qca_power_on(hdev);
+@@ -1961,6 +1965,13 @@
+ 			else
+ 				ret = qca_uart_setup(hdev, QCA_BAUDRATE_115200,
+ 						     soc_type, ver, NULL, NULL);
++		}
++		if (!ret && peach_radio_probe) {
++			clear_bit(QCA_IBS_DISABLED, &qca->flags);
++			hdev->set_bdaddr = qca_set_bdaddr;
++			qca_debugfs_init(hdev);
++			bt_dev_info(hdev, "CPH2655 experimental radio initialized at 115200 baud");
++			return 0;
+ 		}
+ 		bt_dev_info(hdev, "CPH2655 probe firmware=%d result=%d; powering off",
+ 			    peach_firmware_probe, ret);

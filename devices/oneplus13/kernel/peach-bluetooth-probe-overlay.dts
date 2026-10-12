@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Identification-only overlay for the exact tested probe20 PCIe/MSI DTB.
+ * Numeric base phandles are checked by peach-bluetooth-probe-dt.c before use.
+ * GPIOs and UART pin configuration match the saved CPH2655 stock live tree.
+ * Rail constraints are inherited unchanged from the installed Wi-Fi profile.
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path = "/soc@0/pinctrl@f100000";
+        __overlay__ {
+            op13_bt_uart: oneplus13-bt-uart-state {
+                cts { pins = "gpio24"; function = "qup2_se6"; drive-strength = <2>; bias-disable; };
+                rts { pins = "gpio25"; function = "qup2_se6"; drive-strength = <2>; bias-pull-down; };
+                tx { pins = "gpio26"; function = "qup2_se6"; drive-strength = <2>; bias-pull-up; };
+                rx { pins = "gpio27"; function = "qup2_se6"; drive-strength = <2>; bias-disable; };
+            };
+            op13_bt_swctrl: oneplus13-bt-swctrl-state {
+                pins = "gpio18";
+                function = "gpio";
+                drive-strength = <2>;
+                bias-disable;
+                input-enable;
+            };
+        };
+    };
+    fragment@1 {
+        target-path = "/soc@0/spmi@c400000/pmic@5/gpio@8800";
+        __overlay__ {
+            op13_bt_enable: oneplus13-bt-enable-state {
+                pins = "gpio3";
+                function = "normal";
+                input-disable;
+                output-low;
+                bias-disable;
+                power-source = <1>;
+            };
+        };
+    };
+    fragment@2 {
+        target-path = "/soc@0/geniqup@8c0000/serial@898000";
+        __overlay__ {
+            pinctrl-names = "default";
+            pinctrl-0 = <&op13_bt_uart>;
+            status = "okay";
+            bluetooth {
+                compatible = "oneplus,cph2655-peach-bt";
+                max-speed = <115200>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&op13_bt_enable &op13_bt_swctrl>;
+                enable-gpios = <0xb9 3 0>;
+                swctrl-gpios = <0x5f 18 0>;
+                clocks = <0x6a 6>; /* RPMH_RF_CLK1 */
+                vddio-supply = <0x146>;
+                vddio1p2-supply = <0x147>;
+                vddaon-supply = <0x148>;
+                vdddig-supply = <0x149>;
+                vddrfa1p8-supply = <0x120>;
+                vddrfa1p2-supply = <0x122>;
+            };
+        };
+    };
+    fragment@3 {
+        target-path = "/soc@0/geniqup@8c0000";
+        __overlay__ { status = "okay"; };
+    };
+};

@@ -131,6 +131,23 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(result['woke'], 'network')
         self.assertEqual(result['quiet_modem_wakes'], 0)
 
+    def test_without_a_modem_session_it_sleeps_and_says_cellular_stopped(self):
+        sleeps = [dict(woke='alarm', slept=600.0, sleep='deep')]
+        with patch.object(sleep, 'prerequisites', return_value=False), \
+             patch.object(sleep, 'request', side_effect=FileNotFoundError('no telephony socket')) as request, \
+             patch.object(sleep, 'deep_ready', return_value=True), patch.object(sleep, 'deep_watchdog'), \
+             patch.object(sleep, 'wifi_off'), patch.object(sleep, 'bluetooth_off'), \
+             patch.object(sleep, 'bluetooth_stays', return_value=False), patch.object(sleep, 'bluetooth_wake'), \
+             patch.object(sleep, 'wifi_on'), patch.object(sleep.os, 'sync'), \
+             patch.object(sleep, 'Alarm'), patch.object(sleep, 'modem_events') as modem_events, \
+             patch.object(sleep, 'sensors'), patch.object(sleep, 'deep_sleep', side_effect=sleeps) as deep_sleep:
+            result = sleep.suspend(900, True, False)
+        request.assert_not_called()
+        modem_events.assert_not_called()
+        deep_sleep.assert_called_once_with(False)
+        self.assertEqual(result['cellular'], 'stopped')
+        self.assertEqual(result['woke'], 'alarm')
+
     def test_sleeps_that_end_at_once_pause_and_stop_after_three(self):
         sleeps = [dict(woke='modem', slept=0.0, sleep='deep-early')] * 5
         with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
@@ -150,7 +167,7 @@ class TransitionTests(unittest.TestCase):
     def test_push_keepalives_wake_hold_and_sleep_again(self):
         clock = [1000.0]
 
-        def deep_sleep():
+        def deep_sleep(modem=True):
             clock[0] += alarm.call_args.args[0]
             return dict(woke='alarm', slept=alarm.call_args.args[0], sleep='deep')
         with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
@@ -169,6 +186,30 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in hold.call_args_list], [5, 5])
         self.assertEqual((result['woke'], result['push'], result['push_keepalives']), ('alarm', 'moved', 2))
 
+    def test_the_wake_counts_from_the_call_not_from_getting_ready(self):
+        clock = [1000.0]
+
+        def push_over_data(wifi_went):
+            clock[0] += 40
+            return 'moved'
+
+        def deep_sleep(modem=True):
+            clock[0] += alarm.call_args.args[0]
+            return dict(woke='alarm', slept=alarm.call_args.args[0], sleep='deep')
+        with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
+             patch.object(sleep, 'deep_ready', return_value=True), patch.object(sleep, 'deep_watchdog'), \
+             patch.object(sleep, 'wifi_off'), patch.object(sleep, 'bluetooth_off'), \
+             patch.object(sleep, 'bluetooth_stays', return_value=False), patch.object(sleep, 'bluetooth_wake'), \
+             patch.object(sleep, 'wifi_on'), patch.object(sleep.os, 'sync'), \
+             patch.object(sleep, 'Alarm') as alarm, patch.object(sleep, 'modem_events', return_value=3), \
+             patch.object(sleep, 'sensors'), patch.object(sleep, 'deep_sleep', side_effect=deep_sleep), \
+             patch.object(sleep, 'push_over_data', side_effect=push_over_data), \
+             patch.object(sleep, 'push_connected', return_value=True), \
+             patch.object(sleep.time, 'time', side_effect=lambda: clock[0]):
+            result = sleep.suspend(100, True, False)
+        self.assertEqual([call.args[0] for call in alarm.call_args_list], [60])
+        self.assertEqual((result['woke'], clock[0]), ('alarm', 1100.0))
+
     def test_a_mobile_data_check_leaves_wifi_off(self):
         sleeps = [dict(woke='alarm', slept=900.0, sleep='deep', used_nah=10_000_000)]
         with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
@@ -182,6 +223,28 @@ class TransitionTests(unittest.TestCase):
             sleep.suspend(900, True, False)
         wifi_on.assert_not_called()
 
+
+    def test_a_screen_lit_while_it_got_ready_gets_wifi_and_bluetooth_back(self):
+        for lit, marker in ((True, True), (True, False), (False, True)):
+            sleeps = [dict(woke='screen', slept=0.0, sleep='deep-early')]
+            with tempfile.TemporaryDirectory() as root, \
+                 patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
+                 patch.object(sleep, 'deep_ready', return_value=True), patch.object(sleep, 'deep_watchdog'), \
+                 patch.object(sleep, 'wifi_off'), patch.object(sleep, 'bluetooth_off'), \
+                 patch.object(sleep, 'bluetooth_stays', return_value=False), patch.object(sleep, 'bluetooth_wake'), \
+                 patch.object(sleep, 'wifi_on') as wifi_on, patch.object(sleep.os, 'sync'), \
+                 patch.object(sleep, 'Alarm'), patch.object(sleep, 'modem_events', return_value=3), \
+                 patch.object(sleep, 'sensors'), patch.object(sleep, 'deep_sleep', side_effect=list(sleeps)), \
+                 patch.object(sleep, 'screen_lit', return_value=lit), \
+                 patch.object(sleep, 'BT_SLEEPING', Path(root) / 'marker'), \
+                 patch.object(sleep.subprocess, 'run') as run:
+                if marker:
+                    (Path(root) / 'marker').touch()
+                result = sleep.suspend(900, True, False)
+            self.assertEqual(result['woke'], 'screen')
+            self.assertEqual(wifi_on.called, lit)
+            restarts = [call for call in run.call_args_list if call.args[0] == [sleep.BT_RESTART]]
+            self.assertEqual(len(restarts), int(lit and marker))
 
     def test_a_clock_minute_wake_leaves_wifi_off(self):
         sleeps = [dict(woke='alarm', slept=55.0, sleep='deep', used_nah=1_000_000)]
@@ -306,7 +369,7 @@ class TransitionTests(unittest.TestCase):
     def test_under_the_clock_each_minute_redraws_and_sleeps_again(self):
         clock = [1000 * 60 + 10.0]
 
-        def deep_sleep():
+        def deep_sleep(modem=True):
             clock[0] = (clock[0] // 60 + 1) * 60 + 1  # A second past the next minute.
             return dict(woke='alarm', slept=50.0, sleep='deep', used_nah=1_000_000)
         with patch.object(sleep, 'prerequisites'), patch.object(sleep, 'request', return_value={}), \
@@ -359,7 +422,7 @@ class TransitionTests(unittest.TestCase):
         clock = [1000 * 60 + 10.0]
         wakes = iter([('modem', 1000 * 60 + 59.5), ('alarm', 1002 * 60 + 1.5), ('alarm', 1003 * 60 + 1)])
 
-        def deep_sleep():
+        def deep_sleep(modem=True):
             reason, clock[0] = next(wakes)
             return dict(woke=reason, slept=40.0, sleep='deep')
 
@@ -397,6 +460,44 @@ class TransitionTests(unittest.TestCase):
             self.assertEqual(result, dict(woke='modem', slept=0.0, sleep='deep-early'))
             self.assertEqual((root / 'state').read_text(), '\n')
             self.assertEqual((root / 'mem_sleep').read_text(), 's2idle\n')
+
+    def test_a_try_waits_for_the_modem_link_to_go_down(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            link = root / 'modem_link'
+            states = iter(['1\n', '1\n', '0\n'])
+            with patch.object(sleep, 'SLEEP_PARAMS', root), patch.object(sleep.time, 'sleep') as pause:
+                def read_link(path):
+                    return next(states).strip() if Path(path) == link else ''
+                with patch.object(sleep, 'read', side_effect=read_link):
+                    link.write_text('1\n')
+                    self.assertTrue(sleep.modem_link_down())
+                self.assertEqual(pause.call_count, 2)
+                # A link that stays up: the try goes ahead after the wait.
+                link.write_text('1\n')
+                with patch.object(sleep.time, 'monotonic', side_effect=[0.0, 1.0, 2.0, 3.5]):
+                    self.assertFalse(sleep.modem_link_down(3))
+                # A pixel-sleep without the parameter: no wait.
+                link.unlink()
+                self.assertTrue(sleep.modem_link_down())
+
+    def test_a_screen_lit_during_the_call_is_not_slept_under(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            for name, value in (('refused', '0'), ('early_count', '0'), ('budget', '0'), ('deep_link_off', '0'),
+                                ('mem_sleep', 's2idle'), ('wakeup_count', '7'), ('state', '')):
+                (root / name).write_text(value + '\n')
+            (root / 'omarchy-mobile').mkdir()
+            (root / 'omarchy-mobile/screen').write_text('on\n')
+            with patch.object(sleep, 'SLEEP_PARAMS', root), patch.object(sleep, 'UFS_PARAMS', root), \
+                 patch.object(sleep, 'POWER', root), patch.object(sleep, 'session_runtime', return_value=root), \
+                 patch.object(sleep, 'irq_counts', return_value={}), patch.object(sleep, 'wake_count') as count:
+                result = sleep.deep_sleep()
+                self.assertEqual(result, dict(woke='screen', slept=0.0, sleep='deep-early'))
+                count.assert_not_called()
+                self.assertEqual((root / 'state').read_text(), '\n')
+                (root / 'omarchy-mobile/screen').write_text('ambient\n')
+                self.assertFalse(sleep.screen_lit())
 
     def test_a_freeze_stopped_by_a_wake_event_is_retried_not_refused(self):
         for modem_after, expected, retries in ((4, 'unknown', sleep.DEEP_TRIES - 1), (5, 'modem', 0)):
@@ -497,3 +598,28 @@ class WatchdogTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ModemSessionTests(unittest.TestCase):
+    def manager(self, pids, state):
+        fake = unittest.mock.Mock()
+        fake.recorded_pid.side_effect = lambda name: pids
+        fake.cp_state.return_value = state
+        return fake
+
+    def test_no_session_with_cp_off_sleeps_without_the_modem(self):
+        with patch.object(sleep, 'idle_modem') as idle:
+            self.assertFalse(sleep.modem_session(self.manager(None, 0)))
+        idle.assert_not_called()
+
+    def test_no_session_with_cp_still_up_refuses(self):
+        for state in (4, 5):
+            with self.assertRaisesRegex(RuntimeError, 'mobile network stopped'):
+                sleep.modem_session(self.manager(None, state))
+
+    def test_a_session_is_idled_and_sleeps_with_the_phone(self):
+        with patch.object(sleep, 'idle_modem') as idle:
+            self.assertTrue(sleep.modem_session(self.manager(1234, 4)))
+        idle.assert_called_once()
+        with self.assertRaisesRegex(RuntimeError, 'not online'):
+            sleep.modem_session(self.manager(1234, 0))

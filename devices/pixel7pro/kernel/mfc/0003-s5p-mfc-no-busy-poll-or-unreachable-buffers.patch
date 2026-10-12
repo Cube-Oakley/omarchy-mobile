@@ -1,0 +1,96 @@
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc.c
+@@ -1052,6 +1052,16 @@
+ 	src_q = &ctx->vq_src;
+ 	dst_q = &ctx->vq_dst;
+ 	/*
++	 * After an unrecoverable error QBUF and DQBUF fail with EIO, while the
++	 * buffers marked as errors stay on the done lists: answering EPOLLIN
++	 * for them had a client poll and dequeue in a loop (October 8: a web
++	 * view, up to ~120,000 times a second for minutes).
++	 */
++	if (ctx->state == MFCINST_ERROR) {
++		rc = EPOLLERR;
++		goto end;
++	}
++	/*
+ 	 * Nothing can arrive with neither queue streaming and no event waiting.
+ 	 * With only OUTPUT streaming and nothing queued, the client may be
+ 	 * waiting for the header's source change event: wait with it rather
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_dec.c
+@@ -1008,12 +1008,39 @@
+ 	return 0;
+ }
+ 
++/*
++ * GS201: the RISC reaches memory only above its firmware, the bottom of the
++ * codec's CMA area. When that area is full the DMA API takes any other pages
++ * instead (dma-direct's fallback); the firmware fails on a buffer below its
++ * base (October 8: ERR 0x37 mid-stream, the instance lost). Such a buffer is
++ * refused, so allocation fails where the client sees it.
++ */
++static int s5p_mfc_check_reach(struct s5p_mfc_ctx *ctx, struct vb2_buffer *vb)
++{
++	struct s5p_mfc_dev *dev = ctx->dev;
++	unsigned int i;
++
++	if (!IS_GS201(dev))
++		return 0;
++	for (i = 0; i < vb->num_planes; i++) {
++		dma_addr_t addr = vb2_dma_contig_plane_dma_addr(vb, i);
++
++		if (addr < dev->mem_base) {
++			mfc_err_limited("Buffer %pad below the firmware (%pad): the codec's CMA area is full\n",
++					&addr, &dev->mem_base);
++			return -ENOMEM;
++		}
++	}
++	return 0;
++}
++
+ static int s5p_mfc_buf_init(struct vb2_buffer *vb)
+ {
+ 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+ 	struct vb2_queue *vq = vb->vb2_queue;
+ 	struct s5p_mfc_ctx *ctx = vb2_get_drv_priv(vq);
+ 	unsigned int i;
++	int ret;
+ 
+ 	if (vq->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+ 		if (ctx->capture_state == QUEUE_BUFS_MMAPED)
+@@ -1025,6 +1052,9 @@
+ 				return -EINVAL;
+ 			}
+ 		}
++		ret = s5p_mfc_check_reach(ctx, vb);
++		if (ret)
++			return ret;
+ 		if (vb2_plane_size(vb, 0) < ctx->luma_size ||
+ 			vb2_plane_size(vb, 1) < ctx->chroma_size) {
+ 			mfc_err("Plane buffer (CAPTURE) is too small\n");
+@@ -1059,6 +1089,9 @@
+ 			mfc_err("Plane buffer (OUTPUT) is too small\n");
+ 			return -EINVAL;
+ 		}
++		ret = s5p_mfc_check_reach(ctx, vb);
++		if (ret)
++			return ret;
+ 
+ 		i = vb->index;
+ 		ctx->src_bufs[i].b = vbuf;
+--- a/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr.c
++++ b/drivers/media/platform/samsung/s5p-mfc/s5p_mfc_opr.c
+@@ -84,6 +84,12 @@
+ 	b->virt = dma_alloc_coherent(mem_dev, b->size, &b->dma, GFP_KERNEL);
+ 	if (!b->virt)
+ 		goto no_mem;
++	/* GS201: not below the firmware (s5p_mfc_check_reach() in s5p_mfc_dec.c). */
++	if (IS_GS201(dev) && b->dma < dev->mem_base) {
++		dma_free_coherent(mem_dev, b->size, b->virt, b->dma);
++		b->virt = NULL;
++		goto no_mem;
++	}
+ 
+ 	mfc_debug(3, "Allocated addr %p %pad\n", b->virt, &b->dma);
+ 	return 0;

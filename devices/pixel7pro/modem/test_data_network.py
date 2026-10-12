@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
-from data_network import Resolver, configuration, counters, looks_silent
+from data_network import Resolver, configuration, counters, guarded, looks_silent
 
 class ResolverTests(unittest.TestCase):
     def test_fallback_restoration_preserves_new_wifi_dns(self):
@@ -26,3 +27,15 @@ class RouteTests(unittest.TestCase):
         self.assertFalse(looks_silent(True,(100,10),(900,40)))
         self.assertFalse(looks_silent(True,(0,10),(0,10)))
         self.assertFalse(looks_silent(False,(0,10),(0,40)))
+
+class WatchTests(unittest.TestCase):
+    def test_a_stalled_or_failed_ip_is_retried(self):
+        def stalled(): raise subprocess.TimeoutExpired(('ip','route'),20)
+        def failed(): raise RuntimeError('Cellular network operation failed: ip')
+        def garbled(): raise ValueError('Expecting value')
+        for step in (stalled,failed,garbled):
+            self.assertIsNotNone(guarded(step))
+        self.assertIsNone(guarded(lambda: None))
+    def test_other_errors_still_end_the_service(self):
+        def broken(): raise KeyError('dev')
+        with self.assertRaises(KeyError): guarded(broken)

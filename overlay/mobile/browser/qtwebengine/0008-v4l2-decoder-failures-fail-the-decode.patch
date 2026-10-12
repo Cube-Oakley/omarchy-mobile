@@ -1,0 +1,164 @@
+V4L2 decoder failures fail the decode; three MFC instances (Omarchy Mobile)
+
+Chromium's V4L2StatefulVideoDecoder only logged most device failures: a
+CAPTURE queue that could not get its buffers (ApplyResolutionChange() ignored
+InitializeCAPTUREQueue()'s result), a failed DQBUF on CAPTURE (polled again
+at once) and a failed OUTPUT drain (DecodeCBs never run). On October 8 the
+Pixel's MFC ran out of its CMA area during X: decoding went on without frame
+buffers until the firmware failed, then s5p-mfc answered POLLIN in its error
+state and the GPU work dequeued in a loop for minutes. Now FailDecoding()
+runs every pending DecodeCB (and the flush) with kPlatformDecodeFailure,
+fails later Decode()s until Reset() and stops watching the device: before
+the first frame the pipeline picks the software decoder
+(kFallbackAfterDecodeError), after it the player reports a decode error.
+
+GetMaxNumDecoderInstances() returns 3 for s5p-mfc: each H.264 instance keeps
+a 2 MiB context in the 8 MiB block that holds the 1 MiB firmware, and a
+fourth instance failed only once decoding began. A fourth video decodes in
+software from the start.
+
+--- a/src/3rdparty/chromium/media/gpu/v4l2/v4l2_stateful_video_decoder.cc
++++ b/src/3rdparty/chromium/media/gpu/v4l2/v4l2_stateful_video_decoder.cc
+@@ -475,6 +475,10 @@
+                                       DecodeCB decode_cb) {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+   VLOGF(3) << buffer->AsHumanReadableString(/*verbose=*/false);
++  if (failed_) {
++    std::move(decode_cb).Run(DecoderStatus::Codes::kPlatformDecodeFailure);
++    return;
++  }
+   if (!IsInitialized()) {
+     DecoderStatus init_result;
+     Initialize(
+@@ -609,6 +613,8 @@
+   event_task_runner_.reset();
+   num_decoder_instances_.Decrement();
+   encoding_timestamps_.clear();
++  // The next Decode() opens the device again.
++  failed_ = false;
+ 
+   if (flush_cb_) {
+     std::move(flush_cb_).Run(DecoderStatus::Codes::kAborted);
+@@ -646,8 +652,12 @@
+   // It's possible that we have been Reset()ed in the interval between receiving
+   // the resolution change event in WaitOnceForEvents() (in a background thread)
+   // and arriving here from our |client_|. Check if that's the case.
+-  if (IsInitialized())
+-    InitializeCAPTUREQueue();
++  // Omarchy Mobile: a failure (e.g. too few CAPTURE buffers, the codec's CMA
++  // area being full) was ignored: decoding went on without frames to write
++  // to until the firmware failed.
++  if (IsInitialized() && !failed_ && !InitializeCAPTUREQueue()) {
++    FailDecoding(FROM_HERE);
++  }
+ }
+ 
+ size_t V4L2StatefulVideoDecoder::GetMaxOutputFramePoolSize() const {
+@@ -893,6 +903,9 @@
+ 
+ void V4L2StatefulVideoDecoder::RearmCAPTUREQueueMonitoring() {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  if (failed_) {
++    return;
++  }
+ 
+   auto dequeue_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
+       &V4L2StatefulVideoDecoder::TryAndDequeueCAPTUREQueueBuffers,
+@@ -1055,7 +1068,14 @@
+       }
+     }
+   }
+-  LOG_IF(ERROR, !success) << "Failed dequeueing from |CAPTURE_queue_|";
++  if (!success) {
++    // Omarchy Mobile: only logged before, and the queue polled again at once.
++    // s5p-mfc answered POLLIN in its error state while DQBUF failed, and the
++    // GPU process dequeued in a loop (October 8, minutes at full speed).
++    LOG(ERROR) << "Failed dequeueing from |CAPTURE_queue_|";
++    FailDecoding(FROM_HERE);
++    return;
++  }
+   // Not an error if |dequeued_buffer| is empty, it's just an empty queue.
+ 
+   // There might be available resources for |CAPTURE_queue_| from previous
+@@ -1143,6 +1163,8 @@
+   // First try to recover some free slots in |OUTPUT_queue_|.
+   if (!DrainOUTPUTQueue()) {
+     PLOG(ERROR) << "Failed to drain resources from |OUTPUT_queue_|.";
++    // Omarchy Mobile: the waiting DecodeCBs were never Run() here.
++    FailDecoding(FROM_HERE);
+     return false;
+   }
+ 
+@@ -1191,6 +1213,7 @@
+         LOG(ERROR) << "Error while queuing input |media_buffer|!";
+         std::move(media_decode_cb)
+             .Run(DecoderStatus::Codes::kPlatformDecodeFailure);
++        FailDecoding(FROM_HERE);
+         return false;
+       }
+     }
+@@ -1223,6 +1246,26 @@
+   return !!OUTPUT_queue_;
+ }
+ 
++// Omarchy Mobile: the pipeline learns of the failure through the DecodeCBs:
++// before the first frame it picks another decoder (software, with
++// kFallbackAfterDecodeError), after it reports a decode error.
++void V4L2StatefulVideoDecoder::FailDecoding(const base::Location& from_here) {
++  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++  LOG(ERROR) << from_here.function_name() << "(): decoding failed";
++  failed_ = true;
++  weak_ptr_factory_for_events_.InvalidateWeakPtrs();
++  cancelable_task_tracker_.TryCancelAll();
++  while (!decoder_buffer_and_callbacks_.empty()) {
++    auto media_decode_cb =
++        std::move(decoder_buffer_and_callbacks_.front().second);
++    decoder_buffer_and_callbacks_.pop();
++    std::move(media_decode_cb).Run(DecoderStatus::Codes::kPlatformDecodeFailure);
++  }
++  if (flush_cb_) {
++    std::move(flush_cb_).Run(DecoderStatus::Codes::kPlatformDecodeFailure);
++  }
++}
++
+ // static
+ int V4L2StatefulVideoDecoder::GetMaxNumDecoderInstances() {
+   if (!base::FeatureList::IsEnabled(media::kLimitConcurrentDecoderInstances)) {
+@@ -1239,6 +1282,15 @@
+   }
+   const bool is_mtk8173 = base::Contains(
+       std::string(reinterpret_cast<const char*>(caps.card)), "8173");
++  // Omarchy Mobile: the Pixel 7 Pro's MFC (s5p-mfc) keeps each H.264
++  // instance's 2 MiB context in the 8 MiB block that holds its 1 MiB
++  // firmware, so a fourth instance fails, and only once decoding starts.
++  // Their frames share one 128 MiB CMA area too. A fourth video decodes in
++  // software from the start.
++  if (base::Contains(std::string(reinterpret_cast<const char*>(caps.card)),
++                     "s5p-mfc")) {
++    return 3;
++  }
+   // Experimentally MTK8173 (e.g. Hana) can initialize the driver  up to 30
+   // times simultaneously, however legacy code limits this to 10 [1] . All other
+   // drivers used to limit this to 32 [2] but in practice I could only open up
+--- a/src/3rdparty/chromium/media/gpu/v4l2/v4l2_stateful_video_decoder.h
++++ b/src/3rdparty/chromium/media/gpu/v4l2/v4l2_stateful_video_decoder.h
+@@ -133,6 +133,10 @@
+   // Returns true if this class has successfully Initialize()d.
+   bool IsInitialized() const;
+ 
++  // Omarchy Mobile: fails every pending and later Decode() (until Reset())
++  // and stops watching the device, after an ioctl failed mid-stream.
++  void FailDecoding(const base::Location& from_here);
++
+   // Pages with multiple decoder instances might run out of memory (e.g.
+   // b/170870476) or crash (e.g. crbug.com/1109312). this class method provides
+   // that number to prevent that erroneous behaviour during Initialize().
+@@ -155,6 +159,8 @@
+   DecodeCB flush_cb_ GUARDED_BY_CONTEXT(sequence_checker_);
+   // Set to true when the driver identifies itself as a Mediatek 8173.
+   bool is_mtk8173_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
++  // Omarchy Mobile: set by FailDecoding(), cleared by Reset().
++  bool failed_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+ 
+   // Used only on V4L2_MEMORY_MMAP queues (e.g. Hana MT8173) to grab the visible
+   // rectangle upon |CAPTURE_queue_| configuration in InitializeCAPTUREQueue().

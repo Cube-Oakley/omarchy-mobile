@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* CPH2655 key routing verified against this handset's captured stock DT. */
+#include "sm8750-oneplus13-display-probe.dts"
+#include <dt-bindings/input/input.h>
+
+/ {
+    gpio-keys {
+        compatible = "gpio-keys";
+        pinctrl-names = "default";
+        pinctrl-0 = <&volume_down_default>;
+
+        key-volume-down {
+            label = "Volume Down";
+            gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
+            linux,code = <KEY_VOLUMEDOWN>;
+            debounce-interval = <32>;
+            wakeup-source;
+        };
+    };
+};
+
+&pon_pwrkey { status = "okay"; };
+&pon_resin {
+    linux,code = <KEY_VOLUMEUP>;
+    status = "okay";
+};
+
+&pm8550_gpios {
+    volume_down_default: volume-down-default-state {
+        pins = "gpio6";
+        function = "normal";
+        input-enable;
+        bias-pull-up;
+        power-source = <1>;
+    };
+};

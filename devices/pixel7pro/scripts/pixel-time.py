@@ -34,6 +34,9 @@ SYNC_EVERY = 6 * 3600
 AGREE = 1.0
 # Offsets below this are left alone (the RTC's own second is the floor).
 STEP = 0.05
+# An RTC whose corrected time falls this far before the last sync was reset
+# (a flat battery restarts it near 2000).
+RESET_GAP = 86400
 NTP_EPOCH = 2208988800
 
 
@@ -112,10 +115,16 @@ def sync(due_only):
     offset, delay, server = best
     if abs(offset) >= STEP:
         time.clock_settime(time.CLOCK_REALTIME, time.time() + offset)
-    rtc, now = rtc_edge()
+    moved = f'clock {"moved" if abs(offset) >= STEP else "kept"} by {offset:+.3f} s ({server}, {delay * 1000:.0f} ms)'
+    try:
+        rtc, now = rtc_edge()
+    except OSError as error:
+        # No RTC (its module did not load): the clock is right, nothing to
+        # keep for the next boot. On October 11 this failed after the step.
+        print(f'pixel-time: {moved}, no RTC offset kept ({error})')
+        return 0
     save(now - rtc, server)
-    print(f'pixel-time: clock {"moved" if abs(offset) >= STEP else "kept"} by {offset:+.3f} s '
-          f'({server}, {delay * 1000:.0f} ms), RTC {now - rtc:+.3f} s')
+    print(f'pixel-time: {moved}, RTC {now - rtc:+.3f} s')
     return 0
 
 
@@ -125,6 +134,14 @@ def restore():
         return 0
     rtc, now = rtc_edge()
     target = rtc + state['offset']
+    if target < state.get('synced', 0) - RESET_GAP:
+        # The RTC counts from its reset (a flat battery): the offset no longer
+        # applies, and the clock floor stands until the next network sync,
+        # which is due now that nothing is kept.
+        STATE.rename(STATE.with_name(f'{STATE.stem}.before-rtc-reset.json'))
+        print(f'pixel-time: RTC reads {time.strftime("%F", time.gmtime(rtc))}, before the last sync: '
+              f'reset, offset dropped')
+        return 0
     if abs(target - now) >= STEP:
         time.clock_settime(time.CLOCK_REALTIME, target + (time.time() - now))
     print(f'pixel-time: RTC {state["offset"]:+.3f} s, from a sync at '

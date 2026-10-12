@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Retain ABL's scanout while bringing up userspace; no panel commands. */
+#include "sm8750-oneplus13-storage.dts"
+/ {
+ chosen {
+  #address-cells = <2>;
+  #size-cells = <2>;
+  ranges;
+  framebuffer@fc800000 {
+   compatible = "simple-framebuffer";
+   reg = <0 0xfc800000 0 0x2b00000>;
+   width = <1440>;
+   height = <3168>;
+   stride = <5760>;
+   format = "a8r8g8b8";
+  };
+ };
+};

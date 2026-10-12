@@ -149,25 +149,30 @@ def terminate(child, seconds):
 
 # A boot that ended with the modem up and running (the AP or its power
 # firmware crashed later; October 3: an APM watchdog reset after hours of
-# service) is no sign that starting the modem is unsafe. Its guard is
-# archived and the modem starts again, once: another such end within
-# RETRY_WINDOW seconds keeps the guard, as an end during start always does.
+# service) is no sign that starting the modem is unsafe. Nor is one that
+# ended after the modem's firmware came ONLINE (stage "online"; October 8:
+# the firmware crashed while registering, 33 s after boot, with nothing on
+# the AP side different from a good start). Its guard is archived and the
+# modem starts again, once: another such end within RETRY_WINDOW seconds
+# keeps the guard, as an end before ONLINE always does.
 RETRY_WINDOW = 1800
+RECOVERABLE_STAGES = ('online', 'running')
 
 
 def recover_after_crash():
     data = json.loads(GUARD.read_text())
-    if data.get('stage') != 'running' or data.get('boot') == boot_id():
+    if data.get('stage') not in RECOVERABLE_STAGES or data.get('boot') == boot_id():
         raise RuntimeError('An earlier modem session did not stop cleanly; automatic start skipped')
     now = time.time()
     if any(now - archive.stat().st_mtime < RETRY_WINDOW
-           for archive in GUARD.parent.glob(GUARD.name + '.crashed-running-*')):
+           for archive in GUARD.parent.glob(GUARD.name + '.crashed-*')):
         raise RuntimeError('The modem session ended uncleanly twice within 30 minutes; automatic start skipped')
-    archive = GUARD.with_name(f'{GUARD.name}.crashed-running-{data.get("boot", "unknown")}')
+    archive = GUARD.with_name(f'{GUARD.name}.crashed-{data["stage"]}-{data.get("boot", "unknown")}')
     GUARD.rename(archive)
     os.utime(archive, (now, now))
     os.sync()
-    print('The last modem session ended while running, not while starting; starting again', flush=True)
+    print(f'The last modem session ended while {data["stage"]}, after the modem started; starting again',
+          flush=True)
 
 
 def prepare():
@@ -233,6 +238,9 @@ def run():
             if runtime.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError('Modem firmware did not start')
             time.sleep(.25)
+        # The firmware runs: an end from here on is no sign that starting
+        # the modem is unsafe (recover_after_crash()).
+        durable_json(GUARD, {'boot': boot_id(), 'stage': 'online'})
         app = launch('apps', sys.executable, '-u', str(HERE / 'app_service.py'), '--bringup')
         deadline = time.monotonic() + 900
         while not Path('/run/omarchy-mobile-telephony/socket').exists():

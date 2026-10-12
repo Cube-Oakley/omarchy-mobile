@@ -1,0 +1,118 @@
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -69,6 +69,9 @@
+ static bool peach_version_attempted;
+ static bool peach_firmware_probe;
+ static bool peach_radio_probe;
++static bool peach_highspeed_probe;
++module_param(peach_highspeed_probe, bool, 0444);
++MODULE_PARM_DESC(peach_highspeed_probe, "CPH2655 experimental peripheral and HCI 3M baud setup");
+ module_param(peach_radio_probe, bool, 0444);
+ MODULE_PARM_DESC(peach_radio_probe, "CPH2655 experimental radio; requires firmware/version opt-ins");
+ module_param(peach_firmware_probe, bool, 0444);
+@@ -1377,8 +1380,18 @@
+ 
+ 	/* Wait for the baudrate change request to be sent */
+ 
+-	while (!skb_queue_empty(&qca->txq))
+-		usleep_range(100, 200);
++	if (qca_soc_type(hu) == QCA_CPH2655_PEACH) {
++		unsigned long deadline = jiffies + msecs_to_jiffies(200);
++
++		while (!skb_queue_empty(&qca->txq)) {
++			if (time_after(jiffies, deadline))
++				return -ETIMEDOUT;
++			usleep_range(100, 200);
++		}
++	} else {
++		while (!skb_queue_empty(&qca->txq))
++			usleep_range(100, 200);
++	}
+ 
+ 	if (hu->serdev)
+ 		serdev_device_wait_until_sent(hu->serdev,
+@@ -1411,6 +1424,45 @@
+ 		serdev_device_set_baudrate(hu->serdev, speed);
+ 	else
+ 		hci_uart_set_baudrate(hu, speed);
++}
++
++
++/* Ganges has a peripheral UART controller as well as the Bluetooth HCI.
++ * Sequence documented by the pinned ROCKNIX WCN7860 patch. Keep transmit
++ * waits bounded and explicitly kick TX after each queued raw command.
++ */
++static int peach_set_peripheral_baudrate(struct hci_uart *hu)
++{
++	struct qca_data *qca = hu->priv;
++	struct sk_buff *skb;
++	unsigned long deadline;
++	u8 cmd[] = { 0x31, 0x00, 0xf1, 0xff, 0x02, 0x02,
++		     QCA_BAUDRATE_3000000 };
++	int ret;
++
++	if (!hu->serdev)
++		return -ENODEV;
++	ret = send_hci_ibs_cmd(HCI_IBS_WAKE_IND, hu);
++	if (ret)
++		return ret;
++	hci_uart_tx_wakeup(hu);
++	msleep(10);
++	skb = bt_skb_alloc(sizeof(cmd), GFP_KERNEL);
++	if (!skb)
++		return -ENOMEM;
++	skb_put_data(skb, cmd, sizeof(cmd));
++	skb_queue_tail(&qca->txq, skb);
++	hci_uart_tx_wakeup(hu);
++	deadline = jiffies + msecs_to_jiffies(200);
++	while (!skb_queue_empty(&qca->txq)) {
++		if (time_after(jiffies, deadline))
++			return -ETIMEDOUT;
++		usleep_range(100, 200);
++	}
++	serdev_device_wait_until_sent(hu->serdev, CMD_TRANS_TIMEOUT);
++	msleep(100);
++	hu->oper_speed = 3000000;
++	return 0;
+ }
+ 
+ static int qca_send_power_pulse(struct hci_uart *hu, bool on)
+@@ -1962,15 +2014,24 @@
+ 			    le32_to_cpu(ver.product_id) != 0x21 ||
+ 			    le16_to_cpu(ver.rom_ver) != 0x0200)
+ 				ret = -ENODEV;
+-			else
+-				ret = qca_uart_setup(hdev, QCA_BAUDRATE_115200,
+-						     soc_type, ver, NULL, NULL);
++			if (!ret && peach_highspeed_probe) {
++				ret = peach_set_peripheral_baudrate(hu);
++				if (!ret)
++					ret = qca_set_speed(hu, QCA_OPER_SPEED);
++				if (!ret)
++					ret = qca_read_soc_version(hdev, &ver, soc_type);
++			}
++			if (!ret)
++				ret = qca_uart_setup(hdev, peach_highspeed_probe ?
++					QCA_BAUDRATE_3000000 : QCA_BAUDRATE_115200,
++					soc_type, ver, NULL, NULL);
+ 		}
+ 		if (!ret && peach_radio_probe) {
+ 			clear_bit(QCA_IBS_DISABLED, &qca->flags);
+ 			hdev->set_bdaddr = qca_set_bdaddr;
+ 			qca_debugfs_init(hdev);
+-			bt_dev_info(hdev, "CPH2655 experimental radio initialized at 115200 baud");
++			bt_dev_info(hdev, "CPH2655 experimental radio initialized at %u baud",
++				    peach_highspeed_probe ? 3000000 : 115200);
+ 			return 0;
+ 		}
+ 		bt_dev_info(hdev, "CPH2655 probe firmware=%d result=%d; powering off",
+--- a/drivers/bluetooth/btqca.c
++++ b/drivers/bluetooth/btqca.c
+@@ -621,6 +621,7 @@
+ 		 * not queued behind the whole image when its timer starts.
+ 		 */
+ 		if (soc_type == QCA_CPH2655_PEACH &&
++		    config->user_baud_rate == QCA_BAUDRATE_115200 &&
+ 		    (config->dnld_mode == QCA_SKIP_EVT_VSE_CC ||
+ 		     config->dnld_mode == QCA_SKIP_EVT_VSE))
+ 			usleep_range(25000, 27000);

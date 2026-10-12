@@ -89,7 +89,7 @@ PanelWindow {
     }
     Process {
         id: pocket
-        command: [Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-ambient", "watch"]
+        command: ["setpriv", "--pdeathsig", "TERM", Quickshell.env("HOME") + "/.local/bin/omarchy-mobile-ambient", "watch"]
         onExited: if (MobileStatus.ambient) pocketRetry.start()
     }
     Timer { id: pocketRetry; interval: 5000; onTriggered: pocket.running = MobileStatus.ambient }

@@ -80,7 +80,7 @@ Item {
     // this one exit at once ("already running"); the socket still reaches it.
     Process {
         id: daemon
-        command: ["sh", "-c", "exec \"$0\" daemon >>\"$1\" 2>&1", link.bin("omarchy-link"),
+        command: ["setpriv", "--pdeathsig", "TERM", "sh", "-c", "exec \"$0\" daemon >>\"$1\" 2>&1", link.bin("omarchy-link"),
                   (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omarchy-mobile/link.log"]
         environment: ({ QT_FORCE_STDERR_LOGGING: "1" })
         running: true

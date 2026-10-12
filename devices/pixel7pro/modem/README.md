@@ -71,7 +71,16 @@ remain read-only; firmware runtime and all modem writes still use RAM copies.
 A durable `starting.json` marker spans each enabled session. An unfinished
 session skips modem startup on the next boot while allowing the desktop and
 USB recovery. After inspecting the failure, stopping CP, and saving the logs,
-move the marker aside and retry on a fresh full-phone boot. No automatic warm
+move the marker aside and retry on a fresh full-phone boot. A session that
+ended after CP came ONLINE (stage `online`, or `running`) is archived as
+`starting.json.crashed-<stage>-<boot>` and started again once on the next
+boot; a second such end within 30 minutes keeps the marker (October 8: CP
+crashed while registering, 33 s after ONLINE, with the kernel log and SIT
+traffic matching a good start until then, about one start in twenty). When
+CP leaves ONLINE, `runtime.py` first appends cpif's crash reason and the
+modem's boot log (`IOCTL_GET_CP_CRASH_REASON`, `IOCTL_GET_CP_BOOTLOG`) with the
+last cpif kernel lines to `/var/log/omarchy-mobile/modem-crashes.log`
+(root-only; never published). No automatic warm
 CP restart is attempted: prior experiments did not establish reliable warm
 recovery. An orderly `manager.py stop` ends calls, removes cellular networking,
 stops CP before RFS, and disarms the watchdog. Both `pixel-reboot` and the

@@ -36,5 +36,18 @@ DEVICES = [
     meta: ["mainline 7.3-rc2 · boot_a", "updated 2026-09-30"],
     readme: "devices/pixel7pro/README.md",
     status: "devices/pixel7pro/docs/status.md"
+  },
+  {
+    id: "oneplus13",
+    name: "OnePlus 13",
+    short: "OnePlus 13",
+    codename: "dodge",
+    soc: "Snapdragon 8 Elite (SM8750) · Adreno 830",
+    stage: "Native hardware bring-up",
+    summary: "Boots the installed Arch/Adreno desktop at 120 Hz with native touch, battery telemetry and motion sensors. "
+           + "Station Wi-Fi reconnects after normal boot. Cameras, audio, Bluetooth, cellular and suspend remain unfinished.",
+    meta: ["native Linux 7.3-rc2 · boot_a", "updated 2026-10-12"],
+    readme: "devices/oneplus13/README.md",
+    status: "devices/oneplus13/docs/status.md"
   }
 ];

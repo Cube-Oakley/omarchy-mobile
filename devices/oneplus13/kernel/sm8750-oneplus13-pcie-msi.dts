@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Validated native Wi-Fi: DWC's internal MSI receiver instead of GIC ITS.
+ * Keep the normal IOMMU map for endpoint DMA. The SoC description supplies
+ * the eight dedicated MSI SPI interrupts consumed by the DWC host driver.
+ */
+#include "sm8750-oneplus13-pcie.dts"
+
+&pcie0 {
+	/delete-property/ msi-map;
+	/delete-property/ msi-map-mask;
+};

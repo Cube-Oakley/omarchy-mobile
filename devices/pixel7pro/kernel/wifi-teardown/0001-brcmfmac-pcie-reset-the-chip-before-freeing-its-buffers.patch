@@ -1,0 +1,48 @@
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -2265,13 +2265,15 @@
+ 
+ 	brcmf_pcie_bus_console_read(devinfo, true);
+ 
++	/* The chip stops before its buffers are freed, as in remove. */
++	brcmf_pcie_ds_disable(devinfo);
++	brcmf_pcie_reset_device(devinfo);
++
+ 	brcmf_detach(dev);
+ 
+ 	brcmf_pcie_release_irq(devinfo);
+ 	brcmf_pcie_release_scratchbuffers(devinfo);
+ 	brcmf_pcie_release_ringbuffers(devinfo);
+-	brcmf_pcie_ds_disable(devinfo);
+-	brcmf_pcie_reset_device(devinfo);
+ 
+ 	fwreq = brcmf_pcie_prepare_fw_request(devinfo);
+ 	if (!fwreq) {
+@@ -3514,6 +3516,18 @@
+ 	if (devinfo->irq_allocated)
+ 		synchronize_irq(pdev->irq);
+ 
++	/* Reset the chip before anything it writes to is freed. Until the
++	 * reset the firmware runs on, still associated, storing received
++	 * frames in the posted RX buffers and completions in the rings, which
++	 * teardown used to free first. On October 8 such a write landed in
++	 * memory that had become a page table, after the unload before a deep
++	 * sleep (the next fork looped on the entry). Stopping it by clearing
++	 * bus mastering instead left the chip unable to start its firmware
++	 * until Wi-Fi and Bluetooth were both powered off.
++	 */
++	brcmf_pcie_ds_disable(devinfo);
++	brcmf_pcie_reset_device(devinfo);
++
+ 	brcmf_bus_cancel_reset_work(bus);
+ 
+ 	brcmf_detach(&pdev->dev);
+@@ -3527,8 +3541,6 @@
+ 	brcmf_pcie_release_irq(devinfo);
+ 	brcmf_pcie_release_scratchbuffers(devinfo);
+ 	brcmf_pcie_release_ringbuffers(devinfo);
+-	brcmf_pcie_ds_disable(devinfo);
+-	brcmf_pcie_reset_device(devinfo);
+ 	brcmf_pcie_release_resource(devinfo);
+ 	release_firmware(devinfo->clm_fw);
+ 	release_firmware(devinfo->txcap_fw);

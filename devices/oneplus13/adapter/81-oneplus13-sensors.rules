@@ -1,0 +1,4 @@
+# CPH2655 native SSC: only expose the physically checked accelerometer.
+# Measured upright portrait: +Y; USB pointing right: +X; face-up: +Z.
+# iio-sensor-proxy expects the opposite X/Y signs for its orientation names.
+SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp-secure", ENV{IIO_SENSOR_PROXY_TYPE}="ssc-accel", ENV{ACCEL_MOUNT_MATRIX}="-1, 0, 0; 0, -1, 0; 0, 0, 1"

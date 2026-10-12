@@ -1,0 +1,49 @@
+--- a/drivers/power/sequencing/pwrseq-qcom-wcn.c
++++ b/drivers/power/sequencing/pwrseq-qcom-wcn.c
+@@ -401,6 +401,21 @@
+ 	.targets = pwrseq_qcom_wcn_targets,
+ };
+ 
++/* CPH2655 Peach board inputs, matching sun-peach-cnss-v8.dtsi.
++ * Experimental enumeration only; no wireless firmware support implied.
++ * Six-rail layout also used by renhiyama/pagani-linux, c49d202f6c16e2b0.
++ */
++static const char *const pwrseq_cph2655_peach_vregs[] = {
++	"vddio", "vddio1p2", "vddaon", "vdddig", "vddrfa1p8", "vddrfa1p2",
++};
++
++static const struct pwrseq_qcom_wcn_pdata pwrseq_cph2655_peach_data = {
++	.vregs = pwrseq_cph2655_peach_vregs,
++	.num_vregs = ARRAY_SIZE(pwrseq_cph2655_peach_vregs),
++	.pwup_delay_ms = 50,
++	.targets = pwrseq_qcom_wcn_targets,
++};
++
+ static int pwrseq_qcom_wcn_match_regulator(struct pwrseq_device *pwrseq,
+ 					   struct device *dev,
+ 					   const char *name)
+@@ -545,6 +560,10 @@
+ 
+ static const struct of_device_id pwrseq_qcom_wcn_of_match[] = {
+ 	{
++		.compatible = "oneplus,cph2655-peach-pmu",
++		.data = &pwrseq_cph2655_peach_data,
++	},
++	{
+ 		.compatible = "qcom,wcn3950-pmu",
+ 		.data = &pwrseq_wcn3990_of_data,
+ 	},
+--- a/drivers/pci/pwrctrl/pci-pwrctrl-pwrseq.c
++++ b/drivers/pci/pwrctrl/pci-pwrctrl-pwrseq.c
+@@ -108,6 +108,11 @@
+ 
+ static const struct of_device_id pwrseq_pwrctrl_of_match[] = {
+ 	{
++		/* Peach endpoint: enumeration only, independent of ath12k. */
++		.compatible = "pci17cb,110e",
++		.data = &pwrseq_pwrctrl_qcom_wcn_pdata,
++	},
++	{
+ 		/* ATH11K in QCA6390 package. */
+ 		.compatible = "pci17cb,1101",
+ 		.data = &pwrseq_pwrctrl_qcom_wcn_pdata,

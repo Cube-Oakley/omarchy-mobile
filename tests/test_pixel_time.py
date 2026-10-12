@@ -61,6 +61,14 @@ class SyncTests(unittest.TestCase):
         self.set.assert_not_called()
         self.assertIn('offset', pixel_time.load())
 
+    def test_without_an_rtc_the_clock_is_set_and_nothing_kept(self):
+        with patch.object(pixel_time, 'rtc_edge', side_effect=FileNotFoundError('no rtc0')):
+            code = self.run_sync({'0.arch.pool.ntp.org': (86400.0, 0.04), '1.arch.pool.ntp.org': (86400.2, 0.02),
+                                  '2.arch.pool.ntp.org': (86400.1, 0.03)})
+        self.assertEqual(code, 0)
+        self.set.assert_called_once()
+        self.assertEqual(pixel_time.load(), {})
+
     def test_due_skips_a_recent_sync(self):
         pixel_time.save(51.0, 'x')
         with patch.object(pixel_time, 'query') as query:
@@ -79,6 +87,18 @@ class RestoreTests(unittest.TestCase):
             pixel_time.restore()
             settime.assert_called_once()
             self.assertAlmostEqual(settime.call_args[0][1], 999.5 + 0.2)
+
+    def test_a_reset_rtc_drops_the_offset_and_leaves_the_clock(self):
+        with tempfile.TemporaryDirectory() as d, \
+                patch.object(pixel_time, 'STATE', Path(d) / 'rtc-offset.json'), \
+                patch.object(pixel_time, 'rtc_edge', return_value=(946684900, 1791700000.0)), \
+                patch.object(pixel_time.time, 'time', return_value=1791700000.0), \
+                patch.object(pixel_time.time, 'clock_settime') as settime:
+            pixel_time.save(1.5, 'x')
+            self.assertEqual(pixel_time.restore(), 0)
+            settime.assert_not_called()
+            self.assertEqual(pixel_time.load(), {})
+            self.assertTrue((Path(d) / 'rtc-offset.before-rtc-reset.json').exists())
 
     def test_nothing_without_a_sync(self):
         with tempfile.TemporaryDirectory() as d, \

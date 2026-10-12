@@ -1,0 +1,261 @@
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -159,6 +159,7 @@
+ 	ATH12K_HW_IPQ5332_HW10,
+ 	ATH12K_HW_QCC2072_HW10,
+ 	ATH12K_HW_IPQ5424_HW10,
++	ATH12K_HW_PEACH_HW20,
+ };
+ 
+ #define ATH12K_IRQ_NUM_MAX 57
+--- a/drivers/net/wireless/ath/ath12k/qmi.h
++++ b/drivers/net/wireless/ath/ath12k/qmi.h
+@@ -196,6 +196,8 @@
+ 
+ enum ath12k_qmi_cnss_feature {
+ 	CNSS_FEATURE_MIN_ENUM_VAL_V01 = INT_MIN,
++	CNSS_DRV_SUPPORT_V01 = 1,
++	CNSS_WLAN_EN_SUPPORT_V01 = 2,
+ 	CNSS_QDSS_CFG_MISS_V01 = 3,
+ 	CNSS_PCIE_PERST_NO_PULL_V01 = 4,
+ 	CNSS_AUX_UC_SUPPORT_V01 = 6,
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -3803,6 +3803,14 @@
+ 		return ret;
+ 	}
+ 
++	/* Firmware probe only: hardware data-path mappings are unvalidated.
++	 * Stop before BDF download, RF calibration and all WLAN-mode commands.
++	 */
++	if (ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++		ath12k_info(ab, "CPH2655 probe reached target capabilities; holding before BDF/RF init\n");
++		return 0;
++	}
++
+ 	ret = ath12k_qmi_load_bdf_qmi(ab, ATH12K_QMI_BDF_TYPE_REGDB);
+ 	if (ret < 0) {
+ 		ath12k_warn(ab, "qmi failed to load regdb file:%d\n", ret);
+@@ -4027,6 +4035,10 @@
+ 				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+ 			break;
+ 		case ATH12K_QMI_EVENT_FW_READY:
++			if (ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++				ath12k_info(ab, "CPH2655 firmware probe: ignoring FW_READY, RF startup disabled\n");
++				break;
++			}
+ 			clear_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+ 			if (test_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE, &ab->dev_flags)) {
+ 				if (ab->is_reset)
+--- a/drivers/net/wireless/ath/ath12k/mhi.c
++++ b/drivers/net/wireless/ath/ath12k/mhi.c
+@@ -143,6 +143,13 @@
+ 
+ 	ath12k_dbg(ab, ATH12K_DBG_BOOT, "mhi notify status reason %s\n",
+ 		   ath12k_mhi_op_callback_to_str(cb));
++
++	if (ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++		ath12k_info(ab, "CPH2655 firmware probe MHI status %s (automatic recovery disabled)\n",
++			    ath12k_mhi_op_callback_to_str(cb));
++		ab_pci->mhi_pre_cb = cb;
++		return;
++	}
+ 
+ 	switch (cb) {
+ 	case MHI_CB_SYS_ERROR:
+@@ -483,13 +490,31 @@
+ {
+ 	int ret;
+ 
+-	ab_pci->mhi_ctrl->timeout_ms = MHI_TIMEOUT_DEFAULT_MS;
++	ab_pci->mhi_ctrl->timeout_ms =
++		ab_pci->ab->hw_rev == ATH12K_HW_PEACH_HW20 ? 10000 : MHI_TIMEOUT_DEFAULT_MS;
+ 
+ 	ret = ath12k_mhi_set_state(ab_pci, ATH12K_MHI_INIT);
+ 	if (ret)
+ 		goto out;
+ 
++	if (ab_pci->ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++		void __iomem *base = ab_pci->mhi_ctrl->regs;
++		void __iomem *bhi = ab_pci->mhi_ctrl->bhi;
++		ath12k_info(ab_pci->ab, "Peach MHI before: len=%x ver=%x bhi=%x bhie=%x ctrl=%x status=%x soc=%x EE=%x BHIstatus=%x\n",
++			readl(base), readl(base + 8), readl(base + 0x28),
++			readl(base + 0x2c), readl(base + 0x38), readl(base + 0x48),
++			readl(base + 0x224), readl(bhi + 0x28), readl(bhi + 0x2c));
++	}
++
+ 	ret = ath12k_mhi_set_state(ab_pci, ATH12K_MHI_POWER_ON);
++	if (ab_pci->ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++		void __iomem *bhi = ab_pci->mhi_ctrl->bhi;
++		ath12k_info(ab_pci->ab, "Peach MHI after: rc=%d EE=%x status=%x error=%x dbg=%x/%x/%x addr=%x:%x size=%x doorbell=%x\n",
++			ret, readl(bhi + 0x28), readl(bhi + 0x2c), readl(bhi + 0x30),
++			readl(bhi + 0x34), readl(bhi + 0x38), readl(bhi + 0x3c),
++			readl(bhi + 0x0c), readl(bhi + 8), readl(bhi + 0x10), readl(bhi + 0x18));
++	}
++
+ 	if (ret)
+ 		goto out;
+ 
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal.c
+@@ -57,6 +57,17 @@
+ 		.hal_params = &ath12k_hw_hal_params_ipq5332,
+ 		.hw_regs = &ipq5424_regs,
+ 	},
++	/* peach (WCN7860) shares QCC2072's register map (remap window 0x3278),
++	 * so it uses the QCC2072 HAL ops/desc/regs (tcl map + hal params stay
++	 * WCN7850's, exactly as the QCC2072 entry does).
++	 */
++	[ATH12K_HW_PEACH_HW20] = {
++		.hal_ops = &hal_qcc2072_ops,
++		.hal_desc_sz = sizeof(struct hal_rx_desc_qcc2072),
++		.tcl_to_wbm_rbm_map = ath12k_hal_tcl_to_wbm_rbm_map_wcn7850,
++		.hal_params = &ath12k_hw_hal_params_wcn7850,
++		.hw_regs = &qcc2072_regs,
++	},
+ };
+ 
+ int ath12k_wifi7_hal_init(struct ath12k_base *ab)
+--- a/drivers/net/wireless/ath/ath12k/wifi7/pci.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/pci.c
+@@ -20,6 +20,7 @@
+ #define QCN9274_DEVICE_ID		0x1109
+ #define WCN7850_DEVICE_ID		0x1107
+ #define QCC2072_DEVICE_ID		0x1112
++#define PEACH_DEVICE_ID			0x110e
+ 
+ #define ATH12K_PCI_W7_SOC_HW_VERSION_1	1
+ #define ATH12K_PCI_W7_SOC_HW_VERSION_2	2
+@@ -35,6 +36,7 @@
+ 	{ PCI_VDEVICE(QCOM, QCN9274_DEVICE_ID) },
+ 	{ PCI_VDEVICE(QCOM, WCN7850_DEVICE_ID) },
+ 	{ PCI_VDEVICE(QCOM, QCC2072_DEVICE_ID) },
++	{ PCI_VDEVICE(QCOM, PEACH_DEVICE_ID) },
+ 	{}
+ };
+ 
+@@ -165,6 +167,22 @@
+ 		/* there is only one version till now */
+ 		ab->hw_rev = ATH12K_HW_QCC2072_HW10;
+ 		break;
++	case PEACH_DEVICE_ID:
++		/*
++		 * peach (WCN7860) - WiFi-7 sibling of WCN7850 but uses the same
++		 * register remap window as QCC2072 (downstream
++		 * PEACH_PCIE_REMAP_BAR_CTRL_OFFSET == 0x3278). Like QCC2072 it has
++		 * a single hardware version, so skip the version read (which only
++		 * returns garbage through the wrong window).
++		 */
++		ab->id.bdf_search = ATH12K_BDF_SEARCH_BUS_AND_BOARD;
++		ab_pci->msi_config = &ath12k_wifi7_msi_config[0];
++		ab->static_window_map = false;
++		ab_pci->pci_ops = &ath12k_wifi7_pci_ops_wcn7850;
++		ab_pci->window_reg_addr = WINDOW_REG_ADDRESS_QCC2072;
++		ab->target_mem_mode = ATH12K_QMI_MEMORY_MODE_DEFAULT;
++		ab->hw_rev = ATH12K_HW_PEACH_HW20;
++		break;
+ 	default:
+ 		dev_err(&pdev->dev, "Unknown Wi-Fi 7 PCI device found: 0x%x\n",
+ 			pci_dev->device);
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -539,6 +539,99 @@
+ 		},
+ 
+ 		.host_alloc_ml_id = false,
++	},
++	{
++		/*
++		 * peach (WCN7860) - WiFi-7 (PCIe 17cb:110e). Closest to QCC2072
++		 * (same register remap window 0x3278), so it uses the QCC2072
++		 * hw_ops + HAL (ops/desc/regs); the rest (ring/CE/MHI/WMI/QMI)
++		 * is shared with WCN7850 exactly as QCC2072 does.
++		 */
++		.name = "CPH2655 Peach firmware probe",
++		.hw_rev = ATH12K_HW_PEACH_HW20,
++
++		.fw = {
++			.dir = "CPH2655-Peach/bootprobe",
++			.board_size = 256 * 1024,
++			.cal_offset = 256 * 1024,
++			.m3_loader = ath12k_m3_fw_loader_driver,
++			.download_aux_ucode = true,
++		},
++
++		.max_radios = 1,
++		.single_pdev_only = true,
++		.qmi_service_ins_id = ATH12K_QMI_WLFW_SERVICE_INS_ID_V01_WCN7850,
++		.internal_sleep_clock = true,
++
++		.hw_ops = &qcc2072_ops,
++		.ring_mask = &ath12k_wifi7_hw_ring_mask_wcn7850,
++
++		.host_ce_config = ath12k_wifi7_host_ce_config_wcn7850,
++		.ce_count = 9,
++		.target_ce_config = ath12k_wifi7_target_ce_config_wlan_wcn7850,
++		.target_ce_count = 9,
++		.svc_to_ce_map =
++			ath12k_wifi7_target_service_to_ce_map_wlan_wcn7850,
++		.svc_to_ce_map_len = 14,
++
++		.rxdma1_enable = false,
++		.num_rxdma_per_pdev = 2,
++		.num_rxdma_dst_ring = 1,
++		.rx_mac_buf_ring = true,
++		.vdev_start_delay = true,
++
++		.interface_modes = BIT(NL80211_IFTYPE_STATION) |
++				   BIT(NL80211_IFTYPE_AP) |
++				   BIT(NL80211_IFTYPE_P2P_DEVICE) |
++				   BIT(NL80211_IFTYPE_P2P_CLIENT) |
++				   BIT(NL80211_IFTYPE_P2P_GO),
++		.supports_monitor = true,
++
++		.idle_ps = true,
++		.download_calib = false,
++		.supports_suspend = true,
++		.tcl_ring_retry = false,
++		.reoq_lut_support = false,
++		.supports_shadow_regs = true,
++
++		.num_tcl_banks = 7,
++		.max_tx_ring = 3,
++
++		.mhi_config = &ath12k_wifi7_mhi_config_wcn7850,
++
++		.wmi_init = ath12k_wifi7_wmi_init_wcn7850,
++
++		.qmi_cnss_feature_bitmap = BIT(CNSS_DRV_SUPPORT_V01) |
++					   BIT(CNSS_WLAN_EN_SUPPORT_V01) |
++					   BIT(CNSS_AUX_UC_SUPPORT_V01),
++
++		.rfkill_pin = 48,
++		.rfkill_cfg = 0,
++		.rfkill_on_level = 1,
++
++		.rddm_size = 0x780000,
++
++		.def_num_link = 2,
++		.max_mlo_peer = 32,
++
++		.otp_board_id_register = 0,
++
++		.supports_sta_ps = true,
++
++		.acpi_guid = &wcn7850_uuid,
++		.supports_dynamic_smps_6ghz = false,
++
++		.iova_mask = ATH12K_PCIE_MAX_PAYLOAD_SIZE - 1,
++
++		.supports_aspm = true,
++
++		.ce_ie_addr = NULL,
++		.ce_remap = NULL,
++		.bdf_addr_offset = 0,
++
++		.current_cc_support = true,
++
++		.dp_primary_link_only = false,
+ 	},
+ 	{
+ 		.name = "qcn9274 hw2.0",

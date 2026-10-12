@@ -55,6 +55,18 @@ def looks_silent(routed, before, after):
     return routed and after[1]>before[1] and after[0]==before[0]
 
 
+def guarded(step):
+    """One pass of the route watch; the error of a failed or stalled `ip`, or
+    None. Such a failure is retried: when this service exits the manager stops
+    the whole modem session (October 8: one 20 s stall of `ip route` while
+    Wi-Fi was being unloaded left the phone without cellular for 3 hours)."""
+    try:
+        step()
+    except (subprocess.SubprocessError,RuntimeError,ValueError) as error:
+        return error
+    return None
+
+
 def answers():
     """Whether the bearer carries anything: a ping out through rmnet0."""
     for target in ('1.1.1.1','8.8.8.8'):
@@ -104,7 +116,8 @@ def main():
         print('Cellular fallback ready; Wi-Fi remains preferred',flush=True)
         last=None
         seen=counters(json.loads(run('ip','-j','-s','link','show','dev','rmnet0'))); check_at=time.monotonic()+30
-        while not stopping and fcntl.ioctl(cp,0x6f27,0)==4:
+        def watch():
+            nonlocal last,seen,check_at
             routes=json.loads(run('ip','-j','route','show','default'))
             routed=any(r.get('dev')=='rmnet0' for r in routes)
             others=[r for r in routes if r.get('dev')!='rmnet0']
@@ -124,7 +137,13 @@ def main():
                     print('Cellular bearer carries nothing; its default route is removed',flush=True)
                     now=counters(json.loads(run('ip','-j','-s','link','show','dev','rmnet0')))
                 seen=now; check_at=time.monotonic()+30
-            time.sleep(.5)
+        failing=None
+        while not stopping and fcntl.ioctl(cp,0x6f27,0)==4:
+            error=guarded(watch)
+            if error and not failing: print('Network check failed, retrying:',repr(error),flush=True)
+            elif failing and not error: print('Network checks work again',flush=True)
+            failing=error
+            time.sleep(2 if error else .5)
     finally:
         resolver.restore()
         routes=json.loads(run('ip','-j','route','show','default'))

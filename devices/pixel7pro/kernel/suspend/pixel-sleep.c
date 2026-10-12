@@ -140,6 +140,24 @@ static const u32 eint_mask_impl[3] = { 0xffffffff, 0xffffffff, 0x00000007 };
 /* PMU_INTR_GEN. */
 #define INTR_GRP2_ENABLE	0x0200	/* flexpmu_cal_system_gs201.h:141 */
 
+/* The modem's PCIe PHY out of isolation, its link up: a deep sleep tried now
+ * is refused at the very end (ps_suspend), after every device has suspended
+ * and resumed. In the battery run of October 9-10 that was 10 of 87 tries,
+ * mostly right after a wake while the modem brought its link up again. The
+ * suspend adapter reads this and waits instead. PMU_ALIVE is always powered
+ * and mapped from init; this only reads.
+ */
+static int modem_link_get(char *buf, const struct kernel_param *kp)
+{
+	if (!ps_va[PS_PMU])
+		return -ENODEV;
+	return sysfs_emit(buf, "%d\n", !!(ps_pmu_read(PMU_PCIE_PHY_HSI1) & BIT(0)));
+}
+
+static const struct kernel_param_ops modem_link_ops = { .get = modem_link_get };
+module_param_cb(modem_link, &modem_link_ops, NULL, 0444);
+MODULE_PARM_DESC(modem_link, "1 while the modem's PCIe link is up (deep sleep is refused then)");
+
 /* CLUSTERx_CPUy_STATUS, flexpmu_cal_cpu_gs201.h:31-136. */
 static const u16 cpu_status[8] = {
 	0x1004, 0x1084, 0x1104, 0x1184, 0x1304, 0x1384, 0x1504, 0x1584,

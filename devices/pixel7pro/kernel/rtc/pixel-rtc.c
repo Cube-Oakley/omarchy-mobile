@@ -8,7 +8,8 @@
  * Reading latches the counters with RTC_UPDATE.RUDR, exactly as the vendor
  * s2m_rtc_update() does, with the write and freeze latch bits cleared, so the
  * time never changes: no set_time, WTSR/SMPL or oscillator changes; Android
- * keeps the battery-backed RTC in UTC.
+ * keeps the battery-backed RTC in UTC. The one write outside the alarm puts
+ * back the mode a flat battery reset (rtc_reset_mode()).
  *
  * Alarm 0 (0x0d-0x13, bit 7 of each field enables it) is written and latched
  * with RTC_UPDATE.AUDR, as the vendor s2m_rtc_set_alarm() does. Its interrupt,
@@ -43,7 +44,10 @@
 #define RTC_UPDATE	0x01
 #define RTC_SEC		0x06	/* SEC, MIN, HOUR, WEEK, DAY, MON, YEAR */
 #define RTC_A0SEC	0x0d	/* alarm 0, same layout */
+#define RTC_NONCE0_0	0x1c
+#define NONCE0_SET	222	/* the vendor's NONCE0_0_SPECIAL_VAL: "anything except 0" */
 #define RTC_REGS	7
+#define RTC_WEEKDAY	3	/* its index in the SEC..YEAR block */
 #define ALARM_EN	BIT(7)
 #define HOUR_PM		BIT(6)
 
@@ -136,6 +140,35 @@ static int rtc_latch(void)
 	return rtc_latch_bit(UPDATE_RUDR);
 }
 
+/* A battery run flat resets the RTC: RTC_CTRL reads 0 (12-hour mode) and the
+ * counters start over. Put the mode back as the vendor s2m_rtc_init_reg()
+ * does after a reset: binary 24-hour, latched with AUDR, and its NONCE0_0
+ * marker. The time is left as it counts (pixel-time sets the clock from the
+ * network): the vendor writes one only from the DT's init_time. On October
+ * 10 a flat battery left RTC_CTRL 0, this module refused to load, and with no
+ * RTC there were no wake alarms, so the phone never slept.
+ */
+static int rtc_reset_mode(u8 ctrl)
+{
+	int ret;
+
+	pr_warn("pixel-rtc: RTC_CTRL %#x after a reset (battery ran flat?): binary 24-hour mode again\n",
+		ctrl);
+	ret = rtc_reg_write(RTC_CTRL, CTRL_MODEL24);
+	if (ret)
+		return ret;
+	ret = rtc_latch_bit(UPDATE_AUDR);
+	if (ret)
+		return ret;
+	ret = rtc_reg_write(RTC_NONCE0_0, NONCE0_SET);
+	if (ret)
+		return ret;
+	ret = rtc_reg_read(RTC_CTRL, &ctrl);
+	if (ret)
+		return ret;
+	return (ctrl & (CTRL_BCD_EN | CTRL_MODEL24)) == CTRL_MODEL24 ? 0 : -EIO;
+}
+
 static void data_to_tm(const u8 *data, struct rtc_time *tm)
 {
 	/* Binary, 24-hour (checked at load); the hour's PM flag is informational. */
@@ -210,8 +243,14 @@ static int pixel_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 		return -EINVAL;
 	mutex_lock(&rtc_lock);
 	ret = rtca0_unmask(false);
+	/* Each field's bit 7 makes the alarm compare it. Not the weekday: the
+	 * RTC keeps it as a bit of its own that only a time write sets, and
+	 * after a flat battery (October 10) it read Sunday on Saturday
+	 * 2000-01-01, so no alarm ever matched (the vendor warns of this
+	 * "weekday problem" when it sets no time). The date fixes the day.
+	 */
 	for (i = 0; !ret && i < RTC_REGS; i++)
-		ret = rtc_reg_write(RTC_A0SEC + i, data[i] | ALARM_EN);
+		ret = rtc_reg_write(RTC_A0SEC + i, data[i] | (i == RTC_WEEKDAY ? 0 : ALARM_EN));
 	if (!ret)
 		ret = rtc_latch_bit(UPDATE_AUDR);
 	if (!ret && alrm->enabled)
@@ -316,9 +355,11 @@ static int __init pixel_rtc_init(void)
 	if (ret)
 		goto unregister;
 	if ((ctrl & (CTRL_BCD_EN | CTRL_MODEL24)) != CTRL_MODEL24) {
-		pr_err("pixel-rtc: unexpected RTC_CTRL %#x (want binary 24-hour)\n", ctrl);
-		ret = -EINVAL;
-		goto unregister;
+		ret = rtc_reset_mode(ctrl);
+		if (ret) {
+			pr_err("pixel-rtc: RTC_CTRL %#x, binary 24-hour mode not set (%d)\n", ctrl, ret);
+			goto unregister;
+		}
 	}
 	ret = pixel_rtc_read_time(rtcdev, &tm);
 	if (ret) {

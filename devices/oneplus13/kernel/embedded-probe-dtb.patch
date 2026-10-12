@@ -1,0 +1,60 @@
+--- a/arch/arm64/kernel/setup.c
++++ b/arch/arm64/kernel/setup.c
+@@ -27,6 +27,8 @@
+ #include <linux/proc_fs.h>
+ #include <linux/memblock.h>
+ #include <linux/of_fdt.h>
++#include <linux/libfdt.h>
++extern unsigned char omarchy_oneplus13_dtb[];
+ #include <linux/efi.h>
+ #include <linux/psci.h>
+ #include <linux/sched/task.h>
+@@ -175,6 +177,30 @@
+ 
+ 	if (dt_virt)
+ 		memblock_reserve(dt_phys, size);
++	/* CPH2655 probe: keep the bootloader's current RAM banks, use our
++	 * minimal board description and preserved stock fixed carveouts. */
++	if (dt_virt && !fdt_node_check_compatible(dt_virt, 0, "qcom,sun")) {
++		int len, oldmem = fdt_path_offset(dt_virt, "/memory");
++		int newmem = fdt_path_offset(omarchy_oneplus13_dtb, "/memory@a0000000");
++		const void *reg = fdt_getprop(dt_virt, oldmem, "reg", &len);
++		int ret = -EINVAL;
++		if (reg && len > 0 && len <= 1024 && !(len % 16))
++			ret = fdt_setprop(omarchy_oneplus13_dtb, newmem, "reg", reg, len);
++		if (ret)
++			panic("OnePlus probe: cannot preserve bootloader RAM banks");
++		for (int i = 0; i < fdt_num_mem_rsv(dt_virt); i++) {
++			u64 addr, length;
++			if (fdt_get_mem_rsv(dt_virt, i, &addr, &length) ||
++			    fdt_add_mem_rsv(omarchy_oneplus13_dtb, addr, length))
++				panic("OnePlus probe: cannot preserve memory reservation");
++		}
++		dt_virt = omarchy_oneplus13_dtb;
++		dt_phys = __pa_symbol(omarchy_oneplus13_dtb);
++		pr_info("OMARCHY ONEPLUS13: embedded USB probe tree selected\n");
++	} else {
++		panic("OnePlus probe: unexpected bootloader device tree");
++	}
++
+ 
+ 	/*
+ 	 * dt_virt is a fixmap address, hence __pa(dt_virt) can't be used.
+@@ -197,7 +223,7 @@
+ 	}
+ 
+ 	/* Early fixups are done, map the FDT as read-only now */
+-	fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
++	/* The selected DT is in the kernel data section. */
+ 
+ 	name = of_flat_dt_get_machine_name();
+ 	if (!name)
+--- a/arch/arm64/kernel/Makefile
++++ b/arch/arm64/kernel/Makefile
+@@ -87,3 +87,6 @@
+ 
+ # for cleaning
+ subdir- += vdso vdso32
++
++obj-y += omarchy-oneplus13.o
++$(obj)/omarchy-oneplus13.o: $(src)/omarchy-oneplus13.dtb

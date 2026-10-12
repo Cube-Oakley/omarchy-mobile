@@ -263,3 +263,18 @@ Scan the lines the sync adds (`git diff public main`, excluding the Pages files)
   network and VPN names, VPN server and account, and SIM numbers, checked
   on the phone without printing them, appear nowhere. No firmware, logs,
   photos, VPN profile or modem backups are included.
+
+- October 12: `public` synced to development `main`: the Pixel's work since
+  October 8 (kernels v44-v46 with the APM watchdog fix, Wi-Fi reset ordering,
+  modem restart and sleep policy, on-time alarms and the RTC's flat-battery
+  recovery, the battery and reboot soak tests) and the OnePlus 13 native port:
+  Astra's persistent boot, desktop, touch, sensors, Wi-Fi and Bluetooth, plus
+  panel brightness and sleep, vibration and audio (a new AW88461 amp driver,
+  the AudioReach topology and UCM profile). Checks: the only addresses are
+  loopback, the OnePlus 13 USB link's 10.77.13.1/10.77.13.2 and its locally
+  administered 02:70:13 gadget address, and a public resolver; the only emails
+  are the upstream Awinic driver authors' in the amp driver header. Both
+  handsets' serials, the OnePlus 13's SoC and panel serials, network and
+  Bluetooth addresses and Wi-Fi network names, checked without printing them,
+  appear nowhere. One home path in the handoff notes was removed. No firmware,
+  boot images, stock captures, photos or logs are included; they stay in `out/`.

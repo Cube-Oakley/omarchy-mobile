@@ -1,0 +1,10 @@
+{
+  "scale": 3,
+  "displayMode": "preferred",
+  "keyboardHeight": 280,
+  "keyboardLandscapeHeight": 200,
+  "workspaceCount": 8,
+  "terminalShortcut": "SUPER + Q",
+  "panelLux": 0,
+  "ambientSleep": false
+}

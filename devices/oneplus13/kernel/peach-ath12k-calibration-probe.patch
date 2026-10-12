@@ -1,0 +1,336 @@
+--- a/drivers/net/wireless/ath/ath12k/qmi.h
++++ b/drivers/net/wireless/ath/ath12k/qmi.h
+@@ -8,6 +8,7 @@
+ #define ATH12K_QMI_H
+ 
+ #include <linux/mutex.h>
++#include <linux/completion.h>
+ #include <linux/soc/qcom/qmi.h>
+ 
+ #define ATH12K_HOST_VERSION_STRING		"WIN"
+@@ -142,6 +143,8 @@
+ 	u32 target_mem_mode;
+ 	bool target_mem_delayed;
+ 	u8 cal_done;
++	bool peach_cal_attempted;
++	struct completion peach_cal_complete;
+ 
+ 	/* protected with struct ath12k_qmi::event_lock */
+ 	bool block_event;
+@@ -376,6 +379,16 @@
+ 	char placeholder;
+ };
+ 
++#define QMI_WLFW_COLD_BOOT_CAL_DONE_IND_V01 0x003E
++#define QMI_WLANFW_CAL_REPORT_REQ_V01 0x0026
++#define QMI_WLANFW_CAL_REPORT_REQ_MSG_V01_MAX_LEN 43
++#define QMI_WLANFW_MAX_NUM_CAL_V01 5
++#define ATH12K_PEACH_CALIBRATION_MODE 7
++
++struct qmi_wlanfw_cold_boot_cal_done_ind_msg_v01 {
++	char placeholder;
++};
++
+ #define QMI_WLANFW_CAP_REQ_MSG_V01_MAX_LEN	0
+ #define QMI_WLANFW_CAP_REQ_V01			0x0024
+ 
+@@ -445,6 +458,22 @@
+ 	QMI_WLANFW_CAL_TEMP_IDX_3_V01 = 3,
+ 	QMI_WLANFW_CAL_TEMP_IDX_4_V01 = 4,
+ 	QMI_WLANFW_CAL_TEMP_ID_MAX_V01 = 0xFF,
++};
++
++
++struct qmi_wlanfw_cal_report_req_msg_v01 {
++	u32 meta_data_len;
++	enum qmi_wlanfw_cal_temp_id_enum_v01 meta_data[QMI_WLANFW_MAX_NUM_CAL_V01];
++	u8 xo_cal_data_valid;
++	u8 xo_cal_data;
++	u8 cal_remove_supported_valid;
++	u8 cal_remove_supported;
++	u8 cal_file_download_size_valid;
++	u64 cal_file_download_size;
++};
++
++struct qmi_wlanfw_cal_report_resp_msg_v01 {
++	struct qmi_response_type_v01 resp;
+ };
+ 
+ enum qmi_wlanfw_rd_card_chain_cap_v01 {
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <linux/elf.h>
++#include <linux/moduleparam.h>
+ 
+ #include "qmi.h"
+ #include "core.h"
+@@ -15,6 +16,10 @@
+ #include <linux/ioport.h>
+ #include <linux/of_reserved_mem.h>
+ 
++static bool peach_calibration_probe;
++module_param(peach_calibration_probe, bool, 0444);
++MODULE_PARM_DESC(peach_calibration_probe, "One CPH2655 RAM-only calibration; no WLAN mission mode");
++
+ #define SLEEP_CLOCK_SELECT_INTERNAL_BIT	0x02
+ #define HOST_CSTATE_BIT			0x04
+ #define PLATFORM_CAP_PCIE_GLOBAL_RESET	0x08
+@@ -2201,6 +2206,110 @@
+ };
+ 
+ static const struct qmi_elem_info qmi_wlanfw_mem_ready_ind_msg_v01_ei[] = {
++	{
++		.data_type	= QMI_EOTI,
++		.array_type	= NO_ARRAY,
++		.tlv_type	= QMI_COMMON_TLV_TYPE,
++	},
++};
++
++static const struct qmi_elem_info qmi_wlanfw_cold_boot_cal_done_ind_msg_v01_ei[] = {
++	{
++		.data_type = QMI_EOTI,
++		.array_type = NO_ARRAY,
++	},
++};
++
++static const struct qmi_elem_info qmi_wlanfw_cal_report_req_msg_v01_ei[] = {
++	{
++		.data_type	= QMI_DATA_LEN,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x01,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   meta_data_len),
++	},
++	{
++		.data_type	= QMI_SIGNED_4_BYTE_ENUM,
++		.elem_len	= QMI_WLANFW_MAX_NUM_CAL_V01,
++		.elem_size	= sizeof(enum qmi_wlanfw_cal_temp_id_enum_v01),
++		.array_type	= VAR_LEN_ARRAY,
++		.tlv_type	= 0x01,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   meta_data),
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x10,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   xo_cal_data_valid),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_1_BYTE,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x10,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   xo_cal_data),
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x11,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   cal_remove_supported_valid),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_1_BYTE,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x11,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   cal_remove_supported),
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x12,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   cal_file_download_size_valid),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_8_BYTE,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u64),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x12,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_req_msg_v01,
++					   cal_file_download_size),
++	},
++	{
++		.data_type	= QMI_EOTI,
++		.array_type	= NO_ARRAY,
++		.tlv_type	= QMI_COMMON_TLV_TYPE,
++	},
++};
++
++static const struct qmi_elem_info qmi_wlanfw_cal_report_resp_msg_v01_ei[] = {
++	{
++		.data_type	= QMI_STRUCT,
++		.elem_len	= 1,
++		.elem_size	= sizeof(struct qmi_response_type_v01),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x02,
++		.offset		= offsetof(struct qmi_wlanfw_cal_report_resp_msg_v01, resp),
++		.ei_array	= qmi_response_type_v01_ei,
++	},
+ 	{
+ 		.data_type	= QMI_EOTI,
+ 		.array_type	= NO_ARRAY,
+@@ -3596,7 +3705,10 @@
+ 	struct qmi_txn txn;
+ 	int ret = 0;
+ 
+-	if (ab->hw_rev == ATH12K_HW_PEACH_HW20) {
++	if (ab->hw_rev == ATH12K_HW_PEACH_HW20 &&
++	    (!peach_calibration_probe ||
++	     (mode != ATH12K_PEACH_CALIBRATION_MODE &&
++	      mode != ATH12K_QMI_FIRMWARE_MODE_OFF))) {
+ 		ath12k_warn(ab, "CPH2655 firmware probe blocked WLAN mode %u\n", mode);
+ 		return -EOPNOTSUPP;
+ 	}
+@@ -3641,6 +3753,96 @@
+ 
+ out:
+ 	return ret;
++}
++
++static void ath12k_qmi_msg_cold_boot_cal_done_cb(struct qmi_handle *qmi_hdl,
++						 struct sockaddr_qrtr *sq,
++						 struct qmi_txn *txn,
++						 const void *decoded)
++{
++	struct ath12k_qmi *qmi = container_of(qmi_hdl, struct ath12k_qmi, handle);
++	struct ath12k_base *ab = qmi->ab;
++
++	ab->qmi.cal_done = 1;
++	complete(&ab->qmi.peach_cal_complete);
++	ath12k_info(ab, "CPH2655 received cold-boot calibration complete\n");
++}
++
++static int ath12k_qmi_wlanfw_cal_report_send(struct ath12k_base *ab)
++{
++	struct qmi_wlanfw_cal_report_req_msg_v01 req = {};
++	struct qmi_wlanfw_cal_report_resp_msg_v01 resp = {};
++	struct qmi_txn txn;
++	u32 caldb_size = 0;
++	int ret;
++
++	/* Stock BDF reports CalDB=0; no calibration file was downloaded.
++	 * Report bytes actually supplied, not the capacity of a DMA buffer.
++	 */
++
++	req.cal_file_download_size_valid = 1;
++	req.cal_file_download_size = caldb_size;
++
++	ret = qmi_txn_init(&ab->qmi.handle, &txn,
++			   qmi_wlanfw_cal_report_resp_msg_v01_ei, &resp);
++	if (ret < 0)
++		return ret;
++
++	ret = qmi_send_request(&ab->qmi.handle, NULL, &txn,
++			       QMI_WLANFW_CAL_REPORT_REQ_V01,
++			       QMI_WLANFW_CAL_REPORT_REQ_MSG_V01_MAX_LEN,
++			       qmi_wlanfw_cal_report_req_msg_v01_ei, &req);
++	if (ret < 0) {
++		qmi_txn_cancel(&txn);
++		ath12k_warn(ab, "qmi failed to send cal report request: %d\n", ret);
++		return ret;
++	}
++
++	ret = qmi_txn_wait(&txn, msecs_to_jiffies(ATH12K_QMI_WLANFW_TIMEOUT_MS));
++	if (ret < 0) {
++		ath12k_warn(ab, "qmi failed cal report request: %d\n", ret);
++		return ret;
++	}
++
++	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
++		ath12k_warn(ab, "qmi cal report request failed, result: %d err: %d\n",
++			    resp.resp.result, resp.resp.error);
++		return -EINVAL;
++	}
++
++	ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi cal report sent, caldb size %u\n",
++		   caldb_size);
++	return 0;
++}
++
++static int ath12k_qmi_peach_calibration_probe(struct ath12k_base *ab)
++{
++	unsigned long completed;
++	int ret, off_ret;
++
++	if (ab->qmi.peach_cal_attempted)
++		return 0;
++	ab->qmi.peach_cal_attempted = true;
++	ret = ath12k_qmi_wlanfw_cal_report_send(ab);
++	if (ret < 0)
++		return ret;
++	ath12k_info(ab, "CPH2655 starting bounded stock calibration (RAM only)\n");
++	ret = ath12k_qmi_wlanfw_mode_send(ab, ATH12K_PEACH_CALIBRATION_MODE);
++	if (ret < 0)
++		return ret;
++	ret = 0;
++	completed = wait_for_completion_timeout(&ab->qmi.peach_cal_complete,
++						 msecs_to_jiffies(30000));
++	if (!completed) {
++		ath12k_warn(ab, "CPH2655 calibration timed out; stopping\n");
++		ret = -ETIMEDOUT;
++	}
++	off_ret = ath12k_qmi_wlanfw_mode_send(ab, ATH12K_QMI_FIRMWARE_MODE_OFF);
++	if (off_ret >= 0)
++		off_ret = 0;
++	ath12k_info(ab, "CPH2655 calibration result=%d off=%d; mission mode blocked\n",
++		    ret, off_ret);
++	return ret ? ret : off_ret;
+ }
+ 
+ static int ath12k_qmi_wlanfw_wlan_cfg_send(struct ath12k_base *ab)
+@@ -4245,6 +4447,13 @@
+ }
+ 
+ static const struct qmi_msg_handler ath12k_qmi_msg_handlers[] = {
++	{
++		.type = QMI_INDICATION,
++		.msg_id = QMI_WLFW_COLD_BOOT_CAL_DONE_IND_V01,
++		.ei = qmi_wlanfw_cold_boot_cal_done_ind_msg_v01_ei,
++		.decoded_size = sizeof(struct qmi_wlanfw_cold_boot_cal_done_ind_msg_v01),
++		.fn = ath12k_qmi_msg_cold_boot_cal_done_cb,
++	},
+ 	{
+ 		.type = QMI_INDICATION,
+ 		.msg_id = QMI_WLFW_REQUEST_MEM_IND_V01,
+@@ -4365,7 +4574,12 @@
+ 			break;
+ 		case ATH12K_QMI_EVENT_FW_READY:
+ 			if (ab->hw_rev == ATH12K_HW_PEACH_HW20) {
+-				ath12k_info(ab, "CPH2655 firmware probe: ignoring FW_READY, RF startup disabled\n");
++				if (peach_calibration_probe) {
++					ret = ath12k_qmi_peach_calibration_probe(ab);
++					ath12k_info(ab, "CPH2655 calibration probe returned %d\n", ret);
++				} else {
++					ath12k_info(ab, "CPH2655 firmware ready; RF startup disabled\n");
++				}
+ 				break;
+ 			}
+ 			clear_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+@@ -4410,6 +4624,7 @@
+ 	memset(&ab->qmi.target, 0, sizeof(struct target_info));
+ 	memset(&ab->qmi.target_mem, 0, sizeof(struct target_mem_chunk));
+ 	ab->qmi.ab = ab;
++	init_completion(&ab->qmi.peach_cal_complete);
+ 
+ 	ab->qmi.target_mem_mode = ab->target_mem_mode;
+ 	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,

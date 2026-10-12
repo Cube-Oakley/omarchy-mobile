@@ -1,0 +1,3 @@
+5f1c855464a75ee7c840267b820b93fbd99070cbac2383a57bdb483541774de3  0001-pixel-scanout-stats-read-under-hw-lock.patch
+e2dd37afeccc5f9945dd641da49544be631c186e8d34416890ea6718d5049d3e  README.md
+bbcd75679e29ace43d6f235a442a242cde4e0b86c9633506bedf4310cc9e60ad  scanout-race-test.sh

@@ -282,9 +282,12 @@ ShellRoot {
         run("people", [bin("omarchy-mobile-contacts"), "list"]);
     }
     // Live updates: the helper reports each change to the message store.
+    // Through setpriv --pdeathsig TERM, as the shell's helpers (0024aa8): it
+    // ends with this app however the app goes. Each Messages opened over a
+    // parked one left the old one's watcher running (October 11).
     Process {
         id: watcher
-        command: root.helper(["watch"])
+        command: ["setpriv", "--pdeathsig", "TERM"].concat(root.helper(["watch"]))
         stdout: SplitParser {
             onRead: line => {
                 let data = {};

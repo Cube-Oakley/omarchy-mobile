@@ -64,7 +64,7 @@ PanelWindow {
     }
     Process {
         id: watcher
-        command: [rotate.helper, "watch"]
+        command: ["setpriv", "--pdeathsig", "TERM", rotate.helper, "watch"]
         running: true
         stdout: SplitParser {
             onRead: data => {

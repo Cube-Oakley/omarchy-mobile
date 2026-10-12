@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* First idle test: CPU retention only, no cluster or APSS collapse. */
+#include "sm8750-oneplus13-adsp.dts"
+
+&cluster0_pd { /delete-property/ domain-idle-states; };
+&cluster1_pd { /delete-property/ domain-idle-states; };
+&system_pd { /delete-property/ domain-idle-states; };

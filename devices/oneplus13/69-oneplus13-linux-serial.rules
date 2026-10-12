@@ -1,0 +1,3 @@
+# Native OnePlus 13 bring-up: permit the active desktop user to use USB ACM.
+# Match this port's explicit manufacturer; do not grant world access.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0525", ATTRS{idProduct}=="a4aa", ATTRS{manufacturer}=="Omarchy-OnePlus13", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"

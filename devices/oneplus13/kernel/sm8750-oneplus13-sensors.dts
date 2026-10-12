@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Manual sensor-only FastRPC test, using the stock sensor PD context bank. */
+#include "sm8750-oneplus13-idle.dts"
+
+&remoteproc_adsp {
+    glink-edge {
+        fastrpc {
+            status = "okay";
+            /* Stock pd-type 2 (sensors) uses SID 5. Upstream chooses the first
+             * free context bank, so expose only that bank in this profile.
+             * Do not use this profile for audio/compute/OIS RPC clients. */
+            /delete-node/ compute-cb@3;
+            /delete-node/ compute-cb@4;
+            /delete-node/ compute-cb@6;
+            /delete-node/ compute-cb@7;
+            /delete-node/ compute-cb@8;
+        };
+    };
+};

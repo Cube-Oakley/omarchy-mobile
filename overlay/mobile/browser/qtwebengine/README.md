@@ -258,3 +258,21 @@ on X: 142 to 154 frames per 1.5 s, 28 to 36 refreshes without a new frame
 switcher's cards also need Hyprland patch 0002 (`overlay/mobile/hyprland`):
 Chromium leaves an opaque page's alpha at 0. Rebuilding after
 changing these files takes about 30 steps.
+
+**0008, October 8: decoder failures fail the decode; three MFC instances.**
+`0008-v4l2-decoder-failures-fail-the-decode.patch` (description in the patch).
+That evening X ran the MFC's 128 MiB CMA area dry; a decoder carried on
+without frame buffers until the firmware failed, then the GPU work called
+DQBUF in a loop for minutes (heat, drain). With 0008, s5p-mfc's matching
+fixes (`devices/pixel7pro/kernel/mfc/0003`) and the 384 MiB area of kernel
+v45, `devices/pixel7pro/scripts/ui-tests/mfc-pressure-test.sh` (five looping
+1080p videos on one page, a scratch profile, DevTools' Media domain via
+`cdp-media.py`) shows three videos on the MFC with no dropped frames, two in
+FFmpeg ("Too many decoder instances, max=3"), no failed allocation, no codec
+error. On the 128 MiB area all three hardware decoders failed to get their
+buffers and fell back to FFmpeg cleanly. Built with
+`~/.cache/omarchy-webengine/build-mfcerr.sh` (two objects and the link, under
+a minute).
+
+**Installed October 8** (SHA-256 `a5faedc4…`; the 0007 library with the kept
+frame, `41bafa9e…`, is `/root/libQt6WebEngineCore.so.6.11.2.0007-keepframe`).
